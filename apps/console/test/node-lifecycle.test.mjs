@@ -12,6 +12,7 @@ const dir = mkdtempSync(join(tmpdir(), "1dayapi-lifecycle-"));
 process.env.DATA_DIR = dir;
 process.env.CCR_WINDOW_POLL = "0";
 // Slow mock exchange: keeps the proxy reservation observable while jobs are in flight.
+process.env.ALLOW_UNTRUSTED_EXECUTION="1";
 process.env.ONBOARD_MOCK = "1";
 process.env.ONBOARD_MOCK_DELAY_MS = "400";
 process.env.ONBOARD_PROFILE_FETCH = "0";
@@ -220,9 +221,9 @@ await test("credentials upload: platform node -> platform-owned + pinned; provid
 
 await test("stale onboarding jobs are swept (working past the exchange timeout, pending_callback past 30 min)", () => {
   const old = new Date(Date.now() - 2 * 3600e3).toISOString().slice(0, 19) + "Z";
-  run("INSERT INTO onboarding_jobs (id, requester_id, scope, method, node_id, status, payload_enc, created_at, updated_at) VALUES ('j-w', ?, 'admin', 'session_key', 'lc-prov', 'working', 'x', ?, ?)", adminUser.id, old, old);
-  run("INSERT INTO onboarding_jobs (id, requester_id, scope, method, node_id, status, payload_enc, created_at, updated_at) VALUES ('j-p', ?, 'admin', 'auth_url', 'lc-prov', 'pending_callback', 'x', ?, ?)", adminUser.id, old, old);
-  run("INSERT INTO onboarding_jobs (id, requester_id, scope, method, node_id, status, payload_enc, created_at, updated_at) VALUES ('j-fresh', ?, 'admin', 'auth_url', 'lc-prov', 'pending_callback', 'x', ?, ?)", adminUser.id, now, now);
+  run("INSERT INTO onboarding_jobs (id, requester_id, scope, method, node_id, status, payload_enc, isolation_version, created_at, updated_at) VALUES ('j-w', ?, 'admin', 'session_key', 'lc-prov', 'working', 'x', 1, ?, ?)", adminUser.id, old, old);
+  run("INSERT INTO onboarding_jobs (id, requester_id, scope, method, node_id, status, payload_enc, isolation_version, created_at, updated_at) VALUES ('j-p', ?, 'admin', 'auth_url', 'lc-prov', 'pending_callback', 'x', 1, ?, ?)", adminUser.id, old, old);
+  run("INSERT INTO onboarding_jobs (id, requester_id, scope, method, node_id, status, payload_enc, isolation_version, created_at, updated_at) VALUES ('j-fresh', ?, 'admin', 'auth_url', 'lc-prov', 'pending_callback', 'x', 1, ?, ?)", adminUser.id, now, now);
   assert.equal(sweepStaleJobs(), 2);
   assert.equal(one("SELECT status, payload_enc FROM onboarding_jobs WHERE id='j-w'").payload_enc, null);
   assert.equal(one("SELECT status FROM onboarding_jobs WHERE id='j-p'").status, "failed");

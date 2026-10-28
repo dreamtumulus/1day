@@ -48,10 +48,12 @@ test("team upgrade preserves existing accounts, proxy bindings, jobs and custome
     }
     assert.equal(d.prepare("SELECT team_id FROM accounts WHERE id='old-account'").get().team_id, null);
     assert.equal(d.prepare("SELECT team_id FROM node_proxies WHERE id='old-proxy'").get().team_id, null);
-    for (const table of ["upstream_teams", "proxy_team_claims", "proxy_team_events", "proxy_quarantine", "conversations", "conversation_generations", "conversation_boundaries"]) {
+    for (const table of ["upstream_teams", "proxy_team_claims", "proxy_team_events", "proxy_quarantine", "conversations", "conversation_generations", "conversation_boundaries", "usage_pricing_snapshots", "gateway_request_budgets", "gateway_account_leases", "gateway_account_hits", "ccr_archive_jobs"]) {
       assert.equal(d.prepare(`SELECT count(*) AS n FROM ${table}`).get().n, 0, `${table} must not infer legacy ownership`);
     }
+    assert.equal(d.prepare("SELECT expires_at FROM onboarding_jobs WHERE id='old-job'").get().expires_at, null);
     runMigrations(d, () => {});
+    assert.equal(d.prepare("SELECT count(*) AS n FROM schema_migrations WHERE version=22").get().n, 1);
     assert.equal(d.prepare("SELECT count(*) AS n FROM schema_migrations WHERE version=21").get().n, 1);
   } finally {
     d.close();

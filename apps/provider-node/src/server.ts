@@ -16,6 +16,7 @@ import {
 import type { PlatformBridge } from "./bridge.js";
 import type { ProxyPool } from "./proxy-pool.js";
 import { NODE_VERSION } from "./version.js";
+import { managementToken, validManagementToken } from "./management-auth.js";
 
 // Defaults to loopback-only; set 0.0.0.0 inside a container behind a
 // 127.0.0.1-published port (the Host-header whitelist still applies).
@@ -53,9 +54,17 @@ export function buildApp(deps: ServerDeps): FastifyInstance {
   const { store, bridge, pool } = deps;
   const app = Fastify({ logger: false });
   const csrfToken = crypto.randomBytes(32).toString("base64url");
+  const adminToken = managementToken(store.configPath);
   let credentialsCache: PlatformCredentialsCache | null = null;
 
   // DNS-rebinding guard: only loopback Host headers.
+  app.addHook("onRequest", async (req, reply) => {
+    if (req.url === "/") return;
+    if (!validManagementToken(req.headers.authorization, adminToken)) {
+      return sendError(reply, 401, "management_auth_required", "Local administrator credential required", "authentication_error");
+    }
+  });
+
   app.addHook("onRequest", async (req, reply) => {
     const hostHeader = req.headers.host;
     const host = (hostHeader ?? "").split("]").length > 1
@@ -159,6 +168,7 @@ export function buildApp(deps: ServerDeps): FastifyInstance {
         platformBindUrl && platformBindUrl.length > 0
           ? platformBindUrl.replace(/\/+$/, "")
           : resolvePlatformHttpUrl(store);
+      if (base !== resolvePlatformHttpUrl(store)) return sendError(reply, 403, "platform_address_pinned", "Configure the platform address in the protected node service configuration");
       let res: Response;
       try {
         res = await fetch(base + "/internal/provider/bind", {

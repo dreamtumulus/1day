@@ -1,3 +1,4 @@
+import { assertNodeCapacity } from "./capacity.js";
 import { randomUUID } from "node:crypto";
 import { createReadStream } from "node:fs";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
@@ -15,6 +16,7 @@ import {
 } from "@1dayapi/core";
 import { chatgptAccountId } from "../account-input.js";
 import { sendError } from "../http.js";
+import { enqueueArchive } from "./archive-cleanup.js";
 import { importOAuthCredential } from "../onboard/jobs.js";
 import { releaseNodeResources } from "./proxies.js";
 import { ensureBundle } from "./bundle.js";
@@ -214,6 +216,8 @@ export function registerNodeRoutes(app: FastifyInstance): void {
         {ownerId:platformNode?null:auth.providerId,expectedTeamId:expected,name:email??undefined});
       return {credentialBindingId:verifiedId};
     }
+    tx(()=>{
+    assertNodeCapacity(auth.nodeId);
     run(
       `INSERT INTO accounts (id, name, platform, type, protocol, credential_enc, owner_id, route, node_id,
                              review_status, account_email, subscription_type, created_at, updated_at)
@@ -224,12 +228,13 @@ export function registerNodeRoutes(app: FastifyInstance): void {
       defaultProtocol(vendor),
       encryptJson({ accessToken, refreshToken, expiresAt, accountId }),
       platformNode ? null : auth.providerId,
-      platformNode ? auth.nodeId : null,
+      auth.nodeId,
       email,
       typeof b.subscriptionType === "string" ? b.subscriptionType.slice(0, 60) : null,
       now,
       now,
     );
+    });
     return { credentialBindingId: id };
   });
 
@@ -321,18 +326,39 @@ export function registerNodeRoutes(app: FastifyInstance): void {
         },
       };
     }
-    const opened = await openTunnel(
-      b.accountId,
-      kind,
-      b.targetHost,
-      typeof b.targetPort === "number" ? b.targetPort : 443,
-      typeof b.proxyId === "string" && b.proxyId ? b.proxyId : undefined,
-      worker,
-      typeof b.headersTimeoutMs === "number" && b.headersTimeoutMs > 0 ? b.headersTimeoutMs : undefined,
-      b.isolation,
-    );
-    if (!opened) return sendError(reply, 503, "no_online_node", "No online node accepted the session");
-    return { sessionId: opened.sessionId, nodeId: opened.nodeId };
+    const abort=new AbortController();
+    const disconnected=()=>{if(!reply.raw.writableFinished)abort.abort();};
+    request.raw.once("aborted",disconnected);
+    reply.raw.once("close",disconnected);
+    try {
+      const opened = await openTunnel(
+        b.accountId, kind, b.targetHost,
+        typeof b.targetPort === "number" ? b.targetPort : 443,
+        typeof b.proxyId === "string" && b.proxyId ? b.proxyId : undefined,
+        worker,
+        typeof b.headersTimeoutMs === "number" && b.headersTimeoutMs > 0 ? b.headersTimeoutMs : undefined,
+        b.isolation, undefined, abort.signal,
+      );
+      if(opened && (abort.signal.aborted || reply.raw.destroyed)){
+        closeTunnel(opened.sessionId,"caller_cancelled");
+        return reply;
+      }
+      if(!opened)return sendError(reply,503,"no_online_node","No online node accepted the session");
+      return {sessionId:opened.sessionId,nodeId:opened.nodeId};
+    } finally {
+      request.raw.removeListener("aborted",disconnected);
+      reply.raw.removeListener("close",disconnected);
+    }
+
+  });
+
+  // Restricted cloud-session archive after an account was retired. URL/method are
+  // constructed by the helper and historical immutable binding is re-validated.
+  app.post("/internal/tunnel/archive", async (request, reply) => {
+    if(!requireInternal(request,reply))return reply;
+    const b=request.body as Parameters<typeof enqueueArchive>[0];
+    if(!b || typeof b!=="object")return sendError(reply,400,"invalid_request","Archive identity is required");
+    return enqueueArchive(b);
   });
 
   app.post("/internal/tunnel/reset", async (request, reply) => {

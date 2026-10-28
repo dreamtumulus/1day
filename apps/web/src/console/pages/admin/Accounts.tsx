@@ -9,6 +9,7 @@ import {
   adminAccounts,
   api,
   onboardJob,
+  onboardCancel,
   platformLabel,
   type AccountKind,
   type AdminAccount,
@@ -400,6 +401,7 @@ export function AdminAccounts() {
   }
 
   async function bulk(action: "enable" | "disable" | "delete") {
+    if (list.loading || list.error || !list.data) return;
     const ids = [...selected];
     if (!ids.length) return;
     setBulkBusy(true);
@@ -836,14 +838,14 @@ export function AdminAccounts() {
               style={{ background: "var(--primary-soft)", borderTop: "1px solid var(--outline-variant)" }}
             >
               <span className="font-medium text-primary">{t("admin.accounts.selected", { n: selected.size })}</span>
-              <Button size="sm" loading={bulkBusy} onClick={() => void bulk("enable")}>
+              <Button size="sm" disabled={list.loading || !!list.error || !list.data} loading={bulkBusy} onClick={() => void bulk("enable")}>
                 {t("common.enable")}
               </Button>
-              <Button size="sm" loading={bulkBusy} onClick={() => void bulk("disable")}>
+              <Button size="sm" disabled={list.loading || !!list.error || !list.data} loading={bulkBusy} onClick={() => void bulk("disable")}>
                 {t("common.disable")}
               </Button>
               {!isOps && (
-                <Button size="sm" variant="danger" loading={bulkBusy} onClick={() => setBulkDeleteOpen(true)}>
+                <Button size="sm" disabled={list.loading || !!list.error || !list.data} variant="danger" loading={bulkBusy} onClick={() => setBulkDeleteOpen(true)}>
                   {t("common.delete")}
                 </Button>
               )}
@@ -1060,6 +1062,18 @@ function ReauthModal({ account, onClose, onDone }: { account: AdminAccount | nul
     }
   }
 
+  async function closeModal() {
+    if (busy) return;
+    if (!job || job.status === "done" || job.status === "failed") { onClose(); return; }
+    setBusy(true);
+    try {
+      const result = await onboardCancel("admin", job.jobId);
+      if (result.status === "done") onDone();
+      else onClose();
+    } catch (e) { setErr(errMessage(e)); }
+    finally { setBusy(false); }
+  }
+
   const terminal = job?.status === "done" || job?.status === "failed";
   const footer =
     job?.status === "done" ? (
@@ -1068,7 +1082,7 @@ function ReauthModal({ account, onClose, onDone }: { account: AdminAccount | nul
       </Button>
     ) : job?.status === "failed" ? (
       <>
-        <Button onClick={onClose}>{t("common.close")}</Button>
+        <Button onClick={() => void closeModal()}>{t("common.close")}</Button>
         <Button variant="primary" onClick={() => setJob(null)}>
           <RefreshIcon width={14} height={14} />
           {t("common.retry")}
@@ -1076,7 +1090,7 @@ function ReauthModal({ account, onClose, onDone }: { account: AdminAccount | nul
       </>
     ) : job?.status === "pending_callback" ? (
       <>
-        <Button onClick={onClose} disabled={busy}>
+        <Button onClick={() => void closeModal()} disabled={busy}>
           {t("common.cancel")}
         </Button>
         <Button variant="primary" loading={busy} disabled={!callbackUrl.trim()} onClick={() => void submitCallback()}>
@@ -1084,10 +1098,10 @@ function ReauthModal({ account, onClose, onDone }: { account: AdminAccount | nul
         </Button>
       </>
     ) : job?.status === "working" ? (
-      <Button onClick={onClose}>{t("common.close")}</Button>
+      <Button onClick={() => void closeModal()}>{t("common.close")}</Button>
     ) : (
       <>
-        <Button onClick={onClose} disabled={busy}>
+        <Button onClick={() => void closeModal()} disabled={busy}>
           {t("common.cancel")}
         </Button>
         <Button variant="primary" loading={busy} disabled={method === "session_key" && !sessionKey.trim()} onClick={() => void submit()}>
@@ -1098,7 +1112,7 @@ function ReauthModal({ account, onClose, onDone }: { account: AdminAccount | nul
     );
 
   return (
-    <Modal open={!!account} title={t("admin.accounts.reauthTitle", { name: account.accountEmail ?? account.name })} onClose={() => !busy && onClose()} footer={footer}>
+    <Modal open={!!account} title={t("admin.accounts.reauthTitle", { name: account.accountEmail ?? account.name })} onClose={() => void closeModal()} footer={footer}>
       <div className="space-y-4">
         {!job && (
           <>

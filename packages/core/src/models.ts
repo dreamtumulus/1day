@@ -105,7 +105,13 @@ export function listRegistry(): ModelEntry[] {
   const rows = new Map(all<PriceRow>("SELECT * FROM model_prices").map((r) => [r.model_id, r]));
   const out: ModelEntry[] = listModels().map((m) => fromCatalog(m, rows.get(m.modelId)));
   const catalogIds = new Set(out.map((e) => e.modelId));
-  for (const r of rows.values()) if (!catalogIds.has(r.model_id)) out.push(fromRow(r));
+  for (const r of rows.values()) {
+    if (catalogIds.has(r.model_id)) continue;
+    // Historical rows written using an alias remain visible, but cannot
+    // advertise a different enabled/price policy from their canonical model.
+    const entry = getModelEntry(r.model_id);
+    if (entry) out.push(entry);
+  }
   return out;
 }
 
@@ -138,34 +144,60 @@ export function modelIdAliases(modelId: string): string[] {
   return out;
 }
 
-export function getModelEntry(modelId: string): ModelEntry | undefined {
-  const row = one<PriceRow>("SELECT * FROM model_prices WHERE model_id = ?", modelId);
-  const m = getModel(modelId);
-  if (m) return fromCatalog(m, row);
-  if (row) return fromRow(row);
-  const dotted = dottedVersionAlias(modelId);
-  // Dated snapshots travel upstream as written; a dotted spelling is corrected.
-  const upstream = dotted ? { upstreamModelId: dotted } : {};
-  for (const alias of modelIdAliases(modelId)) {
+/** Canonical policy identity shared by catalog spellings and dated aliases. */
+export function canonicalModelId(modelId: string): string {
+  const normalized = dottedVersionAlias(modelId) ?? modelId;
+  const m = getModel(normalized);
+  if (m) return m.modelId;
+  // A known base model governs every spelling, even if an old explicit alias
+  // override row exists. An otherwise unknown custom model keeps its exact ID.
+  const aliases = new Set([datedSnapshotAlias(normalized), datedSnapshotAlias(modelId), ...modelIdAliases(normalized), ...modelIdAliases(modelId)]);
+  for (const alias of aliases) {
+    if (!alias || alias === modelId) continue;
     const am = getModel(alias);
-    if (am) return { ...fromCatalog(am, undefined), modelId, ...upstream };
-    const arow = one<PriceRow>("SELECT * FROM model_prices WHERE model_id = ?", alias);
-    if (arow) return { ...fromRow(arow), modelId, ...upstream };
+    if (am) return am.modelId;
+    if (one("SELECT 1 FROM model_prices WHERE model_id = ?", alias)) return alias;
   }
-  return undefined;
+  if (one("SELECT 1 FROM model_prices WHERE model_id = ?", normalized)) return normalized;
+  if (normalized !== modelId && one("SELECT 1 FROM model_prices WHERE model_id = ?", modelId)) return modelId;
+  return normalized;
+}
+
+export function getModelEntry(modelId: string): ModelEntry | undefined {
+  const id = canonicalModelId(modelId);
+  const row = one<PriceRow>("SELECT * FROM model_prices WHERE model_id = ?", id);
+  const m = getModel(id);
+  const entry = m ? fromCatalog(m, row) : row ? fromRow(row) : undefined;
+  if (!entry) return undefined;
+  // Snapshot IDs stay intact upstream; only dotted versions are corrected.
+  const dotted = dottedVersionAlias(modelId);
+  return { ...entry, modelId, ...(dotted && id !== modelId ? { upstreamModelId: dotted } : {}) };
+}
+
+export const MAX_USAGE_TOKENS = 1_000_000_000;
+/** Do not coerce numeric strings or accept fractional, negative, NaN/Infinity usage. */
+export function validateTokenUsage(usage: TokenUsage): void {
+  if (!usage || typeof usage !== "object") throw new TypeError("usage must be an object");
+  for (const field of ["input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens", "cache_write_5m_tokens", "cache_write_1h_tokens"] as const) {
+    const n = usage[field];
+    if (n === undefined && field !== "input_tokens" && field !== "output_tokens") continue;
+    if (typeof n !== "number" || !Number.isSafeInteger(n) || n < 0 || n > MAX_USAGE_TOKENS) {
+      throw new RangeError(`invalid usage count: ${field}`);
+    }
+  }
+  const prompt = usage.input_tokens + (usage.cache_read_tokens ?? 0) + (usage.cache_write_tokens ?? 0)
+    + (usage.cache_write_5m_tokens ?? 0) + (usage.cache_write_1h_tokens ?? 0);
+  if (prompt > MAX_USAGE_TOKENS) throw new RangeError("invalid usage count: total prompt tokens");
 }
 
 /** Standard (pre-multiplier) USD cost of a request. */
 export function computeCost(modelId: string, usage: TokenUsage): number {
-  const row = one<PriceRow>("SELECT * FROM model_prices WHERE model_id = ?", modelId);
-  if (!row) {
-    for (const alias of modelIdAliases(modelId)) {
-      const arow = one<PriceRow>("SELECT * FROM model_prices WHERE model_id = ?", alias);
-      if (arow) return computeCostFromRow({ ...arow, model_id: modelId }, usage);
-    }
-    return estimateCost(dottedVersionAlias(modelId) ?? modelId, usage);
-  }
-  return computeCostFromRow(row, usage);
+  validateTokenUsage(usage);
+  const id = canonicalModelId(modelId);
+  const row = one<PriceRow>("SELECT * FROM model_prices WHERE model_id = ?", id);
+  const result = row ? computeCostFromRow(row, usage) : estimateCost(id, usage);
+  if (!Number.isFinite(result) || result < 0) throw new RangeError("invalid computed request cost");
+  return result;
 }
 
 function computeCostFromRow(row: PriceRow, usage: TokenUsage): number {

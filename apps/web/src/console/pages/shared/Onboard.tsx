@@ -6,6 +6,7 @@ import {
   api,
   nodeProxies,
   onboardJob,
+  onboardCancel,
   onboardStart,
   type Group,
   type NodeRow,
@@ -55,6 +56,7 @@ export function OnboardPage({ scope }: { scope: OnboardScope }) {
     () => (isAdmin ? api.get<Group[]>("/api/admin/groups") : Promise.resolve([] as Group[])),
     [isAdmin],
   );
+  const recentJobs = useAsync(() => api.get<OnboardJob[]>(`/api/${scope}/accounts/onboard`), [scope]);
 
   const [method, setMethod] = useState<Method>("session_key");
   const [sessionKey, setSessionKey] = useState("");
@@ -142,7 +144,19 @@ export function OnboardPage({ scope }: { scope: OnboardScope }) {
     if (note.trim()) body.note = note.trim();
     if (isAdmin && groupId) body.groupId = groupId;
     if (canSeeTeam && teamName.trim()) body.teamName = teamName.trim();
+    if (canSeeTeam && orgUuid.trim()) body.orgUuid = orgUuid.trim();
     return body;
+  }
+
+  async function cancel() {
+    if (!job) return;
+    setBusy(true);
+    try {
+      const cancelled = await onboardCancel(scope, job.jobId);
+      if (cancelled.status === "done") setJob(cancelled);
+      else reset();
+    } catch (e) { setErr(errMessage(e)); }
+    finally { setBusy(false); }
   }
 
   async function submit() {
@@ -297,7 +311,7 @@ export function OnboardPage({ scope }: { scope: OnboardScope }) {
             </Field>
             {err && <p className="text-[13px] text-error">{err}</p>}
             <div className="flex justify-end gap-2">
-              <Button onClick={reset} disabled={busy}>
+              <Button onClick={() => void cancel()} disabled={busy}>
                 {t("common.cancel")}
               </Button>
               <Button variant="primary" loading={busy} disabled={!callbackUrl.trim()} onClick={() => void submitCallback()}>
@@ -309,6 +323,13 @@ export function OnboardPage({ scope }: { scope: OnboardScope }) {
 
         {/* form (hidden once a job is in flight) */}
         {!job && (
+          <>
+          {(recentJobs.data ?? []).some((j) => j.status === "pending_callback" || j.status === "working") && <Card title="进行中的授权" bodyClassName="space-y-2 p-5">
+            {(recentJobs.data ?? []).filter((j) => j.status === "pending_callback" || j.status === "working").map((j) => <div key={j.jobId} className="flex items-center justify-between gap-3">
+              <span className="truncate text-sm">{j.accountName ?? j.jobId.slice(0, 12)} · {j.status === "working" ? "处理中" : "等待授权"}</span>
+              <Button size="sm" onClick={() => { setJob(j); setCallbackUrl(""); if (j.nodeId) setNodeId(j.nodeId); }}>继续</Button>
+            </div>)}
+          </Card>}
           <Async state={nodes} rows={4}>
             {() => (
               <>
@@ -332,6 +353,10 @@ export function OnboardPage({ scope }: { scope: OnboardScope }) {
                           placeholder="sk-ant-sid01-…"
                         />
                       </Field>
+                    </>
+                  ) : (
+                    <p className="text-[13px] leading-relaxed text-on-surface-variant">{t("onboard.authUrlIntro")}</p>
+                  )}
                       {canSeeTeam && <Field label={`${t("team.name")} (${t("common.optional")})`} hint={t("team.verifiedHint")}>
                         <Input value={teamName} maxLength={120} onChange={(e) => setTeamName(e.target.value)} />
                       </Field>}
@@ -344,10 +369,6 @@ export function OnboardPage({ scope }: { scope: OnboardScope }) {
                           onChange={(e) => setOrgUuid(e.target.value)}
                         />
                       </Field>}
-                    </>
-                  ) : (
-                    <p className="text-[13px] leading-relaxed text-on-surface-variant">{t("onboard.authUrlIntro")}</p>
-                  )}
                 </Card>
 
                 <Card title={t("onboard.params")} bodyClassName="space-y-4 p-5">
@@ -417,6 +438,7 @@ export function OnboardPage({ scope }: { scope: OnboardScope }) {
               </>
             )}
           </Async>
+          </>
         )}
       </div>
     </div>

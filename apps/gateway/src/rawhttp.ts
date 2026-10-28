@@ -17,6 +17,7 @@ export function postRaw(
   headers: Record<string, string>,
   body: string,
   headerTimeoutMs: number,
+  signal?: AbortSignal,
 ): Promise<Response> {
   return new Promise((resolve, reject) => {
     const isHttps = url.protocol === "https:";
@@ -25,6 +26,7 @@ export function postRaw(
       url,
       {
         method: "POST",
+        signal,
         agent: isHttps ? agentHttps : agentHttp,
         headers: { ...headers, "content-length": Buffer.byteLength(body) },
       },

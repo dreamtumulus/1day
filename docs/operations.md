@@ -6,11 +6,9 @@
 > 当前在线实例、节点 bundle、迁移和只读验证见 [`team-isolation-2026-10-27.md`](deployment/team-isolation-2026-10-27.md)。
 > 下文带旧日期的机器数量、账号数量和路径为当时快照，不能当作当前节点清单。
 
-2026-10-27 已验证的在线入口为 `1dayapi-gateway@8402`，旧 `@8400` 已停用；console 在 :8401。
-三个标准 worker（worker-01、worker-02、mirasim）的 bundle 指纹均为 `758322a9753a`，服务 active、bridge ready。
-本次只安装了每 team 独立系统服务模板，因新 team 表为空没有启动实例；当前标准节点执行协议与状态隔离。
-具体备份、原配置保留、节点目录和只读权限结果见本次发布记录。
-console 的 `GATEWAY_URL` 本次已设置为 `http://127.0.0.1:8402`，与在线网关一致；它用于管理员账号实时 in-flight 查询。
+2026-10-28 的完整审计修复说明见 [逐项修复记录](audit-remediation-2026-10-28.md)。当前发布的实际提交、节点 bundle、备份与验证结果另见 `deployment/audit-fixes-2026-10-28.md`。
+控制台连接数从 SQLite 的共享有效账号租约汇总，覆盖蓝绿排空实例，不再依赖 `GATEWAY_URL`。
+生产订阅执行节点由 `TRUSTED_EXECUTION_NODE_IDS` 明确批准；worker 开启 `CC_WORKER_TEAM_UIDS=1`，按组织分配独立 Linux UID，控制面要求 `team_uid_isolation_v1` 能力。
 
 ## 1. 生产环境
 
@@ -18,7 +16,7 @@ console 的 `GATEWAY_URL` 本次已设置为 `http://127.0.0.1:8402`，与在线
 |---|---|
 | 主机 | Contabo 美西 VPS，Ubuntu 24.04，8 vCPU / 23 GiB / 435 GB |
 | 运行时 | Node.js 22、pnpm/corepack、nginx；实测版本记录在每次发布记录中 |
-| 代码目录 | `/opt/1dayapi`（本地仓库 rsync 而来，不是 git 检出） |
+| 代码目录 | `/opt/1dayapi`（从本地已提交版本发布，Git 提交与 bundle 同步留存） |
 | 数据 | `/opt/1dayapi/data/`（`1dayapi.db`、`provider-cred.key`、`internal.key` 等） |
 | 域名 | `1dayapi.com`、`www.1dayapi.com`（Web + 控制台 API）、`api.1dayapi.com`（网关），均经 Cloudflare 代理 |
 | 证书 | Let's Encrypt（certbot nginx 插件，systemd timer 自动续期）；CF SSL 模式应为 Full (Strict) |
@@ -31,7 +29,7 @@ console 的 `GATEWAY_URL` 本次已设置为 `http://127.0.0.1:8402`，与在线
 | unit | 命令 | 监听 | 关键环境变量 |
 |---|---|---|---|
 | `1dayapi-gateway@8400` / `@8402` | `node apps/gateway/dist/index.js` | 127.0.0.1:8400 / :8402 | `HOST=127.0.0.1`；nginx 仅指向一个在线入口，`ops/bin/gateway-switch --status` 查看 |
-| `1dayapi-console` | `node apps/console/dist/index.js` | 127.0.0.1:8401 | `HOST=127.0.0.1`、`TRUST_PROXY=1`、`COOKIE_SECURE=1`、`PLATFORM_WS_URL`；`GATEWAY_URL` 必须指向当前在线网关，本次为 `http://127.0.0.1:8402`；代码缺省 8400 不会自动跟随切换 |
+| `1dayapi-console` | `node apps/console/dist/index.js` | 127.0.0.1:8401 | `HOST=127.0.0.1`、`TRUST_PROXY=127.0.0.1,::1`、`COOKIE_SECURE=1`、`PLATFORM_WS_URL`；`TRUSTED_EXECUTION_NODE_IDS`、`REQUIRE_TEAM_UID_ISOLATION=1`；连接数从共享 SQLite 租约汇总 |
 | `1dayapi-mock-upstream` | `node apps/gateway/scripts/mock-upstream.mjs` | 127.0.0.1:19001 | — |
 | `1dayapi-node` | `/root/.bun/bin/bun /root/.1dayapi-node/node-bundle.js` | 本地控制台 127.0.0.1:16889 | 平台节点 server-node-1。**2026-10-16 起 `disable --now`**：主服务器暂不跑节点，节点行保留（控制台显示离线），要恢复 `systemctl enable --now 1dayapi-node` |
 | `1dayapi-backup.timer` | `/usr/local/bin/1dayapi-backup.sh` | — | 每 6 小时备份到 worker-01（见 §5） |
@@ -54,19 +52,15 @@ console 的 `GATEWAY_URL` 本次已设置为 `http://127.0.0.1:8402`，与在线
   经 Cloudflare 的非流式响应仍受其约 100s 空闲限制，长请求请用 `stream:true`。
 - 经 Cloudflare 的 WebSocket 必须走 HTTP/1.1。
 
-部署时需按实际配置核对的代理项（下列为旧记录中的问题，是否仍存在以现场为准）：
+nginx 使用 `ops/nginx/cloudflare-realip.conf` 中 Cloudflare 官方 IPv4/IPv6 网段，仅从可信 CDN 连接接受 `CF-Connecting-IP`；各反代 location 用 `$remote_addr` **覆盖** X-Forwarded-For，同时设置 X-Forwarded-Proto。console 仅信任回环代理地址，生产启用 `COOKIE_SECURE=1`。网段来源为 [Cloudflare IPv4](https://www.cloudflare.com/ips-v4)、[IPv6](https://www.cloudflare.com/ips-v6)，机制见 [nginx realip 文档](https://nginx.org/en/docs/http/ngx_http_realip_module.html)。网段变动时需重新核验。
 
-- nginx 没有转发 `X-Forwarded-Proto`，而 console 生成节点 `platformWsUrl` 时依赖它判断 `wss`。
-- console/gateway 未配置 Fastify `trustProxy`，经 nginx 的请求 `request.ip` 都是 127.0.0.1，
-  影响按 IP 的限流以及 console 内部端点的来源判断。
-- 经 Cloudflare 后真实客户端 IP 在 `CF-Connecting-IP`，目前没有使用。
-- `/internal/` 整段被反代到公网，其中只应对外的是节点用的 `/internal/provider/*`。
+`/internal/tunnel/*` 的服务端鉴权始终同时检查实际回环 socket 和内部密钥，不依赖可转发的请求 IP。
 
 ## 4. 发布流程（当前为手工）
 
 组织隔离发布会同时改变网关、控制面、前端和节点协议，需在维护窗口协调切换。按“代码与构建备份 → 同步与构建 → 新增结构迁移 → 控制面 → 节点 bundle → 网关入口 → 验证”执行。只更新主服务器、未更新节点时，旧节点不能接收新的隔离任务。
 
-旧账号、代理、会话、用户、Key、余额和账本不回填、不修改、不删除。迁移 21 仅新增结构，发布前后按旧字段投影核对；不要使用自动建号、重新上号、重新导入代理或真实计费调用代替部署验证。
+旧账号、代理、会话、用户、Key、余额和账本不回填、不修改、不删除。迁移 21/22 仅新增结构，发布前后按旧字段投影核对；不要使用自动建号、重新上号、重新导入代理或真实计费调用代替部署验证。
 
 ```bash
 # 本地
@@ -83,7 +77,7 @@ cd /opt/1dayapi && pnpm install --frozen-lockfile && pnpm build
 systemctl restart 1dayapi-console
 # 替换实际 worker 服务的 bundle，保留每个节点的配置、密钥、账号和设备目录，再重启并验证能力。
 ops/bin/gateway-switch            # 控制面与节点就绪后切换网关（见下）
-# 核对 nginx 实际 live port，并将 console 的 GATEWAY_URL 同步到该端口后按维护计划重启 console。
+# 核对 nginx 实际 live port；console 的连接数已读取跨实例共享租约。
 ```
 
 **网关发布是零中断的（2026-10-19 起）。** 网关有两个 systemd 实例 `1dayapi-gateway@8400` 与 `1dayapi-gateway@8402`
@@ -94,9 +88,7 @@ ops/bin/gateway-switch            # 控制面与节点就绪后切换网关（�
 不要再 `systemctl restart 1dayapi-gateway`：那会先关监听端口再排空，期间 nginx 对新请求返回 502（2026-10-19 实测
 每次重启丢 4 个请求，高峰会更多）。
 
-`gateway-switch` 只更新 nginx，不会自动改 console 的 `GATEWAY_URL`。切换前确定目标端口，并同步 console unit 的环境配置；否则新入口虽正常，管理员实时 in-flight 会继续查询已停用的旧端口。
-本次使用 `/etc/systemd/system/1dayapi-console.service.d/50-team-isolation-release.conf` 设置 `GATEWAY_URL=http://127.0.0.1:8402`。
-应用配置后用既有管理员会话只读检查账号响应的 `inFlight`，不能仅凭网关 `/health` 判断该链路正常。
+`gateway-switch` 更新 nginx 入口；2026-10-28 起 console 与所有网关共用账号租约、RPM 与用户在途预算。90 秒租约每 30 秒续期，失去租约立即取消上游，不能在到期后复活旧持有者。发布记录中的旧 `GATEWAY_URL` drop-in 可以保留，连接数已不再读取它。
 
 切换不丢亲和：粘性会话 / 设备池自 2026-10-21 起落在 `affinity_bindings` 表（迁移 16），新实例启动日志有
 `affinity: N session / M device bindings, K worker turn memories carried over`；在此之前每次切换都会把全部活跃对话和设备重新发牌、
@@ -221,7 +213,7 @@ usage 行、账户与节点状态），每次一行 JSON 追加到 `/root/monito
 
 - 发布前在服务器备份 `data/`（**必须包含 `provider-cred.key`**，否则迁移后的账户凭证无法解密）；首次启动 v3 会自动执行迁移 1，旧表保留为 `legacy_v2_*`。
 - 先启动 console 再启动 gateway（两者都能执行迁移，有并发保护）；两个 unit 的 `DATA_DIR` / `DB_PATH` 必须一致。
-- console：`TRUST_PROXY=1`、`COOKIE_SECURE=1`、`CONSOLE_CORS_ORIGINS=https://1dayapi.com`、`PLATFORM_WS_URL=wss://…/internal/provider/connect`。
+- console：`TRUST_PROXY=127.0.0.1,::1`、`COOKIE_SECURE=1`、`CONSOLE_CORS_ORIGINS=https://1dayapi.com`、`PLATFORM_WS_URL=wss://…/internal/provider/connect`。
 - gateway：删除 `UPSTREAM_*`、`PROVIDER_TUNNEL_ENABLED`；上游改为在控制台"上游账户"里配置（迁移会把原 env-fallback 账户带过来，Base URL 为平台默认，需按实际修改或停用）。
 - nginx：对公网只放行 `/internal/provider/*`（节点用），`/internal/tunnel/*` 不应对外（即使对外也有内部令牌保护）。
 - v2 的运维操作对应关系：签发密钥 → 控制台"用户"新建；吊销 → 禁用用户 / 重置登录密钥；调余额 → 用户详情"调账"；切换上游 → "上游账户"；

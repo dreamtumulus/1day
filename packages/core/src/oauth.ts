@@ -4,6 +4,7 @@
 // the caller passes a transport — the gateway pins CCR node accounts to their
 // bound proxy through the tunnel (docs/onboarding.md §6.2).
 
+import { setTimeout as wait } from "node:timers/promises";
 import { readCredential, writeCredential, type AccountRow, type Credential } from "./accounts.js";
 import { one, run } from "./db.js";
 import { CC_AUX_ACCEPT } from "./fingerprint.js";
@@ -13,7 +14,7 @@ import { isoIn } from "./time.js";
 export const OAUTH_REFRESH_MARGIN_MS = 5 * 60_000;
 
 /** fetch-shaped override for the refresh HTTP call; may return null on infrastructure failure. */
-export type OAuthTransport = (url: string, init: { headers: Record<string, string>; body: string }) => Promise<Response | null>;
+export type OAuthTransport = (url: string, init: { headers: Record<string, string>; body: string; signal?: AbortSignal }) => Promise<Response | null>;
 
 export function credentialNeedsRefresh(cred: Credential, marginMs = OAUTH_REFRESH_MARGIN_MS): boolean {
   if (!cred.refreshToken || !cred.expiresAt) return false;
@@ -60,7 +61,17 @@ function releaseRefreshLock(accountId: string): void {
   }
 }
 
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+async function cancellable<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return promise;
+  signal.throwIfAborted();
+  let abort: (() => void) | undefined;
+  try {
+    return await Promise.race([promise, new Promise<never>((_, reject) => {
+      abort = () => reject(signal.reason ?? new DOMException("Aborted", "AbortError"));
+      signal.addEventListener("abort", abort, { once: true });
+    })]);
+  } finally { if (abort) signal.removeEventListener("abort", abort); }
+}
 
 /**
  * Refresh and persist; null on failure (caller keeps the old token).
@@ -78,7 +89,9 @@ export async function refreshOAuthCredential(
   account: Pick<AccountRow, "id" | "platform">,
   cred: Credential,
   transport?: OAuthTransport,
+  signal?: AbortSignal,
 ): Promise<Credential | null> {
+  signal?.throwIfAborted();
   if (!cred.refreshToken) return null;
   const rotated = (): Credential | null => {
     const stored = storedCredential(account.id);
@@ -94,7 +107,7 @@ export async function refreshOAuthCredential(
     // Another process is refreshing this account right now: wait for its result.
     const deadline = Date.now() + REFRESH_WAIT_MS;
     while (Date.now() < deadline) {
-      await sleep(250);
+      await wait(250, undefined, { signal });
       const r = rotated();
       if (r) {
         console.log(`[oauth] account ${account.id}: picked up the refresh done by another process`);
@@ -108,7 +121,8 @@ export async function refreshOAuthCredential(
     }
   }
   try {
-    return await refreshOAuthCredentialLocked(account, cred, transport);
+    signal?.throwIfAborted();
+    return await refreshOAuthCredentialLocked(account, cred, transport, signal);
   } finally {
     releaseRefreshLock(account.id);
   }
@@ -118,7 +132,9 @@ async function refreshOAuthCredentialLocked(
   account: Pick<AccountRow, "id" | "platform">,
   cred: Credential,
   transport?: OAuthTransport,
+  signal?: AbortSignal,
 ): Promise<Credential | null> {
+  signal?.throwIfAborted();
   if (!cred.refreshToken) return null;
   const platform = account.platform === "openai" ? "openai" : "anthropic";
   const ep = OAUTH_ENDPOINTS[platform];
@@ -137,9 +153,12 @@ async function refreshOAuthCredentialLocked(
             client_id: ep.clientId,
             scope: "openid profile email",
           }).toString();
+    signal?.throwIfAborted();
+    const timeout = AbortSignal.timeout(20_000);
+    const requestSignal = signal ? AbortSignal.any([signal, timeout]) : timeout;
     const res = transport
-      ? await transport(ep.tokenUrl, { headers, body })
-      : await fetch(ep.tokenUrl, { method: "POST", headers, body, signal: AbortSignal.timeout(20_000) });
+      ? await transport(ep.tokenUrl, { headers, body, signal: requestSignal })
+      : await fetch(ep.tokenUrl, { method: "POST", headers, body, signal: requestSignal });
     if (!res) {
       console.warn(`[oauth] refresh for account ${account.id} failed: transport unavailable`);
       return null;
@@ -156,27 +175,43 @@ async function refreshOAuthCredentialLocked(
       refreshToken: typeof json.refresh_token === "string" ? json.refresh_token : cred.refreshToken,
       expiresAt: isoIn(Number(json.expires_in ?? 3600) * 1000),
     };
+    // Once the provider has rotated the grant, persist the returned credential
+    // even if the client disconnected while the response was being decoded.
     writeCredential(account.id, next);
+    signal?.throwIfAborted();
     console.log(`[oauth] refreshed access token for account ${account.id}`);
     return next;
   } catch (err) {
+    signal?.throwIfAborted();
     console.warn(`[oauth] refresh for account ${account.id} errored: ${(err as Error).message}`);
     return null;
   }
 }
 
-const refreshing = new Map<string, Promise<Credential | null>>();
+const refreshing = new Map<string, { promise: Promise<Credential | null>; signal?: AbortSignal }>();
 
-/** Credential ready for use; refreshes OAuth tokens near expiry (or when forced). Concurrent refreshes of one account coalesce. */
-export async function freshCredential(account: AccountRow, force = false, transport?: OAuthTransport): Promise<Credential> {
+/** Credential ready for use; refreshes coalesce, while each caller can cancel its wait. */
+export async function freshCredential(account: AccountRow, force = false, transport?: OAuthTransport, signal?: AbortSignal): Promise<Credential> {
+  signal?.throwIfAborted();
   const cred = readCredential(account);
   if (account.type !== "oauth" || (!force && !credentialNeedsRefresh(cred))) return cred;
-  let p = refreshing.get(account.id);
-  if (!p) {
-    p = refreshOAuthCredential(account, cred, transport).finally(() => refreshing.delete(account.id));
-    refreshing.set(account.id, p);
+  let entry = refreshing.get(account.id);
+  if (!entry) {
+    const promise = refreshOAuthCredential(account, cred, transport, signal).finally(() => refreshing.delete(account.id));
+    entry = { promise, signal };
+    refreshing.set(account.id, entry);
   }
-  return (await p) ?? cred;
+  try { return (await cancellable(entry.promise, signal)) ?? cred; }
+  catch (err) {
+    signal?.throwIfAborted();
+    // The first coalesced caller can disappear while another still needs the
+    // account. That surviving caller retries under the normal cross-process lock.
+    if (entry.signal?.aborted) {
+      try { await entry.promise; } catch { /* original owner's cancellation */ }
+      return freshCredential(account, force, transport, signal);
+    }
+    throw err;
+  }
 }
 
 export function canRefresh(account: AccountRow): boolean {

@@ -4,7 +4,7 @@ dist/
 *.tsbuildinfo
 
 # runtime data (SQLite db, key files, backups) — never in git
-data/
+/data/
 
 # credentials and deployment notes with plaintext access details (docs/README.md 脱敏规范)
 secrets/

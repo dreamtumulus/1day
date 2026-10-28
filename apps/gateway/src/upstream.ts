@@ -209,13 +209,14 @@ export function buildUpstreamRequest(
 // refreshes through the tunnel pinned to its bound proxy (docs/onboarding.md
 // §1/§6.2: all platform-side requests of a bound account leave on that proxy);
 // a failed/unavailable tunnel keeps the old token (core returns null).
+import { abortable } from "./lifecycle.js";
 import { freshCredential as coreFreshCredential, readCredential } from "@1dayapi/core";
 import { pinnedTunnelTransport, type IsolationContext } from "./tunnel.js";
 
-export function freshCredential(account: AccountRow, force = false, isolation?: IsolationContext): Promise<Credential> {
+export function freshCredential(account: AccountRow, force = false, isolation?: IsolationContext, signal?: AbortSignal): Promise<Credential> {
   if (isolation && readCredential(account).orgUuid?.toLowerCase() !== isolation.teamId) return Promise.reject(new Error("account organization does not match conversation"));
-  const transport = account.route === "node" ? pinnedTunnelTransport(account.id, account.bound_proxy_id, isolation) : undefined;
-  return coreFreshCredential(account, force, transport);
+  const transport = account.route === "node" ? pinnedTunnelTransport(account.id, account.bound_proxy_id, isolation, signal) : (signal ? (url: string, init: { headers: Record<string, string>; body: string }) => fetch(url, { ...init, method: "POST", signal: AbortSignal.any([signal, AbortSignal.timeout(30_000)]) }) : undefined);
+  return abortable(coreFreshCredential(account, force, transport, signal), signal);
 }
 export { canRefresh } from "@1dayapi/core";
 

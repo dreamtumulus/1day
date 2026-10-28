@@ -10,6 +10,7 @@ import { test } from "node:test";
 
 const dir = mkdtempSync(join(tmpdir(), "1dayapi-link-grace-"));
 process.env.DATA_DIR = dir;
+process.env.ALLOW_UNTRUSTED_EXECUTION="1";
 process.env.CCR_WINDOW_POLL = "0";
 process.env.NODE_LINK_GRACE_MS = "400";
 process.env.NODE_WAIT_MS = "0";

@@ -5,7 +5,7 @@
 > 参考 sub2api 的账户添加形态，按 1DayAPI 架构精简。
 >
 > 2026-10-27 修订：订阅账号按实际 Claude 组织 UUID 接入；账号固定代理，一个实测出口 IP 默认两号、常规容量不足时最多三号，均须同组织。
-> 旧账号、代理和会话不回填、不修改、不删除。详细隔离与跨组织清空规则见 [`team-isolation.md`](team-isolation.md)，发布事实见 [`发布记录`](deployment/team-isolation-2026-10-27.md)。
+> 旧账号、代理和会话不回填、不修改、不删除；旧未管理账号和任务也不参加自动维护。详细隔离与跨组织清空规则见 [`team-isolation.md`](team-isolation.md)，发布事实见 [`发布记录`](deployment/team-isolation-2026-10-27.md)。
 
 ## 1. 原则
 
@@ -199,7 +199,7 @@ GET  /api/admin/nodes/:id/proxies?free=1
 
 ### 6.3 并发与 RPM 限额
 
-网关在内存中按账号维护：在途请求计数（并发上限）与 60s 滑动窗口计数（RPM 上限）。
+网关在共享 SQLite 中按账号维护：90 秒可续约在途租约（并发上限）与 60 秒滑动窗口记录（RPM 上限）；蓝绿实例共用计数，管理页汇总全部有效租约。
 候选循环中超限账号跳过（不算失败、不触发冷却）。两者默认 0=不限。
 限额是平台侧自我保护，与订阅窗口配额（`ccr-supply.md` §7）正交。
 
@@ -356,3 +356,23 @@ wss://bridge.claudeusercontent.com/chrome/{accountUuid}
 
 谁能做：admin 与 ops（账号管理员，`auth.md` §2）。控制台「账号池」行菜单对非 active 的订阅账号显示「重新授权」（error 行高亮），弹窗内两种方式与上号页一致。
 
+
+## 12. 审计修订：容量、期限、取消与恢复（2026-10-28）
+
+新 Claude 订阅只能经平台批准的可信执行节点接入，服务配置以 `TRUSTED_EXECUTION_NODE_IDS` 指定；号商自建节点的自报组织和出口不作为严格隔离池的独立验证依据。节点未获批准返回 403 `trusted_node_required`。开发临时栈可显式设 `ALLOW_UNTRUSTED_EXECUTION=1`，生产保持关闭。
+
+节点 `capacity` 指绑定在该节点的账号行数加有效新增预约，包含 disabled/error 账号；这是账号承载上限，与 worker 并发和 IP 三号上限无关。普通新增、SK/auth_url、管理员/号商手动导入、节点凭据上传均在最终写事务中共用检查。固定账号重授权不重复占位，但同一账号已有授权任务时返回 `reauth_in_progress`。普通新增只允许 admin；ops 可对已有失效账号重授权和查询状态，不能通过新增入口创建账号。
+
+新作业有 `expiresAt`：auth_url 回调等待 30 分钟，实际授权交换最多 3 分钟。回填回调后转换为交换期限。清理由独立 15 秒定时器执行，关闭 usage 巡检不影响它；分配和提交也检查期限。旧 v0 作业不清理、不回填。无论取消或过期，已出站但组织不明或不匹配的资源按既有规则隔离，不能释放为其他组织的 virgin IP。
+
+| 作用域 | 查询最近作业 | 终止任务 |
+|---|---|---|
+| 管理员 | `GET /api/admin/accounts/onboard` | `POST /api/admin/accounts/onboard/:jobId/cancel` |
+| 号商 | `GET /api/provider/accounts/onboard` | `POST /api/provider/accounts/onboard/:jobId/cancel` |
+| 上号员 | `GET /api/onboard/jobs` | `POST /api/onboard/jobs/:jobId/cancel` |
+
+管理员/号商列表最多返回最近 30 项，包含 `jobId/method/nodeId/expiresAt/status/authorizeUrl`；号商只能读写自己的作业，上号员按令牌归属隔离。ops 的最近列表只含重授权任务，取消也只允许重授权任务。重复取消是幂等操作；已 done 的作业不会被改失败。取消会中止实际出口请求，清除作业敏感载荷、释放预约并追加历史，迟到结果不得再新增账号。
+
+控制台可从最近任务恢复未完成 auth_url，或取消它后重新开始。管理员的 SK 和 auth_url 表单都支持输入已知组织 UUID，后台仍验证实际组织；已知组织可使用同组织第二/第三槽。上号员批量提交和活动任务期间锁定节点选择，界面目标与实际提交保持一致。
+
+完整修复对照和测试边界见 [审计修复记录](audit-remediation-2026-10-28.md)。

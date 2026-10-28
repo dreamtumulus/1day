@@ -1,5 +1,6 @@
 import type { FastifyInstance } from "fastify";
-import { all, getSettings, one, publicModels, publicPricing } from "@1dayapi/core";
+import { all, boundProxyDown, getSettings, getSetting, one, publicModels, publicPricing, parseThresholdPercent, windowAllows, type AccountRow } from "@1dayapi/core";
+import { isTrustedExecutionNode } from "../node/trust.js";
 import { body, sendError, str } from "../http.js";
 import {
   SESSION_COOKIE,
@@ -52,15 +53,26 @@ export function registerPublicRoutes(app: FastifyInstance): void {
   app.get("/api/models", async () => ({ data: publicModels() }));
   app.get("/api/models/pricing", async () => ({ data: publicPricing() }));
 
+  const poolHits=new Map<string,{count:number;resetAt:number}>();
+  const poolLimit=async(req:Parameters<typeof body>[0],reply:Parameters<typeof sendError>[0])=>{
+    const now=Date.now();
+    if(poolHits.size>1000)for(const [ip,b] of poolHits)if(b.resetAt<=now)poolHits.delete(ip);
+    if(poolHits.size>=5000 && !poolHits.has(req.ip))return sendError(reply,429,"too_many_requests","Pool statistics are busy; retry later");
+    let bucket=poolHits.get(req.ip);
+    if(!bucket || bucket.resetAt<=now){bucket={count:0,resetAt:now+60_000};poolHits.set(req.ip,bucket);}
+    if(++bucket.count>60)return sendError(reply,429,"too_many_requests","Too many pool statistics requests; retry later");
+  };
   // 首页实时账号池汇总（脱敏）；明细分页在 /api/pool/accounts。
-  app.get("/api/pool", async () => ({ data: poolSnapshot() }));
+  app.get("/api/pool", {preHandler:poolLimit}, async () => ({ data: poolSnapshot() }));
 
   // 账号池明细（脱敏、分页）：?side=platform|provider&page=1&pageSize=50（上限 200）。
-  app.get("/api/pool/accounts", async (req) => {
+  app.get("/api/pool/accounts", {preHandler:poolLimit}, async (req) => {
     const q = req.query as Record<string, string | undefined>;
     const side = q.side === "platform" || q.side === "provider" ? q.side : undefined;
-    const pageN = Math.max(1, Number(q.page) || 1);
-    const pageSize = Math.min(200, Math.max(1, Number(q.pageSize) || 50));
+    const pageInput=Number(q.page);
+    const pageN = Number.isFinite(pageInput)?Math.min(1_000_000,Math.max(1,Math.floor(pageInput)||1)):1;
+    const sizeInput=Number(q.pageSize);
+    const pageSize = Number.isFinite(sizeInput)?Math.min(200,Math.max(1,Math.floor(sizeInput)||50)):50;
     return { data: poolAccounts(side, pageN, pageSize) };
   });
 
@@ -74,6 +86,17 @@ export function registerPublicRoutes(app: FastifyInstance): void {
 
 interface PoolRow {
   id: string;
+  team_id:string|null;
+  bound_proxy_id:string|null;
+  route:"direct"|"node";
+  overload_until:string|null;
+  temp_unschedulable_until:string|null;
+  window_used:number|null;
+  window_reset_at:string|null;
+  window_5h_reset_at:string|null;
+  window_7d_reset_at:string|null;
+  concurrency:number;
+  executor:AccountRow["executor"];
   name: string;
   account_email: string | null;
   owner_id: string | null;
@@ -102,11 +125,18 @@ function maskName(name: string): string {
 
 const POOL_WHERE = "type = 'oauth' AND platform = 'anthropic' AND review_status = 'approved' AND status <> 'disabled'";
 
-function poolState(r: PoolRow, now: string, nodeOnline: Map<string, boolean>): "online" | "cooling" | "error" | "offline" {
-  const cooling =
-    (r.rate_limited_until && r.rate_limited_until > now) || (r.window_exhausted_until && r.window_exhausted_until > now);
-  const nodeOff = r.node_id ? nodeOnline.get(r.node_id) === false : false;
-  return r.status !== "active" ? "error" : nodeOff ? "offline" : cooling ? "cooling" : "online";
+function poolState(r: PoolRow, now: string, nodeOnline: Map<string, boolean>): "online" | "cooling" | "error" | "offline" | "unmanaged" | "unavailable" | "busy" {
+  if(!r.team_id)return "unmanaged";
+  if(r.status!=="active")return "error";
+  if(!r.node_id || !nodeOnline.get(r.node_id) || !isTrustedExecutionNode(r.node_id))return "offline";
+  if(r.route!=="node" || !r.bound_proxy_id || boundProxyDown(r) ||
+    !one("SELECT 1 FROM upstream_teams WHERE id=? AND status='active'",r.team_id) ||
+    !one("SELECT 1 FROM account_groups ag JOIN groups g ON g.id=ag.group_id WHERE ag.account_id=? AND g.status='active'",r.id))return "unavailable";
+  if((r.rate_limited_until && r.rate_limited_until>now) || (r.window_exhausted_until && r.window_exhausted_until>now) ||
+    (r.overload_until && r.overload_until>now) || (r.temp_unschedulable_until && r.temp_unschedulable_until>now) ||
+    !windowAllows(r,now,parseThresholdPercent(getSetting("anthropic_window_threshold_percent"))))return "cooling";
+  if(r.concurrency>0 && (one<{n:number}>("SELECT COUNT(*) n FROM gateway_account_leases WHERE account_id=? AND expires_at>?",r.id,Date.now())?.n??0)>=r.concurrency)return "busy";
+  return "online";
 }
 
 function poolItem(r: PoolRow, state: ReturnType<typeof poolState>) {
@@ -123,29 +153,32 @@ function poolItem(r: PoolRow, state: ReturnType<typeof poolState>) {
 function poolBase() {
   const now = new Date().toISOString().slice(0, 19) + "Z";
   const nodeOnline = new Map(
-    all<{ node_id: string; online: number }>("SELECT node_id, online FROM nodes").map((n) => [n.node_id, n.online === 1]),
+    all<{ node_id: string; online: number;accepting_sessions:number }>("SELECT node_id, online,accepting_sessions FROM nodes").map((n) => [n.node_id, n.online === 1 && n.accepting_sessions===1]),
   );
   return { now, nodeOnline };
 }
 
 /** 汇总（首页方块）：总数 + 各状态计数 + 24h 请求。 */
+let snapshotCache:{expires:number;value:unknown}|undefined;
 function poolSnapshot() {
+  if(snapshotCache && snapshotCache.expires>Date.now())return snapshotCache.value;
   const { now, nodeOnline } = poolBase();
   const rows = all<PoolRow>(
-    `SELECT id, name, account_email, owner_id, status, node_id, window_5h_used, window_7d_used,
+    `SELECT id, team_id, bound_proxy_id, route, overload_until, temp_unschedulable_until, window_used, window_reset_at, window_5h_reset_at, window_7d_reset_at, concurrency, executor, name, account_email, owner_id, status, node_id, window_5h_used, window_7d_used,
             rate_limited_until, window_exhausted_until, last_used_at
      FROM accounts WHERE ${POOL_WHERE}`,
   );
-  const states = { online: 0, cooling: 0, error: 0, offline: 0 };
+  const states = { online: 0, cooling: 0, error: 0, offline: 0, unmanaged:0,unavailable:0,busy:0 };
   for (const r of rows) states[poolState(r, now, nodeOnline)]++;
   const req24h = one<{ n: number }>(
     "SELECT COUNT(*) AS n FROM usage_logs WHERE created_at >= strftime('%Y-%m-%dT%H:%M:%SZ','now','-24 hours')",
   );
-  return {
-    ts: now,
-    totals: { accounts: rows.length, ...states, requests24h: req24h?.n ?? 0 },
-  };
+  const value={ts:now,totals:{accounts:rows.length,...states,requests24h:req24h?.n??0}};
+  snapshotCache={expires:Date.now()+5_000,value};
+  return value;
 }
+
+const usageCache=new Map<string,{expires:number;value:{account_id:string;n:number;cost:number}}>();
 
 /** 明细（账号池页，分页）：每行含 5h/7d 窗口水位、30d 请求/费用、状态、最近使用。 */
 function poolAccounts(side: "platform" | "provider" | undefined, page: number, pageSize: number) {
@@ -153,19 +186,24 @@ function poolAccounts(side: "platform" | "provider" | undefined, page: number, p
   const sideSql = side === "platform" ? "AND owner_id IS NULL" : side === "provider" ? "AND owner_id IS NOT NULL" : "";
   const total = one<{ c: number }>(`SELECT COUNT(*) AS c FROM accounts WHERE ${POOL_WHERE} ${sideSql}`)?.c ?? 0;
   const rows = all<PoolRow>(
-    `SELECT id, name, account_email, owner_id, status, node_id, window_5h_used, window_7d_used,
+    `SELECT id, team_id, bound_proxy_id, route, overload_until, temp_unschedulable_until, window_used, window_reset_at, window_5h_reset_at, window_7d_reset_at, concurrency, executor, name, account_email, owner_id, status, node_id, window_5h_used, window_7d_used,
             rate_limited_until, window_exhausted_until, last_used_at
      FROM accounts WHERE ${POOL_WHERE} ${sideSql}
      ORDER BY created_at LIMIT ? OFFSET ?`,
     pageSize,
     (page - 1) * pageSize,
   );
-  const usage30d = new Map(
-    all<{ account_id: string; n: number; cost: number }>(
-      `SELECT account_id, COUNT(*) AS n, COALESCE(SUM(actual_cost), 0) AS cost
-       FROM usage_logs WHERE created_at >= strftime('%Y-%m-%dT%H:%M:%SZ','now','-30 days') GROUP BY account_id`,
-    ).map((u) => [u.account_id, u]),
-  );
+  // The account/time index bounds work to this page, never a 30-day all-site GROUP BY.
+  const usage30d=new Map<string,{account_id:string;n:number;cost:number}>();
+  const missing=rows.filter(r=>!usageCache.has(r.id) || usageCache.get(r.id)!.expires<=Date.now()).map(r=>r.id);
+  if(missing.length){
+    const totals=all<{account_id:string;n:number;cost:number}>(`SELECT account_id,COUNT(*) n,COALESCE(SUM(actual_cost),0) cost FROM usage_logs WHERE account_id IN (${missing.map(()=>"?").join(",")}) AND created_at>=strftime('%Y-%m-%dT%H:%M:%SZ','now','-30 days') GROUP BY account_id`,...missing);
+    const byId=new Map(totals.map(u=>[u.account_id,u]));
+    if(usageCache.size>2000)usageCache.clear();
+    for(const id of missing)usageCache.set(id,{expires:Date.now()+60_000,value:byId.get(id)??{account_id:id,n:0,cost:0}});
+  }
+  for(const row of rows)usage30d.set(row.id,usageCache.get(row.id)!.value);
+
   return {
     ts: now,
     total,

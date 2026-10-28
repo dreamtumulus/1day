@@ -9,6 +9,7 @@ import { after,test } from "node:test";
 const dir=mkdtempSync(join(tmpdir(),"1dayapi-isolation-"));
 process.env.DATA_DIR=dir;
 process.env.CCR_WINDOW_POLL="0";
+process.env.ALLOW_UNTRUSTED_EXECUTION="1";
 process.env.ONBOARD_MOCK="1";
 process.env.ONBOARD_MOCK_DELAY_MS="40";
 process.env.ONBOARD_PROFILE_FETCH="0";
@@ -209,7 +210,7 @@ test("provider and consumer cannot enumerate organizations, including raw job er
 test("expired authorization cannot revive a job or recycle a touched unverified exit",async()=>{
   const [p]=node("expired",["192.0.2.70"]);
   const r=await start("expired",A);
-  core.run("UPDATE onboarding_jobs SET egress_started_at=?,updated_at=? WHERE id=?",core.nowIso(),"2000-01-01T00:00:00Z",r.data.jobId);
+  core.run("UPDATE onboarding_jobs SET egress_started_at=?,updated_at=?,expires_at=? WHERE id=?",core.nowIso(),"2000-01-01T00:00:00Z","2000-01-01T00:00:00Z",r.data.jobId);
   assert.ok(sweepStaleJobs()>0);
   await new Promise(resolve=>setTimeout(resolve,70));
   assert.equal(core.one("SELECT status FROM onboarding_jobs WHERE id=?",r.data.jobId).status,"failed");

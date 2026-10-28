@@ -51,16 +51,17 @@ async function rejectRequestLevel(res: Response): Promise<void> {
   throw new TunnelRequestError(code, message);
 }
 
-async function openTunnelSession(accountId: string, proxyId?: string, isolation?: IsolationContext): Promise<string | null> {
+async function openTunnelSession(accountId: string, proxyId?: string, isolation?: IsolationContext, signal?: AbortSignal): Promise<string | null> {
   let res: Response;
   try {
     res = await fetch(`${config.consoleBase}/internal/tunnel/open`, {
       method: "POST",
       headers: internalHeaders,
       body: JSON.stringify({ accountId, kind: "http_egress", headersTimeoutMs: config.upstreamTimeoutMs, ...(proxyId ? { proxyId } : {}), ...(isolation ? { isolation } : {}) }),
-      signal: AbortSignal.timeout(OPEN_TIMEOUT_MS),
+      signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(OPEN_TIMEOUT_MS)]) : AbortSignal.timeout(OPEN_TIMEOUT_MS),
     });
-  } catch {
+  } catch (err) {
+    if (signal?.aborted) throw signal.reason;
     return null;
   }
   if (!res.ok) {
@@ -71,10 +72,11 @@ async function openTunnelSession(accountId: string, proxyId?: string, isolation?
   return json.sessionId ?? null;
 }
 
-function tunnelPost(sessionId: string, suffix: string, body?: unknown): Promise<Response> {
+function tunnelPost(sessionId: string, suffix: string, body?: unknown, signal?: AbortSignal): Promise<Response> {
   return fetch(`${config.consoleBase}/internal/tunnel/${sessionId}${suffix}`, {
     method: "POST",
     headers: internalHeaders,
+    signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(35_000)]) : AbortSignal.timeout(35_000),
     ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
   });
 }
@@ -87,9 +89,13 @@ class TunnelDuplex extends Duplex {
   private polling = false;
   private remoteClosed = false;
 
-  constructor(private sessionId: string) {
+  private readonly aborter = new AbortController();
+  constructor(private sessionId: string, private signal?: AbortSignal) {
     super({ allowHalfOpen: false });
+    if (signal?.aborted) this.onAbort();
+    else signal?.addEventListener("abort", this.onAbort, { once: true });
   }
+  private readonly onAbort = () => this.destroy(new DOMException("Request aborted", "AbortError"));
 
   _write(chunk: Buffer, _enc: string, cb: (err?: Error | null) => void): void {
     // Serialize writes: tunnel data frames must arrive in order. Frames are
@@ -100,7 +106,7 @@ class TunnelDuplex extends Duplex {
         for (let off = 0; off < chunk.length; off += MAX_FRAME_BYTES) {
           const res = await tunnelPost(this.sessionId, "/data", {
             payloadBase64: chunk.subarray(off, off + MAX_FRAME_BYTES).toString("base64"),
-          });
+          }, this.aborter.signal);
           if (!res.ok) throw new Error(`tunnel data HTTP ${res.status}`);
         }
       })
@@ -118,7 +124,7 @@ class TunnelDuplex extends Duplex {
       while (!this.remoteClosed && !this.destroyed) {
         const res = await fetch(
           `${config.consoleBase}/internal/tunnel/${this.sessionId}/read?timeout=${READ_POLL_TIMEOUT_MS}`,
-          { headers: internalHeaders, signal: AbortSignal.timeout(READ_POLL_TIMEOUT_MS + 5_000) },
+          { headers: internalHeaders, signal: AbortSignal.any([this.aborter.signal, AbortSignal.timeout(READ_POLL_TIMEOUT_MS + 5_000)]) },
         );
         if (!res.ok) throw new Error(`tunnel read HTTP ${res.status}`);
         const json = (await res.json()) as {
@@ -130,9 +136,9 @@ class TunnelDuplex extends Duplex {
           const bytes = json.chunks.reduce((n, c) => n + Math.floor((c.payloadBase64.length * 3) / 4), 0);
           console.log(`[tunnel-trace] ${this.sessionId} +${Date.now() - this.openedAt}ms chunks=${json.chunks.length} bytes=${bytes}${json.closed ? " closed" : ""}`);
         }
-        for (const c of json.chunks) {
-          this.push(Buffer.from(c.payloadBase64, "base64"));
-        }
+        let canRead = true;
+        for (const c of json.chunks) canRead = this.push(Buffer.from(c.payloadBase64, "base64")) && canRead;
+        if (!canRead && !json.closed) { this.polling = false; return; }
         if (json.closed) {
           this.remoteClosed = true;
           if (json.error) this.destroy(new Error(`tunnel closed by node: ${json.error}`));
@@ -146,6 +152,8 @@ class TunnelDuplex extends Duplex {
 
   _destroy(err: Error | null, cb: (err?: Error | null) => void): void {
     this.remoteClosed = true;
+    this.aborter.abort();
+    this.signal?.removeEventListener("abort", this.onAbort);
     // Always with a JSON body: internalHeaders set content-type json, and Fastify answers 400 to
     // an empty JSON body — which silently disabled every gateway-initiated close until 2026-10-17
     // (client disconnects and parked tool turns never reached the node).
@@ -225,6 +233,7 @@ export function decompressBody(body: ReadableStream<Uint8Array>, encoding: strin
  */
 class EgressReader {
   private chunks: Buffer[] = [];
+  private queuedBytes = 0;
   private closed = false;
   private err: Error | null = null;
   private notify: (() => void) | null = null;
@@ -232,6 +241,9 @@ class EgressReader {
   constructor(private socket: Duplex) {
     socket.on("data", (c: Buffer) => {
       this.chunks.push(c);
+      this.queuedBytes += c.length;
+      if (this.queuedBytes >= 1_048_576) socket.pause();
+      if (this.queuedBytes > 8_388_608) socket.destroy(new Error("tunnel buffered response exceeds 8 MiB"));
       this.ping();
     });
     const fin = () => {
@@ -247,6 +259,12 @@ class EgressReader {
     });
   }
 
+  private take(): Buffer {
+    const chunk = this.chunks.shift()!;
+    this.queuedBytes -= chunk.length;
+    if (this.queuedBytes < 524_288) this.socket.resume();
+    return chunk;
+  }
   private ping(): void {
     this.notify?.();
   }
@@ -266,12 +284,15 @@ class EgressReader {
     for (;;) {
       const parsed = parseEgressHead(buf);
       if (parsed) return parsed;
+      if (buf.length > 65_536) throw new Error("node egress head exceeds 64 KiB");
       if (this.err) throw this.err;
       if (Date.now() > deadline) throw new Error("timeout waiting for node egress head line");
       if (this.closed && !this.chunks.length) throw new Error("tunnel closed before egress head line");
       const ms = Math.max(1, Math.min(5_000, deadline - Date.now()));
-      await Promise.race([this.waitChunk(), new Promise((r) => setTimeout(r, ms))]);
-      while (this.chunks.length) buf = Buffer.concat([buf, this.chunks.shift()!]);
+      let timer: NodeJS.Timeout | undefined;
+      await Promise.race([this.waitChunk(), new Promise((r) => { timer = setTimeout(r, ms); })]);
+      clearTimeout(timer);
+      while (this.chunks.length) buf = Buffer.concat([buf, this.take()]);
     }
   }
 
@@ -292,8 +313,8 @@ class EgressReader {
             self.socket.destroy();
             return;
           }
-          while (self.chunks.length) controller.enqueue(new Uint8Array(self.chunks.shift()!));
-          if (self.closed) {
+          if (self.chunks.length) controller.enqueue(new Uint8Array(self.take()));
+          if (self.closed && !self.chunks.length) {
             controller.close();
             self.socket.destroy();
           }
@@ -355,11 +376,12 @@ export async function fetchViaTunnel(
   /** HTTP method (default: POST with a body, GET without). */
   method?: string,
   isolation?: IsolationContext,
+  signal?: AbortSignal,
 ): Promise<Response | null> {
-  const sessionId = await openTunnelSession(accountId, proxyId, isolation);
+  const sessionId = await openTunnelSession(accountId, proxyId, isolation, signal);
   if (!sessionId) return null;
 
-  const duplex = new TunnelDuplex(sessionId);
+  const duplex = new TunnelDuplex(sessionId, signal);
   const reader = new EgressReader(duplex);
   const spec = `${JSON.stringify({
     url: url.href,
@@ -413,9 +435,10 @@ export function pinnedTunnelTransport(
   accountId: string,
   proxyId: string | null,
   isolation?: IsolationContext,
-): (url: string, init: { method?: string; headers: Record<string, string>; body?: string }) => Promise<Response> {
+  signal?: AbortSignal,
+): (url: string, init: { method?: string; headers: Record<string, string>; body?: string; signal?: AbortSignal }) => Promise<Response> {
   return async (url, init) => {
-    const res = await fetchViaTunnel(accountId, new URL(url), init.headers, init.body ?? "", proxyId ?? undefined, init.method, isolation);
+    const res = await fetchViaTunnel(accountId, new URL(url), init.headers, init.body ?? "", proxyId ?? undefined, init.method, isolation, init.signal ?? signal);
     if (!res) throw new Error("node tunnel unavailable or egress refused (no_proxy_available)");
     return res;
   };
@@ -468,6 +491,7 @@ export interface CcWorkerOpenRequest {
 export async function openCcWorker(
   accountId: string,
   req: CcWorkerOpenRequest,
+  signal?: AbortSignal,
 ): Promise<{ stream: ReadableStream<Uint8Array>; sessionId: string } | null> {
   let res: Response;
   try {
@@ -500,9 +524,10 @@ export async function openCcWorker(
         stream: req.stream,
         cred: req.cred,
       }),
-      signal: AbortSignal.timeout(OPEN_TIMEOUT_MS),
+      signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(OPEN_TIMEOUT_MS)]) : AbortSignal.timeout(OPEN_TIMEOUT_MS),
     });
-  } catch {
+  } catch (err) {
+    if (signal?.aborted) throw signal.reason;
     return null;
   }
   if (!res.ok) {
@@ -511,7 +536,7 @@ export async function openCcWorker(
   }
   const json = (await res.json()) as { sessionId?: string };
   if (!json.sessionId) return null;
-  const duplex = new TunnelDuplex(json.sessionId);
+  const duplex = new TunnelDuplex(json.sessionId, signal);
   // No head line in cc_worker: every byte is worker stdout.
   return { stream: new EgressReader(duplex).toWebStream(Buffer.alloc(0)), sessionId: json.sessionId };
 }

@@ -125,10 +125,11 @@ export function UserKeys() {
 
   function payload() {
     const quota = Number(form.quota || 0);
+    if (!Number.isFinite(quota) || quota < 0) throw new Error("配额必须是非负的有效金额；留空或填 0 表示无限额。");
     return {
       name: form.name.trim() || "default",
       groupId: form.groupId || undefined,
-      quotaUsd: Number.isFinite(quota) && quota > 0 ? quota : 0,
+      quotaUsd: quota,
       expiresAt: dateInputToIso(form.expires),
     };
   }

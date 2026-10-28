@@ -8,9 +8,11 @@ import Fastify from "fastify";
 
 const dataDir = mkdtempSync(join(tmpdir(), "1dayapi-team-route-"));
 process.env.DATA_DIR = dataDir;
+process.env.ACCOUNT_BUSY_WAIT_MS = "800";
 const sessions = new Map();
 const attempts = [];
 const resets = [];
+const closedSessions = [];
 const behaviors = new Map();
 let nextSession = 0;
 let activeRequests = 0;
@@ -23,20 +25,24 @@ const consoleServer = http.createServer(async (req, res) => {
   const body = chunks.length ? JSON.parse(Buffer.concat(chunks).toString()) : {};
   const path = new URL(req.url, "http://local").pathname;
   res.setHeader("content-type", "application/json");
+  if (path === "/internal/tunnel/archive") { const cloud = cloudSessions.get(body.sessionId); if (cloud) cloud.archived = true; res.end(JSON.stringify({status:200})); return; }
   if (path === "/internal/tunnel/reset") { resets.push(body.isolation); res.end('{"ok":true}'); return; }
   if (path === "/internal/tunnel/open") {
     const sid = `session-${++nextSession}`;
     sessions.set(sid, { accountId: body.accountId, isolation: body.isolation, seq: 0 });
+    if (body.kind === "cc_worker") attempts.push({sid,accountId:body.accountId,isolation:body.isolation,body});
     res.end(JSON.stringify({ sessionId: sid })); return;
   }
   const [, , , sid, action] = path.split("/");
+  if (action === "close") closedSessions.push(sid);
   const session = sessions.get(sid);
   if (!session) { res.statusCode = 404; res.end('{}'); return; }
+  if (action === "close") { session.payload ??= Buffer.alloc(0); session.ready?.(); }
   if (action === "data") {
     const spec = JSON.parse(Buffer.from(body.payloadBase64, "base64").toString());
     const rawRequest = Buffer.from(spec.bodyBase64, "base64").toString();
     const request = rawRequest ? JSON.parse(rawRequest) : {};
-    attempts.push({ accountId: session.accountId, isolation: session.isolation, body: request, headers: spec.headers });
+    attempts.push({ sid, accountId: session.accountId, isolation: session.isolation, body: request, headers: spec.headers });
     const behavior = behaviors.get(session.accountId) ?? {};
     const status = behavior.status ?? 200;
     let output = status === 200 ? { id: `msg-${sid}`, type: "message", role: "assistant", model: request.model, content: [{ type: "text", text: `reply:${session.accountId}` }], stop_reason: "end_turn", usage: { input_tokens: 1, output_tokens: 1 } } : { error: { message: "quota exhausted" } };
@@ -52,10 +58,10 @@ const consoleServer = http.createServer(async (req, res) => {
         const cloud = cloudSessions.get(id);
         if (!cloud) throw new Error(`unknown cloud session ${upstream}`);
         if (upstream.endsWith("/archive")) { cloud.archived = true; output = {}; }
-        else if (spec.method === "GET") output = { events: [
-          { id: `${id}-${cloud.turns}-assistant`, payload: { type: "assistant", message: { id: `msg-${id}`, content: [{ type: "text", text: "cloud reply" }], usage: { input_tokens: 1, output_tokens: 1 } } } },
-          { id: `${id}-${cloud.turns}-result`, payload: { type: "result", subtype: "success", result: "cloud reply", usage: { input_tokens: 1, output_tokens: 1 } } },
-        ] };
+        else if (spec.method === "GET") output = { events: Array.from({length:cloud.turns}, (_,i) => [
+          { id: `${id}-${i+1}-assistant`, payload: { type: "assistant", message: { id: `msg-${id}-${i+1}`, content: [{ type: "text", text: `cloud reply turn ${i+1}` }], usage: { input_tokens: 1, output_tokens: 1 } } } },
+          { id: `${id}-${i+1}-result`, payload: { type: "result", subtype: "success", result: `cloud reply turn ${i+1}`, usage: { input_tokens: 1, output_tokens: 1 } } },
+        ]).flat() };
         else { cloud.turns++; output = {}; }
       }
     }
@@ -66,7 +72,7 @@ const consoleServer = http.createServer(async (req, res) => {
     if (behavior.stream) {
       const events = [{ type: "message_start", message: { ...output, content: [] } }, { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } }, { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: behavior.partial ? "PARTIAL_A" : `reply:${session.accountId}` } }];
       if (behavior.partial) events.push({ type: "error", error: { type: "api_error", message: "quota exhausted after partial output" } });
-      else events.push({ type: "content_block_stop", index: 0 }, { type: "message_delta", delta: { stop_reason: "end_turn" }, usage: { output_tokens: 1 } }, { type: "message_stop" });
+      else if (!behavior.truncated) events.push({ type: "content_block_stop", index: 0 }, { type: "message_delta", delta: { stop_reason: "end_turn" }, usage: { output_tokens: 1 } }, { type: "message_stop" });
       wire = events.map((event) => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`).join("");
     }
     const payload = Buffer.from(JSON.stringify({ status, headers: { "content-type": behavior.stream ? "text/event-stream" : "application/json" } }) + "\n" + wire);
@@ -307,7 +313,7 @@ test("cloud CCR without a reliable client id creates and archives a fresh upstre
   for (let i = 0; i < 2; i++) {
     const response = await gateway.inject({ method: "POST", url: "/v1/messages", headers, payload: payload([question("identical stateless prompt")]) });
     assert.equal(response.statusCode, 200, response.body);
-    assert.equal(response.json().content[0].text, "cloud reply");
+    assert.equal(response.json().content[0].text, "cloud reply turn 1");
   }
   for (let i = 0; i < 50 && [...cloudSessions.values()].filter((s) => s.accountId === f.ids[0] && s.archived).length < 2; i++) await new Promise((resolve) => setTimeout(resolve, 10));
   const created = [...cloudSessions.values()].filter((s) => s.accountId === f.ids[0]);
@@ -322,6 +328,7 @@ test("cloud CCR with a reliable header id reuses the same branch session for ext
   assert.equal(first.statusCode, 200, first.body);
   const next = await request(f, payload([question("reliable cloud root"), answer("cloud reply"), question("follow up")]));
   assert.equal(next.statusCode, 200, next.body);
+  assert.equal(next.json().content[0].text, "cloud reply turn 2");
   const created = [...cloudSessions.values()].filter((s) => s.accountId === f.ids[0]);
   assert.equal(created.length, 1);
   assert.equal(created[0].archived, false);
@@ -369,4 +376,78 @@ test("reset retains the current text document attachment and removes old remote 
   assert.deepEqual(clean.messages[0].content[1], { type: "document", source: { type: "text", media_type: "text/plain", text: "CURRENT DOCUMENT CONTENT" } });
   assert.equal(clean.messages[0].content.length, 2);
   assert.ok(!JSON.stringify(clean).includes("OLD"));
+});
+
+
+test("busy healthy team waits, preserves generation and leaves its main request intact", async () => {
+  const f = seed([{team:TEAM_A, delay:120},{team:TEAM_B}]);
+  core.run("UPDATE accounts SET concurrency=1 WHERE id=?",f.ids[0]);
+  const start=attempts.length;
+  const first=request(f,payload([question("busy root")]));
+  for(let n=0;attempts.length===start && n<100;n++) await new Promise(r=>setTimeout(r,5));
+  const second=request(f,payload([question("busy root"),answer("old answer"),question("parallel task")]));
+  const responses=await Promise.all([first,second]);
+  assert.ok(responses.every(r=>r.statusCode===200));
+  const calls=attempts.slice(start);
+  assert.equal(calls.length,2); assert.ok(calls.every(c=>c.accountId===f.ids[0]));
+  assert.ok(calls.every(c=>c.isolation.generation===1));
+  assert.ok(responses.every(r=>r.json().content[0].text===`reply:${f.ids[0]}`));
+});
+
+test("busy deadline returns retryable failure without switching teams or clearing context",async()=>{
+ const f=seed([{team:TEAM_A},{team:TEAM_B}]);
+ core.run("UPDATE accounts SET rpm_limit=1 WHERE id=?",f.ids[0]);
+ await request(f,payload([question("rpm root")]));
+ const start=attempts.length;
+ const r=await request(f,payload([question("rpm root"),answer("previous"),question("second question")]));
+ assert.equal(r.statusCode,503,r.body); assert.equal(r.json().error.code,"account_pool_busy");
+ assert.equal(attempts.length,start);
+ const row=core.getConversation(r.headers["x-1day-conversation-id"]);
+ assert.equal(row.generation,1); assert.equal(row.team_id,TEAM_A);
+});
+
+test("usage plus EOF without Anthropic stop fails and charges zero",async()=>{
+ const f=seed([{team:TEAM_A,stream:true,truncated:true}]);
+ const r=await request(f,payload([question("truncated stream")],{stream:true}));
+ assert.equal(r.body.includes("event: message_stop"),false);
+ assert.match(r.body,/event: error/);
+ const row=core.one("SELECT * FROM usage_logs WHERE api_key_id=?",f.id);
+ assert.equal(row.status_code,502);assert.equal(row.actual_cost,0);assert.equal(row.error_code,"upstream_stream_error");
+});
+
+test("client cancellation before response headers closes remote tunnel and releases gate",async()=>{
+ await gateway.listen({host:"127.0.0.1",port:0});
+ const f=seed([{team:TEAM_A,delay:300}]);const start=attempts.length;
+ const abort=new AbortController();
+ const pending=fetch(`http://127.0.0.1:${gateway.server.address().port}/v1/messages`,{method:"POST",headers:{...f.headers,"content-type":"application/json"},body:JSON.stringify(payload([question("cancel before headers")])),signal:abort.signal});
+ for(let n=0;attempts.length===start&&n<100;n++)await new Promise(r=>setTimeout(r,5));
+ abort.abort();await assert.rejects(pending,{name:"AbortError"});
+ const {accountInFlight}=await import("../dist/proxy.js");
+ for(let n=0;accountInFlight(f.ids[0])&&n<100;n++)await new Promise(r=>setTimeout(r,5));
+ assert.equal(accountInFlight(f.ids[0]),0);
+ assert.ok(closedSessions.includes(attempts.at(-1).sid));
+ await new Promise(r=>setTimeout(r,350));
+});
+
+
+test("nonstream worker cancelled before result closes worker session and releases the account",async()=>{
+ const f=seed([{team:TEAM_A}]);core.run("UPDATE accounts SET executor='ccr_worker' WHERE id=?",f.ids[0]);
+ const start=attempts.length;const abort=new AbortController();
+ const pending=fetch(`http://127.0.0.1:${gateway.server.address().port}/v1/messages`,{method:"POST",headers:{...f.headers,"content-type":"application/json"},body:JSON.stringify(payload([question("cancel worker awaiting its result")])),signal:abort.signal});
+ for(let n=0;attempts.length===start&&n<200;n++)await new Promise(r=>setTimeout(r,5));
+ assert.equal(attempts.length,start+1,"worker opened");
+ const sid=attempts.at(-1).sid;abort.abort();await assert.rejects(pending,{name:"AbortError"});
+ const {accountInFlight}=await import("../dist/proxy.js");
+ for(let n=0;(accountInFlight(f.ids[0]) || !closedSessions.includes(sid))&&n<200;n++)await new Promise(r=>setTimeout(r,5));
+ assert.equal(accountInFlight(f.ids[0]),0);assert.ok(closedSessions.includes(sid));
+ const row=core.one("SELECT status_code,actual_cost FROM usage_logs WHERE api_key_id=?",f.id);assert.equal(row.status_code,499);assert.equal(row.actual_cost,0);
+});
+
+
+test("cloud streaming consumes only the current turn from complete event history",async()=>{
+ const f=seed([{team:TEAM_A,cloud:true}]);core.run("UPDATE accounts SET executor='ccr' WHERE id=?",f.ids[0]);
+ const first=await request(f,payload([question("stream cloud root")],{stream:true}));
+ assert.match(first.body,/cloud reply turn 1/);assert.match(first.body,/event: message_stop/);
+ const second=await request(f,payload([question("stream cloud root"),answer("cloud reply turn 1"),question("next stream turn")],{stream:true}));
+ assert.match(second.body,/cloud reply turn 2/);assert.doesNotMatch(second.body,/cloud reply turn 1/);assert.match(second.body,/event: message_stop/);
 });

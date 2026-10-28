@@ -168,7 +168,7 @@ claude-jetbrains / claude-desktop(-3p) / local-agent）的后缀改成 "(externa
 其它模型照常。网关识别后只给该账号写 `model_cooldowns["model:<id>"].until`（core `parseModelSuspension` /
 `markFailure({kind:"model_suspended"})`），换下一个账号继续；不再当作 401/403 认证失败把账号整个标成 error。
 
-**并发**：`accounts.concurrency > 0` 时按进程内计数，满额账户跳过（不计入尝试次数）。
+**并发**：`accounts.concurrency > 0` 时使用 SQLite 共享租约，所有在线和排空实例共计。满额账号属于暂时繁忙；同 team 内等待最多 `ACCOUNT_BUSY_WAIT_MS`（默认 15 秒），超时返回可重试错误，不清空对话。失去租约会取消上游。
 
 依次尝试，最多 `GATEWAY_MAX_ATTEMPTS`（默认 3）次真实上游调用。`route=node` 的账户若开不了隧道（号商无在线节点 / 节点拒绝 / TLS 失败），
 视为基础设施不可用，直接跳过且不计入尝试、不标记账户。
@@ -371,3 +371,5 @@ HMAC-SHA256(`PROOF_SECRET`, `upstream_host:sha256(body)`)，不是硬件证明�
 | `LOG_LEVEL` | `info` | |
 
 v2 的 `UPSTREAM_ANTHROPIC_*` / `UPSTREAM_OPENAI_*` 直连兜底已删除：上游一律在控制台以"上游账户"配置。
+
+2026-10-28：usage 非法值转受限估算；正常流必须出现协议完成事件。结算使用 fsync 持久意图及原价快照，数据库暂不可用时暂停新推理准入并幂等补账。取消贯穿刷新凭据、排队、隧道、worker 和流读取；响应遵守背压和大小预算。详见 [逐项修复记录](audit-remediation-2026-10-28.md)。

@@ -10,6 +10,7 @@
 // candidate loop tries the next account without counting a failure.
 
 import { getSetting, sha256Hex, type AccountRow, type Credential, deleteTurnMemory, loadTurnMemory, saveTurnMemory } from "@1dayapi/core";
+import { StreamDemand } from "../lifecycle.js";
 import { config } from "../config.js";
 import { TunnelRequestError, openCcWorker, type IsolationContext } from "../tunnel.js";
 import { SessionMemory, blockHash, blockTail, blockTails, diffContext, firstDiffOffset, planToolResult, planTurn, type TurnMemory, type TurnPlan } from "./session-memory.js";
@@ -30,6 +31,7 @@ export interface CcrWorkerInput {
   /** Conversation affinity key (proxy.ts stickyKey); null = anonymous single shot, never pooled. */
   stickyKey?: string | null;
   isolation?: IsolationContext;
+  signal?: AbortSignal;
 }
 
 /** Gateway-side memory of live node sessions (docs/worker-sessions.md §1), written through to core worker_turn_memory. */
@@ -57,6 +59,7 @@ export class StreamJsonLines {
 
   push(text: string): EventPayload[] {
     this.buf += text;
+    if (this.buf.length > 8_388_608) throw new Error("worker event exceeds 8 MiB");
     const out: EventPayload[] = [];
     let nl: number;
     while ((nl = this.buf.indexOf("\n")) !== -1) {
@@ -262,7 +265,8 @@ export async function runCcrWorker(input: CcrWorkerInput): Promise<Response | nu
       subscriptionType: account.subscription_type ?? undefined,
     },
     proxyId: account.bound_proxy_id ?? undefined,
-  }).catch((err: unknown) => {
+  }, input.signal).catch((err: unknown) => {
+    if (input.signal?.aborted) throw input.signal.reason;
     if (err instanceof TunnelRequestError) throw err; // request-level: answered once by proxy.ts
     return null;
   });
@@ -274,6 +278,9 @@ export async function runCcrWorker(input: CcrWorkerInput): Promise<Response | nu
   const lines = new StreamJsonLines();
   const reader = opened.stream.getReader();
   const decoder = new TextDecoder();
+  const onAbort = () => { if (reuseKey) sessionMemory.forget(reuseKey); void reader.cancel(input.signal?.reason).catch(() => {}); };
+  input.signal?.addEventListener("abort", onAbort, { once: true });
+  if (input.signal?.aborted) onAbort();
 
   // Native tools: the turn is handed to the client once every tool_use block has its parked MCP
   // call. If Claude Code does not issue them all promptly (a tool it refuses to run, or more
@@ -311,6 +318,7 @@ export async function runCcrWorker(input: CcrWorkerInput): Promise<Response | nu
   if (!stream) {
     try {
       for (;;) {
+        input.signal?.throwIfAborted();
         if (Date.now() > deadline) throw new Error(`worker timed out after ${config.ccrSessionTimeoutMs}ms`);
         const r = await readFor(1_000);
         if (r === null) {
@@ -330,10 +338,14 @@ export async function runCcrWorker(input: CcrWorkerInput): Promise<Response | nu
       }
       if (!stalled) for (const p of lines.end()) translator.push(p);
     } catch (err) {
+      input.signal?.removeEventListener("abort", onAbort);
       await reader.cancel().catch(() => {});
+      if (input.signal?.aborted) throw input.signal.reason;
       return errorResponse(502, `ccr_worker: ${(err as Error).message}`);
     }
+    input.signal?.removeEventListener("abort", onAbort);
     await reader.cancel().catch(() => {});
+    input.signal?.throwIfAborted();
     if (stalled) noteStalled();
     else rememberTurn(translator);
     logGuard();
@@ -353,14 +365,15 @@ export async function runCcrWorker(input: CcrWorkerInput): Promise<Response | nu
   // Streaming: SSE produced as stdout lines arrive. Failures mid-stream
   // surface as an SSE `error` event (same convention as the cloud executor).
   const encoder = new TextEncoder();
+  const demand = new StreamDemand();
   const bodyStream = new ReadableStream<Uint8Array>({
-    async start(controller) {
-      const write = (s: string) => {
-        if (s) controller.enqueue(encoder.encode(s));
-      };
+    start(controller) {
+      void (async () => {
+      const write = (s: string) => demand.write(controller, encoder.encode(s));
       try {
         for (;;) {
-          if (Date.now() > deadline) throw new Error("worker timed out");
+          input.signal?.throwIfAborted();
+        if (Date.now() > deadline) throw new Error("worker timed out");
           const r = await readFor(1_000);
           if (r === null) {
             if (parkStalled()) {
@@ -370,39 +383,44 @@ export async function runCcrWorker(input: CcrWorkerInput): Promise<Response | nu
             continue;
           }
           if (r.done) break;
-          for (const p of lines.push(decoder.decode(r.value, { stream: true }))) write(translator.push(p));
+          for (const p of lines.push(decoder.decode(r.value, { stream: true }))) await write(translator.push(p));
           if (translator.finished || translator.awaitingTools) break;
           if (parkStalled()) {
             stalled = true;
             break;
           }
         }
-        if (!stalled) for (const p of lines.end()) write(translator.push(p));
+        if (!stalled) for (const p of lines.end()) await write(translator.push(p));
         if (stalled) noteStalled();
         else rememberTurn(translator);
         logGuard();
         if (Date.now() - startedAt > SLOW_TURN_LOG_MS) console.log(`[ccr-worker] ${input.requestId} slow turn ${Math.round((Date.now() - startedAt) / 1000)}s on ${account.name}: ${translator.eventTimeline}`);
         if (translator.error) {
           logResult(input.requestId, translator);
-          write(`event: error\ndata: ${JSON.stringify({ type: "error", error: { type: "api_error", message: `ccr_worker: ${translator.error}` } })}\n\n`);
+          await write(`event: error\ndata: ${JSON.stringify({ type: "error", error: { type: "api_error", message: `ccr_worker: ${translator.error}` } })}\n\n`);
         } else if (translator.awaitingTools || stalled) {
           if (translator.awaitingTools) console.log(`[ccr-worker] ${input.requestId} parked on ${translator.awaitingTools.length} native tool call(s)`);
-          write(translator.end());
+          await write(translator.end());
         } else if (!translator.finished) {
-          write(`event: error\ndata: ${JSON.stringify({ type: "error", error: { type: "api_error", message: "ccr_worker: worker exited without a result" } })}\n\n`);
+          await write(`event: error\ndata: ${JSON.stringify({ type: "error", error: { type: "api_error", message: "ccr_worker: worker exited without a result" } })}\n\n`);
         } else {
           if (translator.cutShort) console.log(`[ccr-worker] ${input.requestId} cut short: ${translator.stopReasonOut} (session cancelled)`);
           if (translator.upstreamUsage) console.log(`[ccr-worker] ${input.requestId} upstream modelUsage: ${JSON.stringify(translator.upstreamUsage).slice(0, 400)}`);
-          write(translator.end());
+          await write(translator.end());
         }
       } catch (err) {
-        write(`event: error\ndata: ${JSON.stringify({ type: "error", error: { type: "api_error", message: `ccr_worker: ${(err as Error).message}` } })}\n\n`);
+        await write(`event: error\ndata: ${JSON.stringify({ type: "error", error: { type: "api_error", message: `ccr_worker: ${(err as Error).message}` } })}\n\n`).catch(() => {});
       } finally {
+        input.signal?.removeEventListener("abort", onAbort);
         await reader.cancel().catch(() => {});
-        controller.close();
+        demand.close(controller);
       }
+      })();
     },
+    pull() { demand.pull(); },
     cancel() {
+      demand.cancel();
+      if (reuseKey) sessionMemory.forget(reuseKey);
       void reader.cancel().catch(() => {});
     },
   });

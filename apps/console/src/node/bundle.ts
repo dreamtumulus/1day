@@ -29,23 +29,24 @@ export function findBun(): string | null {
   return existsSync(home) ? home : null;
 }
 
-/** Cache signature: provider-node version + newest source/package mtime. */
-function sourceSignature(): string {
+/** All build inputs including dependencies, compiler/runtime and flags. */
+export function sourceSignature(): string {
   const h = createHash("sha256");
-  const pkg = JSON.parse(readFileSync(join(PROVIDER_NODE_DIR, "package.json"), "utf8")) as {
-    version?: string;
-  };
-  h.update(pkg.version ?? "0");
+  for (const name of ["package.json", "pnpm-lock.yaml", "tsconfig.base.json", "apps/provider-node/package.json", "apps/provider-node/tsconfig.json"])
+    h.update(name).update("\0").update(readFileSync(join(repoRoot, name))).update("\0");
+  const bun = findBun();
+  h.update(bun ? spawnSync(bun, ["--version"], { encoding: "utf8" }).stdout.trim() : "missing-bun");
+  h.update("tsc; bun build --target=bun; format=esm; v2");
   const walk = (dir: string): void => {
     for (const name of readdirSync(dir).sort()) {
       const p = join(dir, name);
       const st = statSync(p);
       if (st.isDirectory()) walk(p);
-      else h.update(name).update(String(Math.floor(st.mtimeMs))).update(String(st.size));
+      else h.update(p.slice(PROVIDER_NODE_DIR.length)).update("\0").update(readFileSync(p)).update("\0");
     }
   };
   walk(join(PROVIDER_NODE_DIR, "src"));
-  return h.digest("hex").slice(0, 16);
+  return h.digest("hex");
 }
 
 function run(cmd: string, args: string[], timeoutMs: number): Promise<string> {
@@ -74,7 +75,7 @@ let inFlight: Promise<BundleInfo> | null = null;
 
 /**
  * Build (or reuse a cached) single-file node bundle. Cache key is the
- * provider-node version + source mtimes; builds are single-flight.
+ * content and toolchain signature; builds are single-flight.
  */
 export function ensureBundle(): Promise<BundleInfo> {
   if (inFlight) return inFlight;
@@ -93,8 +94,8 @@ async function buildBundle(): Promise<BundleInfo> {
   }
   mkdirSync(CACHE_DIR, { recursive: true });
   const signature = sourceSignature();
-  const out = join(CACHE_DIR, "node-bundle.js");
-  const sigFile = join(CACHE_DIR, "node-bundle.sig");
+  const out = join(CACHE_DIR, `node-bundle-${signature}.js`);
+  const sigFile = join(CACHE_DIR, `node-bundle-${signature}.sig`);
   if (existsSync(out) && existsSync(sigFile) && readFileSync(sigFile, "utf8").trim() === signature) {
     const st = statSync(out);
     return { path: out, bytes: st.size, sha256: sha256File(out), signature };

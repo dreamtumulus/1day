@@ -216,6 +216,25 @@ export class CcWorkerManager {
   readonly tools: string[];
   readonly workerRoot: string;
   private readonly sessionsDir: string;
+  private readonly teamUsers = new Map<string, RunAs>();
+
+  /** Each organization gets a distinct kernel identity; never falls back on failure. */
+  private teamRunAs(teamId?: string): RunAs | null {
+    if (!teamId || process.env.CC_WORKER_TEAM_UIDS !== "1") return this.runAs;
+    if (process.getuid?.() !== 0) throw new Error("Per-team worker identities require a root supervisor");
+    let identity = this.teamUsers.get(teamId);
+    if (identity) return identity;
+    const user = `cc-t-${createHash("sha256").update(teamId).digest("hex").slice(0, 24)}`;
+    identity = resolveRunAs(user) ?? undefined;
+    if (!identity) {
+      const result = spawnSync("useradd", ["--system", "--no-create-home", "--user-group", "--shell", "/usr/sbin/nologin", user], { encoding: "utf8", timeout: 15_000 });
+      identity = resolveRunAs(user) ?? undefined;
+      if (!identity) throw new Error(`Cannot provision team worker identity (${result.status ?? "spawn_failed"})`);
+    }
+    if (identity.uid === 0) throw new Error("Invalid team worker identity");
+    this.teamUsers.set(teamId, identity);
+    return identity;
+  }
 
   constructor(opts: CcWorkerManagerOptions) {
     this.opts = opts;
@@ -260,9 +279,9 @@ export class CcWorkerManager {
   }
 
   /** chown a tree to the worker user (config dir written by the node as root). */
-  private chownTree(p: string): void {
-    if (!this.runAs) return;
-    const { uid, gid } = this.runAs;
+  private chownTree(p: string, identity = this.runAs): void {
+    if (!identity) return;
+    const { uid, gid } = identity;
     const walk = (f: string) => {
       fs.lchownSync(f, uid, gid);
       let st: fs.Stats;
@@ -378,7 +397,7 @@ export class CcWorkerManager {
     if (s.closed) return;
     const line = JSON.stringify({ type: "1dayapi_tool_call", callId: call.callId, name: call.name, input: call.input }) + "\n";
     s.outSeq += 1;
-    this.opts.send({ type: "cc_worker.data", sessionId: s.sessionId, seq: s.outSeq, payloadBase64: Buffer.from(line).toString("base64") });
+    if (!this.opts.send({ type: "cc_worker.data", sessionId: s.sessionId, seq: s.outSeq, payloadBase64: Buffer.from(line).toString("base64") })) this.failSession(s, "transport_backpressure", "Platform send buffer unavailable");
   }
 
   /** A parked MCP call: tell the gateway (as a synthetic stdout line) so it can hand the tool_use to the client. */
@@ -387,7 +406,7 @@ export class CcWorkerManager {
     const line = JSON.stringify({ type: "1dayapi_tool_call", callId: call.callId, name: call.name, input: call.input }) + "\n";
     if (s && !s.closed) {
       s.outSeq += 1;
-      this.opts.send({ type: "cc_worker.data", sessionId: s.sessionId, seq: s.outSeq, payloadBase64: Buffer.from(line).toString("base64") });
+      if (!this.opts.send({ type: "cc_worker.data", sessionId: s.sessionId, seq: s.outSeq, payloadBase64: Buffer.from(line).toString("base64") })) this.failSession(s, "transport_backpressure", "Platform send buffer unavailable");
     } else {
       this.log(`tool call ${call.callId} (${call.name}) parked with no gateway session attached to ${proc.key.slice(0, 8)}`);
     }
@@ -689,16 +708,17 @@ export class CcWorkerManager {
       if (this.queue.length >= this.maxQueue) return this.reject(msg.sessionId, "worker_overloaded");
       if (this.queue.some((q) => q.msg.sessionId === msg.sessionId)) return this.reject(msg.sessionId, "duplicate_session");
       this.queue.push({ msg, proxyUrl });
-      this.opts.send({ type: "cc_worker.open_response", sessionId: msg.sessionId, accepted: true });
+      if (!this.opts.send({ type: "cc_worker.open_response", sessionId: msg.sessionId, accepted: true })) { this.queue = this.queue.filter(q => q.msg.sessionId !== msg.sessionId); return; }
       this.log(`queued ${msg.sessionId} (${this.queue.length} waiting)`);
       return;
     }
-    this.opts.send({ type: "cc_worker.open_response", sessionId: msg.sessionId, accepted: true });
+    if (!this.opts.send({ type: "cc_worker.open_response", sessionId: msg.sessionId, accepted: true })) return;
     this.launch(msg, proxyUrl);
   }
 
   /** Per-account CLAUDE_CONFIG_DIR with the native credential files (0700/0600). */
   private materializeConfig(accountId: string, cred: CcWorkerCred, deviceId?: string, teamId?: string): string {
+    const identity = this.teamRunAs(teamId);
     const dir = this.accountConfigDir(accountId, teamId);
     if (teamId) {
       const accountsRoot = path.dirname(dir);
@@ -706,6 +726,12 @@ export class CcWorkerManager {
       for (const parent of [path.dirname(teamRoot), teamRoot, accountsRoot]) {
         fs.mkdirSync(parent, { recursive: true, mode: 0o711 });
         fs.chmodSync(parent, 0o711);
+      }
+      if (identity && process.env.CC_WORKER_TEAM_UIDS === "1") {
+        for (const parent of [teamRoot, accountsRoot]) {
+          fs.chownSync(parent, identity.uid, identity.gid);
+          fs.chmodSync(parent, 0o700);
+        }
       }
     }
     fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
@@ -770,7 +796,7 @@ export class CcWorkerManager {
     if (!fs.existsSync(settingsPath)) {
       fs.writeFileSync(settingsPath, JSON.stringify({ hasCompletedOnboarding: true }), { mode: 0o600 });
     }
-    this.chownTree(dir);
+    this.chownTree(dir, identity);
     return dir;
   }
 
@@ -794,6 +820,7 @@ export class CcWorkerManager {
     };
     this.sessions.set(msg.sessionId, session);
     try {
+      const identity = this.teamRunAs(msg.isolation?.teamId);
       // socks5 pins go through the loopback bridge; CC only honors http(s) proxies.
       const proxy = await this.opts.pool.transportProxy(proxyUrl);
       if (session.closed) return; // closed (gateway / transport loss) while the bridge was starting: never spawn
@@ -804,7 +831,7 @@ export class CcWorkerManager {
       const scope = msg.isolation ? createHash("sha256").update(JSON.stringify(msg.isolation)).digest("hex") + "-" : "";
       const workDir = path.join(this.sessionsDir, scope + msg.sessionId.replace(/[^A-Za-z0-9_-]/g, "_"));
       fs.mkdirSync(workDir, { recursive: true, mode: 0o700 });
-      this.chownTree(workDir);
+      this.chownTree(workDir, identity);
       session.workDir = workDir;
       // The prompt goes over stdin: argv is world-readable (/proc/<pid>/cmdline)
       // and capped at 128 KiB per argument on Linux. With image blocks the input
@@ -819,7 +846,7 @@ export class CcWorkerManager {
       if (typeof msg.systemPrompt === "string" && msg.systemPrompt) {
         systemPromptFile = path.join(workDir, "system-prompt.md");
         fs.writeFileSync(systemPromptFile, msg.systemPrompt, { mode: 0o600 });
-        this.chownTree(workDir);
+        this.chownTree(workDir, identity);
       }
       // Native caller tools (docs/worker-sessions.md §3): a per-session MCP server
       // entry; only persistent sessions can hold a turn open across requests.
@@ -835,7 +862,7 @@ export class CcWorkerManager {
         });
         mcpConfigFile = path.join(workDir, "mcp-config.json");
         fs.writeFileSync(mcpConfigFile, JSON.stringify({ mcpServers: { caller: { type: "http", url } } }), { mode: 0o600 });
-        this.chownTree(workDir);
+        this.chownTree(workDir, identity);
       }
       const effort = typeof msg.effort === "string" && ["low", "medium", "high", "xhigh", "max"].includes(msg.effort) ? msg.effort : null;
       const args = [
@@ -916,7 +943,7 @@ export class CcWorkerManager {
         stdio: ["pipe", "pipe", "pipe"],
         detached: true, // own process group so the whole tree (MCP children, shells) can be killed
         cwd: workDir,
-        ...(this.runAs ? { uid: this.runAs.uid, gid: this.runAs.gid } : {}),
+        ...(identity ? { uid: identity.uid, gid: identity.gid } : {}),
         env: {
           ...env,
           HOME: workDir,
@@ -952,7 +979,7 @@ export class CcWorkerManager {
         const target = proc ? proc.busy : session;
         if (target && !target.closed) {
           target.outSeq += 1;
-          this.opts.send({ type: "cc_worker.data", sessionId: target.sessionId, seq: target.outSeq, payloadBase64: chunk.toString("base64") });
+          if (!this.opts.send({ type: "cc_worker.data", sessionId: target.sessionId, seq: target.outSeq, payloadBase64: chunk.toString("base64") })) { this.failSession(target, "transport_backpressure", "Platform send buffer unavailable"); return; }
         }
         if (proc) this.scanForResult(proc, chunk);
       });
@@ -1152,7 +1179,8 @@ export class CcWorkerManager {
       return;
     }
     if (session.closed) return;
-    if (session.proc && session.proc.hasTools && this.mcp.pendingCount(session.proc.key) > 0) {
+    if (session.proc && session.proc.hasTools && this.mcp.pendingCount(session.proc.key) > 0 &&
+        ["tool_handoff", "gateway_closed"].includes(msg.reasonCode ?? "")) {
       // The gateway handed the tool_use to the client and closed this request; the
       // turn stays open on the node until the tool results come back (or time out).
       const proc = session.proc;

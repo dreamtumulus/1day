@@ -1,3 +1,4 @@
+import { assertNodeCapacity, nodeOccupancy } from "../node/capacity.js";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import {
   CC_SHAPE_POLICIES,
@@ -182,12 +183,7 @@ function resolveNodeOwner(nodeId: string, ownerId: string | null, excludeAccount
   if (platformNode && ownerId) bad("invalid_request", "a platform node cannot carry a provider-owned account");
   if (!platformNode && ownerId && ownerId !== node.provider_id) bad("invalid_request", "nodeId belongs to a different provider than ownerId");
   if (!platformNode && !ownerId && excludeAccountId) bad("invalid_request", "a platform-owned account cannot use a provider's node");
-  const used = one<{ n: number }>(
-    `SELECT COUNT(*) AS n FROM accounts WHERE route = 'node' AND node_id = ? AND status = 'active'${excludeAccountId ? " AND id <> ?" : ""}`,
-    nodeId,
-    ...(excludeAccountId ? [excludeAccountId] : []),
-  )!.n;
-  if (used >= node.capacity) bad("node_at_capacity", `Node capacity reached (${used}/${node.capacity})`);
+  assertNodeCapacity(nodeId,excludeAccountId??undefined);
   return platformNode ? null : (ownerId ?? node.provider_id);
 }
 
@@ -829,6 +825,7 @@ export function registerAdminRoutes(app: FastifyInstance): void {
     const id = newId();
     const now = nowIso();
     tx(() => {
+      if(route==="node" && nodeId)assertNodeCapacity(nodeId);
       run(
         `INSERT INTO accounts (id, name, platform, type, executor, protocol, base_url, credential_enc, models, model_mapping,
                                owner_id, route, node_id, review_status, payout_rate, priority, concurrency, rpm_limit,
@@ -915,12 +912,7 @@ export function registerAdminRoutes(app: FastifyInstance): void {
       );
       if (!node) bad("node_not_found", `Node '${nextNodeId}' not found`);
       if (node.online !== 1) bad("node_offline", "Target node is not online");
-      const used = one<{ n: number }>(
-        "SELECT COUNT(*) AS n FROM accounts WHERE route = 'node' AND node_id = ? AND status = 'active' AND id <> ?",
-        nextNodeId,
-        id,
-      )!.n;
-      if (used >= node.capacity) bad("node_at_capacity", `Node capacity reached (${used}/${node.capacity})`);
+
     }
     const priority = num(b, "priority", { int: true, min: 0, max: 100000 });
     if (priority !== undefined) set("priority", priority);
@@ -933,6 +925,7 @@ export function registerAdminRoutes(app: FastifyInstance): void {
     if (payout !== undefined) set("payout_rate", payout);
     const status = oneOf(b, "status", ["active", "disabled"] as const);
     tx(() => {
+      if(nextRoute==="node" && nextNodeId && (a.route!=="node" || a.node_id!==nextNodeId))assertNodeCapacity(nextNodeId,id);
       run(`UPDATE accounts SET ${sets.join(", ")} WHERE id = ?`, ...params, id);
       if (status === "active") clearAccountState(id);
       else if (status === "disabled") run("UPDATE accounts SET status = 'disabled' WHERE id = ?", id);
@@ -1328,14 +1321,16 @@ export function registerAdminRoutes(app: FastifyInstance): void {
   app.put("/api/admin/nodes/:id/capacity", pre, async (req) => {
     const { id } = req.params as { id: string };
     if (!nodeExists(id)) notFound("node");
-    const capacity = Math.floor(Number(body(req).capacity));
-    if (!Number.isFinite(capacity) || capacity < 1 || capacity > 10000) {
+    const capacity = Number(body(req).capacity);
+    if (!Number.isInteger(capacity) || capacity < 1 || capacity > 10000) {
       bad("invalid_request", "capacity must be an integer between 1 and 10000");
     }
-    const used =
-      one<{ n: number }>("SELECT COUNT(*) AS n FROM accounts WHERE route = 'node' AND node_id = ? AND status = 'active'", id)?.n ?? 0;
-    if (capacity < used) bad("capacity_below_usage", `Node carries ${used} active accounts; capacity cannot be set below that`);
-    run("UPDATE nodes SET capacity = ? WHERE node_id = ?", capacity, id);
+    const used=tx(()=>{
+      const occupancy=nodeOccupancy(id);
+      if(capacity<occupancy)bad("capacity_below_usage", `Node carries ${occupancy} accounts and reservations; capacity cannot be set below that`);
+      run("UPDATE nodes SET capacity=? WHERE node_id=?",capacity,id);
+      return occupancy;
+    });
     return { data: { nodeId: id, capacity, used } };
   });
 

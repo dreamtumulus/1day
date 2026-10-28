@@ -10,6 +10,7 @@ import { test } from "node:test";
 const dir = mkdtempSync(join(tmpdir(), "1dayapi-onboard-"));
 process.env.DATA_DIR = dir;
 process.env.CCR_WINDOW_POLL = "0";
+process.env.ALLOW_UNTRUSTED_EXECUTION="1";
 process.env.ONBOARD_MOCK = "1";
 const TEAM = "11111111-1111-4111-8111-111111111111";
 process.env.ONBOARD_MOCK_ORG_UUID = TEAM;

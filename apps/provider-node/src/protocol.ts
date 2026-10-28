@@ -121,6 +121,8 @@ export interface OfficialExitError {
 // --- protocol v2: http_egress (docs/provider-protocol.md 协议 v2) ---
 
 export interface HttpEgressOpen {
+  /** Restricted cleanup of an archived/deleted account; cannot execute another path. */
+  archiveSessionId?: string;
   type: "http_egress.open";
   sessionId: string;
   routeMode: "http_egress";

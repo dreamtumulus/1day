@@ -6,6 +6,7 @@ import WebSocket from "ws";
 
 const dir = mkdtempSync(join(tmpdir(), "1day-team-tunnel-"));
 process.env.DATA_DIR = dir;
+process.env.ALLOW_UNTRUSTED_EXECUTION="1";
 process.env.CCR_WINDOW_POLL = "0";
 process.env.NODE_LINK_GRACE_MS = "0";
 const core = await import("@1dayapi/core");

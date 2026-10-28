@@ -29,7 +29,7 @@ ops 的定位：盯账号死活，掉授权时手动补齐（控制台「账号�
 ## 3. 控制台登录（会话）
 
 - `POST /auth/login {key}` → 按哈希查 `users`；不存在 401 `invalid_login_key`；被禁用 401 `user_disabled`；
-  同一 IP 10 分钟内失败 ≥ 20 次 → 429 `too_many_attempts`（部署在 nginx 后需 `TRUST_PROXY=1` 才能按真实 IP 计）。
+  同一 IP 10 分钟内失败 ≥ 20 次 → 429 `too_many_attempts`（部署在 nginx 后需 `TRUST_PROXY=127.0.0.1,::1`，并由 nginx 仅信任 Cloudflare 网段后覆盖 XFF 才能按真实 IP 计）。
 - 成功：写 `user_sessions`（随机 32 字节 hex，7 天），下发 `oneday_session=<token>; Path=/; HttpOnly; SameSite=Lax; Max-Age=604800`，
   `COOKIE_SECURE=1` 时加 `Secure`；返回 `{data: {id, role, name, status, keyPreview, balanceUsd}}`，`GET /auth/me` 同形状。
 - `POST /auth/logout` 删除会话。会话随用户禁用、登录密钥重置而立即失效；过期会话每小时清理。

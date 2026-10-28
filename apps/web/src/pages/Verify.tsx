@@ -102,9 +102,9 @@ export function Verify() {
       setHmacError(t("verify.keyRequired"));
       return;
     }
-    if (!proof.body_sha256 || !proof.signature) return;
+    if (!proof.upstream_host || !proof.body_sha256 || !proof.signature) return;
     try {
-      const computed = await hmacSha256Hex(keyToBytes(hmacKey), proof.body_sha256);
+      const computed = await hmacSha256Hex(keyToBytes(hmacKey), `${proof.upstream_host}:${proof.body_sha256}`);
       setHmacResult(
         computed.toLowerCase() === proof.signature.toLowerCase() ? "match" : "mismatch",
       );

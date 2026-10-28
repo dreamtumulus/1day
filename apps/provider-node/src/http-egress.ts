@@ -39,6 +39,7 @@ interface EgressSpec {
 }
 
 interface EgressSession {
+  archiveSessionId?: string;
   isolation?: IsolationContext;
   teamId?: string;
   sessionId: string;
@@ -135,7 +136,9 @@ export class HttpEgressManager {
     if (this.isolation.teamRequired && !teamId) return reject("isolation_required");
     if (msg.isolation && (!this.isolation.allows(msg.isolation) || (msg.teamId && msg.teamId !== teamId))) return reject("isolation_retired");
     if (this.opts.pool.isTeamAccount(msg.accountId) && !teamId) return reject("isolation_required");
-    if (teamId && (!this.isolation.allowsTeam(teamId) || !msg.proxyId || !this.opts.pool.getPinned(msg.proxyId, msg.accountId, teamId))) return reject("proxy_team_mismatch");
+    if (msg.archiveSessionId && (!/^[A-Za-z0-9_.:-]{1,180}$/.test(msg.archiveSessionId) || !teamId)) return reject("invalid_archive_scope");
+    if (teamId && (!this.isolation.allowsTeam(teamId) || !msg.proxyId || !(msg.archiveSessionId
+      ? this.opts.pool.getPinnedForArchive(msg.proxyId, teamId) : this.opts.pool.getPinned(msg.proxyId, msg.accountId, teamId)))) return reject("proxy_team_mismatch");
 
     const timeoutMs =
       Number.isFinite(msg.deadlineMs) && msg.deadlineMs > 0
@@ -149,6 +152,7 @@ export class HttpEgressManager {
     const session: EgressSession = {
       isolation: msg.isolation,
       teamId,
+      archiveSessionId: msg.archiveSessionId,
       sessionId: msg.sessionId,
       accountId: msg.accountId,
       proxyId: typeof msg.proxyId === "string" && msg.proxyId ? msg.proxyId : null,
@@ -173,11 +177,11 @@ export class HttpEgressManager {
     }, timeoutMs);
     session.deadlineTimer.unref?.();
     this.sessions.set(msg.sessionId, session);
-    this.opts.send({
+    if (!this.opts.send({
       type: "http_egress.open_response",
       sessionId: msg.sessionId,
       accepted: true,
-    });
+    })) this.finishSession(session, "transport_backpressure");
     this.log(`opened ${msg.sessionId} (account ${msg.accountId})`);
   }
 
@@ -273,6 +277,13 @@ export class HttpEgressManager {
       return;
     }
 
+    if (session.archiveSessionId && (url.origin !== "https://api.anthropic.com" || url.pathname !== `/v1/code/sessions/${encodeURIComponent(session.archiveSessionId)}/archive` || url.search ||
+        (spec.method ?? (spec.bodyBase64 === undefined ? "GET" : "POST")).toUpperCase() !== "POST")) {
+      this.sendErrorLine(session, "archive_scope_invalid", "Cleanup accepts only the fixed archive endpoint");
+      this.finishSession(session, "archive_scope_invalid");
+      return;
+    }
+
     // Mandatory proxy. Pinned (spec.proxyId or the open envelope) means exactly
     // that pool member, alive; otherwise the sticky per-account assignment.
     // Empty pool / dead or missing pin => hard fail, never direct.
@@ -287,7 +298,8 @@ export class HttpEgressManager {
       return;
     }
     const pinnedId = spec.proxyId ?? session.proxyId;
-    const proxyUrl = pinnedId ? this.opts.pool.getPinned(pinnedId, session.accountId, session.teamId) : this.opts.pool.pickForAccount(session.accountId);
+    const pinnedProxy = () => pinnedId ? (session.archiveSessionId ? this.opts.pool.getPinnedForArchive(pinnedId, session.teamId!) : this.opts.pool.getPinned(pinnedId, session.accountId, session.teamId)) : null;
+    const proxyUrl = pinnedId ? pinnedProxy() : this.opts.pool.pickForAccount(session.accountId);
     if (!proxyUrl) {
       const why = pinnedId ? `Pinned proxy ${pinnedId} missing or dead` : "Proxy pool empty or no live proxy";
       this.sendErrorLine(session, "no_proxy_available", `${why}; direct egress is forbidden`);
@@ -298,7 +310,7 @@ export class HttpEgressManager {
     try {
       proxy = await this.opts.pool.transportProxy(proxyUrl); // socks5 -> loopback bridge
       if (session.closed || session.abort.signal.aborted || (session.isolation && !this.isolation.allows(session.isolation))) return;
-      if (session.teamId && this.opts.pool.getPinned(pinnedId!, session.accountId, session.teamId) !== proxyUrl) {
+      if (session.teamId && pinnedProxy() !== proxyUrl) {
         this.sendErrorLine(session, "proxy_team_mismatch", "Proxy authorization was revoked before execution");
         this.finishSession(session, "proxy_team_mismatch");
         return;
@@ -410,12 +422,13 @@ export class HttpEgressManager {
 
   private sendData(session: EgressSession, payload: Buffer): void {
     session.outSeq += 1;
-    this.opts.send({
+    const accepted = this.opts.send({
       type: "http_egress.data",
       sessionId: session.sessionId,
       seq: session.outSeq,
       payloadBase64: payload.toString("base64"),
     });
+    if (!accepted) this.finishSession(session, "transport_backpressure");
   }
 
   private failSession(session: EgressSession, errorCode: string, errorMessage: string, retryable: boolean): void {

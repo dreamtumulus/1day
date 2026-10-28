@@ -6,7 +6,7 @@ import { apiFetch, unwrap } from "../lib/api";
 interface PoolAccount {
   label: string;
   side: "platform" | "provider";
-  state: "online" | "cooling" | "error" | "offline";
+  state: "online" | "cooling" | "error" | "offline" | "unmanaged" | "unavailable" | "busy";
   window5h: number | null;
   window7d: number | null;
   lastUsedAt: string | null;
@@ -29,6 +29,9 @@ const STATE_STYLE: Record<PoolAccount["state"], { color: string; bg: string }> =
   cooling: { color: "var(--warning)", bg: "var(--warning-container)" },
   error: { color: "var(--error)", bg: "var(--error-container, var(--surface-variant))" },
   offline: { color: "var(--on-surface-faint)", bg: "var(--surface-variant)" },
+  unmanaged: { color: "var(--on-surface-faint)", bg: "var(--surface-variant)" },
+  unavailable: { color: "var(--on-surface-faint)", bg: "var(--surface-variant)" },
+  busy: { color: "var(--warning)", bg: "var(--warning-container)" },
 };
 
 function pct(v: number | null): string {

@@ -19,12 +19,13 @@ export interface PoolEntry {
   stickyKey: string;
   sessionId: string;
   turns: number;
+  consumedEvents: Set<string>;
   busy: boolean;
   hadError: boolean;
   createdAt: number;
   lastUsedAt: number;
   /** Snapshot for archiving after the account row is gone (delete/disable); opaque to the pool. */
-  archiveCtx?: { baseUrl: string; cred: Credential; route: string; boundProxyId: string | null };
+  archiveCtx?: { baseUrl: string; cred: Credential; route: string; boundProxyId: string | null; nodeId?: string | null; teamId?: string | null };
 }
 
 export interface PoolCallbacks {
@@ -40,7 +41,7 @@ export interface PoolOptions {
   now?: () => number;
 }
 
-const keyOf = (accountId: string, model: string, stickyKey: string) => `${accountId}${model}${stickyKey}`;
+const keyOf = (accountId: string, model: string, stickyKey: string) => JSON.stringify([accountId, model, stickyKey]);
 
 export class CcrSessionPool {
   private readonly byKey = new Map<string, PoolEntry>();
@@ -88,12 +89,16 @@ export class CcrSessionPool {
   ): PoolEntry | null {
     this.stats.created++;
     if (!stickyKey) return null; // stateless requests stay unpooled
+    const old = this.byKey.get(keyOf(accountId, model, stickyKey));
+    if (old?.busy) return null; // concurrent overflow stays one-shot; never replace a live entry
+    if (old) this.retire(old);
     const e: PoolEntry = {
       accountId,
       model,
       stickyKey,
       sessionId,
       turns: 0,
+      consumedEvents: new Set(),
       busy: true,
       hadError: false,
       createdAt: this.now(),
@@ -143,7 +148,8 @@ export class CcrSessionPool {
   }
 
   private retire(e: PoolEntry): void {
-    if (this.byKey.delete(keyOf(e.accountId, e.model, e.stickyKey))) {
+    const key = keyOf(e.accountId, e.model, e.stickyKey);
+    if (this.byKey.get(key) === e && this.byKey.delete(key)) {
       this.stats.archived++;
       this.cb.archive(e);
     }

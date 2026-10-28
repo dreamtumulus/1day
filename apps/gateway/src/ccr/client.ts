@@ -2,6 +2,7 @@
 // Paths are relative to the account's effective base URL so a mock can stand
 // in for api.anthropic.com in E2E tests.
 
+import { responseBytes } from "../lifecycle.js";
 import { CCR, anthropicFingerprintHeaders, type Credential } from "@1dayapi/core";
 import type { CcrSession, EventPayload, SessionEvent } from "./types.js";
 
@@ -23,23 +24,26 @@ export interface CcrClientOptions {
   cred: Credential;
   clientHeaders: Record<string, string | string[] | undefined>;
   timeoutMs: number;
+  signal?: AbortSignal;
   /**
    * fetch-shaped override (docs/onboarding.md §6.2): route=node CCR accounts
    * send session API calls through the provider-node tunnel pinned to the
    * account's bound proxy. Defaults to direct fetch.
    */
-  transport?: (url: string, init: { method: string; headers: Record<string, string>; body?: string }) => Promise<Response>;
+  transport?: (url: string, init: { method: string; headers: Record<string, string>; body?: string; signal?: AbortSignal }) => Promise<Response>;
 }
 
 export class CcrClient {
   private readonly base: string;
   private readonly headers: Record<string, string>;
   private readonly timeoutMs: number;
+  private readonly signal?: AbortSignal;
   private readonly transport: NonNullable<CcrClientOptions["transport"]>;
 
   constructor(o: CcrClientOptions) {
     this.base = o.baseUrl.replace(/\/+$/, "");
     this.timeoutMs = o.timeoutMs;
+    this.signal = o.signal;
     this.transport =
       o.transport ??
       ((url, init) =>
@@ -47,7 +51,7 @@ export class CcrClient {
           method: init.method,
           headers: init.headers,
           body: init.body,
-          signal: AbortSignal.timeout(this.timeoutMs),
+          signal: init.signal ?? AbortSignal.timeout(this.timeoutMs),
         }));
     this.headers = {
       ...anthropicFingerprintHeaders(o.clientHeaders),
@@ -63,10 +67,11 @@ export class CcrClient {
   private async call(method: "GET" | "POST", path: string, body?: unknown): Promise<Json> {
     const res = await this.transport(this.base + path, {
       method,
+      signal: this.signal ? AbortSignal.any([this.signal, AbortSignal.timeout(this.timeoutMs)]) : AbortSignal.timeout(this.timeoutMs),
       headers: this.headers,
       body: body === undefined ? undefined : JSON.stringify(body),
     });
-    const text = await res.text();
+    const text = (await responseBytes(res, 8_388_608, this.signal)).toString("utf8");
     if (!res.ok) {
       const ra = Number(res.headers.get("retry-after"));
       throw new CcrHttpError(res.status, text, Number.isFinite(ra) && ra > 0 ? ra : undefined);
@@ -125,11 +130,14 @@ export class CcrClient {
   async listEvents(sessionId: string): Promise<SessionEvent[]> {
     const out: SessionEvent[] = [];
     let cursor: string | null = null;
+    let bytes = 0;
     for (let page = 0; page < 20; page++) {
       const qs = new URLSearchParams({ sort_order: "asc" });
       if (cursor) qs.set("cursor", cursor);
       const j = await this.call("GET", `${CCR.sessionsPath}/${encodeURIComponent(sessionId)}/events?${qs}`);
       const arr: unknown[] = Array.isArray(j.events) ? j.events : Array.isArray(j.data) ? j.data : [];
+      bytes += JSON.stringify(arr).length;
+      if (bytes > 33_554_432 || out.length + arr.length > 50_000) throw new CcrHttpError(502, "session event history exceeds budget");
       for (const raw of arr) {
         if (!raw || typeof raw !== "object") continue;
         const r = raw as Json;

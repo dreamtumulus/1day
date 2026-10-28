@@ -396,3 +396,15 @@ console.log("cc-worker: ALL PASSED");
   assert.ok(init.argv.includes("--max-thinking-tokens"), `thinking flag passed: ${init.argv.join(" ")}`);
   manager.closeAll("test");
 }
+
+
+// A transport that refuses data must stop its producer rather than keep a detached process.
+{
+  const frames=[];
+  const {manager,dataDir}=setup({send:(frame)=>{frames.push(frame);return frame.type!=="cc_worker.data";}});
+  manager.handleOpen(openMsg("send-refused"));
+  await waitFor(()=>frames.some(f=>f.sessionId==="send-refused"&&f.type==="cc_worker.error"));
+  assert.ok(frames.some(f=>f.sessionId==="send-refused"&&f.errorCode==="transport_backpressure"));
+  assert.equal(manager.activeSessions,0);
+  manager.closeAll();fs.rmSync(dataDir,{recursive:true,force:true});
+}

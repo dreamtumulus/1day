@@ -54,6 +54,7 @@ function probeHeaders(accessToken: string): Record<string, string> {
  * error (token dead → needs re-auth); 403 may just be a scope gap.
  */
 export async function probeWindow(account: AccountRow): Promise<WindowSnapshot> {
+  if (!account.team_id) throw new Error("Legacy accounts are excluded from automatic maintenance");
   if (!hasSubscriptionWindow(account)) throw new Error("window probes apply to Anthropic subscription (OAuth) accounts");
   const base = accountBaseUrl(account);
   if (!base) throw new Error("account has no resolvable base URL");
@@ -113,7 +114,7 @@ export async function pollAllWindows(): Promise<number> {
   const maxAge = Math.max(600, Number(getSetting("window_passive_max_age_sec")) || 21_600);
   const now = Date.now();
   const rows = all<AccountRow>(
-    "SELECT * FROM accounts WHERE type = 'oauth' AND platform = 'anthropic' AND status = 'active' AND review_status = 'approved'",
+    "SELECT * FROM accounts WHERE type = 'oauth' AND platform = 'anthropic' AND status = 'active' AND review_status = 'approved' AND team_id IS NOT NULL",
   );
   const due = rows.filter((a) => {
     // 冷却中的账号不探：窗口数据要等冷却结束才有意义，冷却期探测是纯风控暴露。
@@ -154,7 +155,7 @@ function nodeTransport(a: AccountRow): OAuthTransport {
 export async function refreshExpiringTokens(): Promise<void> {
   // Only accounts that can still be scheduled: a rejected or errored token is
   // not kept alive (and a dead refresh token is not retried every tick).
-  const rows = all<AccountRow>("SELECT * FROM accounts WHERE type = 'oauth' AND status = 'active' AND review_status = 'approved'");
+  const rows = all<AccountRow>("SELECT * FROM accounts WHERE type = 'oauth' AND status = 'active' AND review_status = 'approved' AND team_id IS NOT NULL");
   for (const a of rows) {
     if (!canRefresh(a)) continue;
     let cred;

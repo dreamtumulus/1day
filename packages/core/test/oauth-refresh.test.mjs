@@ -71,3 +71,43 @@ test("failed refresh releases the lock and keeps the old credential", async () =
   assert.equal(one("SELECT COUNT(*) c FROM oauth_refresh_locks WHERE account_id = ?", a.id).c, 0);
   assert.equal(readCredential(one("SELECT credential_enc FROM accounts WHERE id = ?", a.id)).refreshToken, "rt-0");
 });
+
+test("cancelled lock waiter stops promptly and cannot release another owner's lock", async () => {
+  const cred = { accessToken: "at-old", refreshToken: "rt-old", expiresAt: new Date(Date.now() + 60_000).toISOString() };
+  const a = account(cred), controller = new AbortController();
+  run("INSERT INTO oauth_refresh_locks(account_id,locked_until) VALUES (?,?)", a.id, new Date(Date.now() + 30_000).toISOString());
+  let calls = 0;
+  const started = Date.now();
+  const pending = refreshOAuthCredential(a, cred, async () => { calls++; return tokenResponse("unused"); }, controller.signal);
+  const rejected = assert.rejects(pending, { name: "AbortError" });
+  controller.abort();
+  await rejected;
+  assert.ok(Date.now() - started < 500);
+  assert.equal(calls, 0);
+  assert.equal(one("SELECT COUNT(*) c FROM oauth_refresh_locks WHERE account_id=?", a.id).c, 1);
+  run("DELETE FROM oauth_refresh_locks WHERE account_id=?", a.id);
+});
+
+test("one coalesced caller cancelling does not strand another live caller", async () => {
+  const cred = { accessToken: "at-old", refreshToken: "rt-old", expiresAt: new Date(Date.now() + 60_000).toISOString() };
+  const a = account(cred), row = one("SELECT * FROM accounts WHERE id=?", a.id), controller = new AbortController();
+  const first = core.freshCredential(row, true, (_url, init) => new Promise((_, reject) => init.signal.addEventListener("abort", () => reject(init.signal.reason), { once: true })), controller.signal);
+  const rejected = assert.rejects(first, { name: "AbortError" });
+  let liveCalls = 0;
+  const second = core.freshCredential(row, true, async () => { liveCalls++; return tokenResponse("live"); });
+  controller.abort();
+  await rejected;
+  assert.equal((await second).refreshToken, "rt-live");
+  assert.equal(liveCalls, 1);
+  assert.equal(one("SELECT COUNT(*) c FROM oauth_refresh_locks WHERE account_id=?", a.id).c, 0);
+});
+
+test("a received rotated credential is saved even when cancellation races JSON decoding", async () => {
+  const cred = { accessToken: "at-old", refreshToken: "rt-old", expiresAt: new Date(Date.now() + 60_000).toISOString() };
+  const a = account(cred), controller = new AbortController();
+  await assert.rejects(refreshOAuthCredential(a, cred, async () => ({ ok: true, json: async () => {
+    controller.abort();
+    return { access_token: "at-new", refresh_token: "rt-new", expires_in: 3600 };
+  } }), controller.signal), { name: "AbortError" });
+  assert.equal(readCredential(one("SELECT credential_enc FROM accounts WHERE id=?", a.id)).refreshToken, "rt-new");
+});

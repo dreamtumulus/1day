@@ -1,6 +1,6 @@
 import { newId } from "./crypto.js";
 import { db, one, run, tx } from "./db.js";
-import { computeCost, type TokenUsage } from "./models.js";
+import { canonicalModelId, computeCost, getModelEntry, validateTokenUsage, type BasicPrices, type TokenUsage } from "./models.js";
 import { q8 } from "./money.js";
 import { nowIso } from "./time.js";
 
@@ -43,28 +43,70 @@ export interface SettleInput {
 }
 
 export interface SettleResult {
-  settled: boolean; // false = duplicate request_id
+  settled: boolean; // false = duplicate request_id or a durably queued retry
+  pending?: boolean;
   totalCost: number;
   actualCost: number;
   providerEarning: number;
 }
 
-export function settleRequest(p: SettleInput): SettleResult {
+export interface SettlementPricing {
+  modelId: string;
+  prices: BasicPrices | null;
+  totalCost: number;
+  actualCost: number;
+  providerEarning: number;
+  cacheExcessUsd: number;
+}
+
+/** Capture the tariff once; journal retries must never consult a later price. */
+export function prepareSettlementPricing(p: SettleInput): SettlementPricing {
+  validateTokenUsage(p.usage);
+  for (const n of [p.rateMultiplier, p.payoutRate]) {
+    if (!Number.isFinite(n) || n < 0) throw new RangeError("invalid settlement rate");
+  }
+  if (p.payoutRate > 1) throw new RangeError("provider payout rate must not exceed one");
   const ok = p.statusCode >= 200 && p.statusCode < 300;
   const totalCost = ok ? q8(computeCost(p.model, p.usage)) : 0;
   const actualCost = q8(totalCost * p.rateMultiplier);
   const providerEarning = p.providerId ? q8(totalCost * p.payoutRate) : 0;
+  const prompt = p.usage.input_tokens + (p.usage.cache_read_tokens ?? 0) + (p.usage.cache_write_tokens ?? 0)
+    + (p.usage.cache_write_5m_tokens ?? 0) + (p.usage.cache_write_1h_tokens ?? 0);
+  const ideal = ok && p.accountSwitched ? computeCost(p.model, {
+    input_tokens: 0, output_tokens: p.usage.output_tokens, cache_read_tokens: prompt,
+  }) : totalCost;
+  return {
+    modelId: canonicalModelId(p.model), prices: getModelEntry(p.model)?.prices ?? null,
+    totalCost, actualCost, providerEarning,
+    cacheExcessUsd: Math.min(actualCost, q8(Math.max(0, totalCost - ideal) * p.rateMultiplier)),
+  };
+}
+
+export function settleRequest(p: SettleInput): SettleResult {
+  return settlePreparedRequest(p, prepareSettlementPricing(p));
+}
+
+/** Internal journal entry point: the persisted tariff, counts and amounts are revalidated. */
+export function settlePreparedRequest(p: SettleInput, price: SettlementPricing): SettleResult {
+  validateTokenUsage(p.usage);
+  for (const n of [price.totalCost, price.actualCost, price.providerEarning, price.cacheExcessUsd, p.rateMultiplier]) {
+    if (!Number.isFinite(n) || n < 0) throw new RangeError("invalid persisted settlement");
+    q8(n);
+  }
+  const { totalCost, actualCost, providerEarning } = price;
+  const ok = p.statusCode >= 200 && p.statusCode < 300;
   const now = nowIso();
 
   return tx(() => {
     const ins = db
       .prepare(
-        `INSERT OR IGNORE INTO usage_logs
+        `INSERT INTO usage_logs
            (id, request_id, user_id, api_key_id, group_id, account_id, provider_id, model, upstream_model,
             endpoint, stream, status_code, error_code, input_tokens, output_tokens, cache_read_tokens,
             cache_write_tokens, usage_estimated, total_cost, rate_multiplier, actual_cost, provider_earning,
             duration_ms, first_token_ms, client_ip, cc_shape, error_message, mode, upstream_status, node_id, account_switched, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(request_id) DO NOTHING`,
       )
       .run(
         newId(),
@@ -103,6 +145,9 @@ export function settleRequest(p: SettleInput): SettleResult {
     if (Number(ins.changes) === 0) {
       return { settled: false, totalCost: 0, actualCost: 0, providerEarning: 0 };
     }
+    run(`INSERT INTO usage_pricing_snapshots
+      (request_id,model_id,pricing_json,total_cost,cache_excess_usd,created_at) VALUES (?,?,?,?,?,?)`,
+      p.requestId, price.modelId, JSON.stringify(price), totalCost, price.cacheExcessUsd, now);
     if (actualCost > 0) {
       // Charge order (docs/data-model.md §4): any positive prepaid balance first, the rest accrues to the
       // credit line (credit_used_usd). Overdraft allowed: the request already happened, never drop the

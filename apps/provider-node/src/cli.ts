@@ -1,5 +1,6 @@
 #!/usr/bin/env bun
 import { NODE_VERSION } from "./version.js";
+import { managementToken } from "./management-auth.js";
 
 const CONSOLE_BASE = (
   process.env.PROVIDER_CONSOLE_URL ?? "http://127.0.0.1:16889"
@@ -34,7 +35,7 @@ Environment:
 }
 
 async function fetchCsrf(): Promise<string> {
-  const res = await fetch(CONSOLE_BASE + "/api/status");
+  const res = await fetch(CONSOLE_BASE + "/api/status", { headers: { authorization: `Bearer ${managementToken()}` } });
   const token = res.headers.get("x-csrf-token");
   if (!token) throw new Error(`Local console did not return x-csrf-token (HTTP ${res.status})`);
   return token;
@@ -45,7 +46,7 @@ async function callConsole(
   path: string,
   body?: unknown,
 ): Promise<{ status: number; json: Record<string, unknown> }> {
-  const headers: Record<string, string> = { "content-type": "application/json" };
+  const headers: Record<string, string> = { "content-type": "application/json", authorization: `Bearer ${managementToken()}` };
   if (method !== "GET") headers["x-1dayapi-csrf"] = await fetchCsrf();
   const res = await fetch(CONSOLE_BASE + path, {
     method,

@@ -115,3 +115,26 @@ test("archiveSession: 200 and 409 both succeed; 500 throws", async () => {
   await assert.rejects(client.archiveSession("cse_2"), /HTTP 500/);
   srv.close();
 });
+
+
+test("busy same-key overflow cannot replace or delete the live pooled entry",()=>{
+ const {pool,archived}=mkPool();
+ const old=pool.register("a","m","s","first",2);
+ assert.equal(pool.acquire("a","m","s"),null);
+ const overflow=pool.register("a","m","s","second",2);
+ assert.equal(overflow,null,"overflow must be one-shot");
+ pool.release(overflow,true);
+ assert.equal(pool.size,1);
+ pool.release(old,false);
+ assert.equal(pool.acquire("a","m","s"),old);
+ assert.deepEqual(archived,[]);
+});
+
+test("retiring a replaced stale entry does not remove its successor",()=>{
+ const {pool}=mkPool();
+ const stale=pool.register("a","m","s","first",2);pool.release(stale,false);
+ const newer=pool.register("a","m","s","second",2);
+ pool.release(stale,true);
+ assert.equal(pool.size,1);pool.release(newer,false);
+ assert.equal(pool.acquire("a","m","s"),newer);
+});

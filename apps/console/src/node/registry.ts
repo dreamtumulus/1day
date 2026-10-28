@@ -2,6 +2,7 @@ import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { WebSocketServer, type WebSocket } from "ws";
 import { all, boundProxyDown, decryptString, ensureDeviceId, isConversationGenerationActive, nowIso, one, run, sha256Hex, type AccountRow } from "@1dayapi/core";
 import { nodeProxyConfig, recordNodeProxyExit } from "./proxies.js";
+import { isTrustedExecutionNode } from "./trust.js";
 
 export interface IsolationContext { teamId: string; conversationId: string; generation: number }
 export function validIsolation(value: unknown): value is IsolationContext {
@@ -18,7 +19,7 @@ const activeIsolation = (c: IsolationContext) => validIsolation(c) && c.generati
 export type WsSocket = WebSocket;
 
 export function createWsServer(): WebSocketServer {
-  return new WebSocketServer({ noServer: true });
+  return new WebSocketServer({ noServer: true, maxPayload: 64 * 1024 * 1024 });
 }
 
 // ---------- types ----------
@@ -165,6 +166,7 @@ export function disconnectNode(nodeId: string, reason: string): void {
 // ---------- WS wiring ----------
 
 function send(socket: WsSocket, msg: Record<string, unknown>): void {
+  if (socket.bufferedAmount > 64 * 1024 * 1024) { socket.terminate(); return; }
   if (socket.readyState === 1) socket.send(JSON.stringify(msg));
 }
 
@@ -445,9 +447,18 @@ function handleNodeMessage(conn: NodeConn, msg: Record<string, unknown>): void {
     case "official_exit.data": {
       const s = ownedSession(conn, msg.sessionId);
       if (!s) return;
+      const encoded = String(msg.payloadBase64 ?? "");
+      const buffered = s.queue.reduce((n, c) => n + c.payload.length, 0);
+      const nodeBuffered = [...sessions.values()].filter((v) => v.nodeId === conn.nodeId)
+        .reduce((n, v) => n + v.queue.reduce((sum, c) => sum + c.payload.length, 0), 0);
+      if (encoded.length > 6 * 1024 * 1024 || buffered + encoded.length * 0.75 > 8 * 1024 * 1024 || nodeBuffered + encoded.length * 0.75 > 64 * 1024 * 1024) {
+        s.queue = []; s.closed = true; s.error = "tunnel_buffer_limit"; notify(s);
+        send(conn.socket, { type: `${s.kind ?? "official_exit"}.close`, sessionId: s.sessionId, reasonCode: "tunnel_buffer_limit" });
+        return;
+      }
       s.queue.push({
         seq: typeof msg.seq === "number" ? msg.seq : 0,
-        payload: Buffer.from(String(msg.payloadBase64 ?? ""), "base64"),
+        payload: Buffer.from(encoded, "base64"),
       });
       s.lastActivity = Date.now();
       notify(s);
@@ -528,11 +539,11 @@ function recordProxyHealth(nodeId: string, msg: Record<string, unknown>): void {
         // last known live/dead verdict until the node re-probes: flipping every
         // bound account to "proxy unknown" on each node restart would take them
         // all out of scheduling for the whole probe pass.
-        run("UPDATE node_proxies SET status = 'unknown' WHERE node_id = ? AND id = ? AND status NOT IN ('live', 'dead')", nodeId, id.slice(0, 40));
+        run("UPDATE node_proxies SET status = 'unknown' WHERE node_id = ? AND id = ? AND isolation_version=1 AND status NOT IN ('live', 'dead')", nodeId, id.slice(0, 40));
         continue;
       }
       run(
-        "UPDATE node_proxies SET status = ?, last_check_at = ?, last_error = ? WHERE node_id = ? AND id = ?",
+        "UPDATE node_proxies SET status = ?, last_check_at = ?, last_error = ? WHERE node_id = ? AND id = ? AND isolation_version=1",
         live ? "live" : "dead",
         now,
         typeof err === "string" && err ? err.slice(0, 300) : null,
@@ -620,7 +631,7 @@ function recordCcIdentities(nodeId: string, msg: Record<string, unknown>): void 
     const accountUuid = typeof uuid === "string" && /^[0-9a-f-]{32,36}$/i.test(uuid) ? uuid : null;
     if (!deviceId && !accountUuid) continue;
     const acc = one<{ team_id: string | null; device_id: string | null; account_uuid: string | null }>("SELECT team_id,device_id,account_uuid FROM accounts WHERE id=? AND node_id=?", accountId, nodeId);
-    if (!acc) continue;
+    if (!acc || !acc.team_id || !isTrustedExecutionNode(nodeId)) continue;
     if (acc.team_id && ((v as Record<string, unknown>).teamId !== acc.team_id || (acc.device_id && deviceId !== acc.device_id) ||
       (acc.account_uuid && accountUuid && acc.account_uuid !== accountUuid) ||
       (deviceId && one("SELECT 1 FROM accounts WHERE device_id=? AND id<>?", deviceId, accountId)))) continue;
@@ -728,7 +739,9 @@ export async function openTunnel(
   headersTimeoutMs?: number,
   isolation?: IsolationContext,
   backgroundTeamId?: string,
+  signal?: AbortSignal,
 ): Promise<OpenedTunnel | null> {
+  if (signal?.aborted) return null;
   const acc = one<Pick<AccountRow, "id" | "owner_id" | "node_id" | "route" | "status" | "review_status" | "device_id" | "team_id" | "bound_proxy_id">>(
     "SELECT id, owner_id, node_id, route, status, review_status, device_id, team_id, bound_proxy_id FROM accounts WHERE id = ?",
     accountId,
@@ -739,6 +752,7 @@ export async function openTunnel(
   const teamId = isolation?.teamId ?? backgroundTeamId;
   if (isolation && (!activeIsolation(isolation) || isolation.teamId !== acc.team_id)) return null;
   if (acc.team_id) {
+    if (!acc.node_id || !isTrustedExecutionNode(acc.node_id)) return null;
     if (teamId !== acc.team_id || !acc.node_id || !acc.bound_proxy_id || (proxyId && proxyId !== acc.bound_proxy_id) || kind === "official_exit") return null;
     if (boundProxyDown(acc)) return null;
     proxyId = acc.bound_proxy_id;
@@ -755,8 +769,9 @@ export async function openTunnel(
     providerId = n.provider_id;
   }
   const conn = await waitForNodeConn(providerId, acc.node_id);
-  if (!conn) return null;
+  if (!conn || signal?.aborted) return null;
   if (teamId && (!conn.capabilities?.includes("team_isolation_v1") || (conn.runtimeTeamId && conn.runtimeTeamId !== teamId))) return null;
+  if (teamId && kind === "cc_worker" && process.env.REQUIRE_TEAM_UID_ISOLATION === "1" && !conn.capabilities?.includes("team_uid_isolation_v1")) return null;
   if (!teamId && conn.runtimeTeamId) return null;
   if (isolation && !activeIsolation(isolation)) return null;
 
@@ -766,6 +781,12 @@ export async function openTunnel(
   // ws can emit open_response, stdout and close synchronously from one TCP
   // packet. Register before dispatch; a Promise continuation is already too late.
   const opened = registerOpened(conn, sessionId, kind, acc.id, isolation);
+  const cancel = () => {
+    const pending = pendingOpens.get(sessionId);
+    if (pending) { clearTimeout(pending.timer); pendingOpens.delete(sessionId); pending.resolve({ accepted: false, reasonCode: "client_cancelled" }); }
+    closeTunnel(sessionId, "client_cancelled");
+  };
+  signal?.addEventListener("abort", cancel, { once: true });
   send(
     conn.socket,
     kind === "cc_worker"
@@ -838,8 +859,9 @@ export async function openTunnel(
       closeTunnel(sessionId, "isolation_retired");
       return null;
     }
+    if (signal?.aborted) { cancel(); return null; }
     return opened;
-  });
+  }).finally(() => signal?.removeEventListener("abort", cancel));
 }
 
 /**
@@ -849,11 +871,12 @@ export async function openTunnel(
  * to be bound to. `bindingId` is only a label on the node side (the pin picks
  * the proxy, so the node's sticky per-account assignment is never consulted).
  */
-export async function openEgressOnNode(nodeId: string, proxyId: string, bindingId: string, teamId?: string): Promise<OpenedTunnel | null> {
+export async function openEgressOnNode(nodeId: string, proxyId: string, bindingId: string, teamId?: string, signal?: AbortSignal): Promise<OpenedTunnel | null> {
+  if (signal?.aborted || !isTrustedExecutionNode(nodeId)) return null;
   const n = one<{ provider_id: string }>("SELECT provider_id FROM nodes WHERE node_id = ?", nodeId);
   if (!n) return null;
   const conn = await waitForNodeConn(n.provider_id, nodeId);
-  if (!conn) return null;
+  if (!conn || signal?.aborted) return null;
   if (teamId) {
     const policy = nodeProxyConfig(nodeId);
     if (!one("SELECT 1 FROM node_proxies WHERE id=? AND node_id=? AND status='live' AND isolation_version=1", proxyId, nodeId)) return null;
@@ -863,6 +886,12 @@ export async function openEgressOnNode(nodeId: string, proxyId: string, bindingI
   const sessionId = `tun_${randomUUID()}`;
   const response = awaitOpen(conn, sessionId);
   const opened = registerOpened(conn, sessionId, "http_egress", bindingId);
+  const cancel = () => {
+    const pending = pendingOpens.get(sessionId);
+    if (pending) { clearTimeout(pending.timer); pendingOpens.delete(sessionId); pending.resolve({ accepted: false, reasonCode: "client_cancelled" }); }
+    closeTunnel(sessionId, "client_cancelled");
+  };
+  signal?.addEventListener("abort", cancel, { once: true });
   send(conn.socket, {
     type: "http_egress.open",
     sessionId,
@@ -877,8 +906,28 @@ export async function openEgressOnNode(nodeId: string, proxyId: string, bindingI
   });
   return response.then((res) => {
     if (!res.accepted) { closeTunnel(sessionId, res.reasonCode ?? "open_rejected"); return null; }
+    if (signal?.aborted) { cancel(); return null; }
     return opened;
-  });
+  }).finally(() => signal?.removeEventListener("abort", cancel));
+}
+
+export async function openCleanupEgress(nodeId: string, proxyId: string, accountId: string, teamId: string, archiveSessionId: string): Promise<OpenedTunnel | null> {
+  if (!isTrustedExecutionNode(nodeId)) return null;
+  const node = one<{ provider_id: string }>("SELECT provider_id FROM nodes WHERE node_id=?", nodeId);
+  if (!node) return null;
+  const conn = await waitForNodeConn(node.provider_id, nodeId);
+  if (!conn || !conn.capabilities?.includes("team_isolation_v1") || (conn.runtimeTeamId && conn.runtimeTeamId !== teamId)) return null;
+  if (!one(`SELECT 1 FROM node_proxies p JOIN proxy_team_claims c ON c.resource_key=p.resource_key AND c.team_id=p.team_id
+    JOIN proxy_team_events e ON e.proxy_id=p.id AND e.team_id=p.team_id AND e.node_id=p.node_id
+    WHERE p.id=? AND p.node_id=? AND p.team_id=? AND p.isolation_version=1 AND p.status='live' AND e.account_id=? AND e.event='account_bound'`, proxyId, nodeId, teamId, accountId)) return null;
+  const sessionId = `tun_${randomUUID()}`;
+  const pending = awaitOpen(conn, sessionId);
+  const opened = registerOpened(conn, sessionId, "http_egress", accountId);
+  send(conn.socket, { type: "http_egress.open", sessionId, providerId: conn.providerId, nodeId, credentialBindingId: accountId,
+    accountId, teamId, proxyId, archiveSessionId, routeMode: "http_egress", deadlineMs: 15_000 });
+  const accepted = await pending;
+  if (!accepted.accepted) { closeTunnel(sessionId, accepted.reasonCode); return null; }
+  return opened;
 }
 
 function awaitOpen(conn: NodeConn, sessionId: string): Promise<{ accepted: boolean; reasonCode?: string }> {

@@ -68,16 +68,12 @@ test("settlement writes account_switched only for successful switched requests",
   assert.equal(all("SELECT 1 FROM usage_logs WHERE user_id = ? AND account_switched = 1", uid).length, 1, "failed rows never count");
 });
 
-test("excess = cache writes priced as writes minus the same tokens as reads, times the multiplier, capped at actual_cost", () => {
+test("excess uses the immutable settlement snapshot; legacy rows are not repriced", () => {
   const row = { id: "x", model: MODEL, input_tokens: 0, output_tokens: 500, cache_read_tokens: 20000, cache_write_tokens: 40000, rate_multiplier: 1.5, actual_cost: 10, created_at: now };
   const expected = r8(((price.cache_write_per_m - price.cache_read_per_m) * 40000 / 1e6) * 1.5);
-  assert.equal(cacheExcessUsd(row), expected);
-  assert.equal(cacheExcessUsd({ ...row, cache_write_tokens: 0 }), 0, "nothing rebuilt → nothing to refund");
-  assert.equal(cacheExcessUsd({ ...row, actual_cost: 0.001 }), 0.001, "never more than what was charged");
-  // Sanity: output tokens cancel out of the difference.
-  const withOut = computeCost(MODEL, { input_tokens: 0, output_tokens: 500, cache_read_tokens: 20000, cache_write_tokens: 40000 });
-  const ideal = computeCost(MODEL, { input_tokens: 0, output_tokens: 500, cache_read_tokens: 60000, cache_write_tokens: 0 });
-  assert.equal(r8((withOut - ideal) * 1.5), expected);
+  assert.equal(cacheExcessUsd(row), 0, "missing historical tariff stays read-only");
+  assert.equal(cacheExcessUsd({ ...row, cache_excess_usd: expected }), expected);
+  assert.equal(cacheExcessUsd({ ...row, cache_excess_usd: expected, actual_cost: 0.001 }), 0.001);
 });
 
 test("run: prepaid user gets 80% of the excess on the balance, rows are bound, second run is a no-op", () => {

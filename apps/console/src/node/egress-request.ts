@@ -1,7 +1,8 @@
 import { brotliDecompressSync, gunzipSync, inflateSync } from "node:zlib";
 import * as zlib from "node:zlib";
-import type { AccountRow } from "@1dayapi/core";
-import { closeTunnel, openEgressOnNode, openTunnel, readTunnel, writeTunnel, type OpenedTunnel } from "./registry.js";
+import { one, CCR, type AccountRow } from "@1dayapi/core";
+import { isTrustedExecutionNode } from "./trust.js";
+import { closeTunnel, openCleanupEgress, openEgressOnNode, openTunnel, readTunnel, writeTunnel, type OpenedTunnel } from "./registry.js";
 
 // One HTTP request through an account's node (protocol v2 http_egress: spec
 // line out, JSON head line in, raw body until close) using the in-process
@@ -44,15 +45,48 @@ export async function requestViaNode(
  * the node infers POST whenever a body is present.
  */
 export async function requestViaNodeProxy(
-  target: { nodeId: string; proxyId: string; bindingId: string; teamId?: string },
+  target: { nodeId: string; proxyId: string; bindingId: string; teamId?: string; signal?:AbortSignal },
   url: string,
   headers: Record<string, string>,
   payload: unknown | undefined,
   rawBody?: string,
 ): Promise<EgressResult> {
-  const opened = await openEgressOnNode(target.nodeId, target.proxyId, target.bindingId, target.teamId);
+  target.signal?.throwIfAborted();
+  const opened = await openEgressOnNode(target.nodeId, target.proxyId, target.bindingId, target.teamId, target.signal);
   if (!opened) return { nodeError: "node did not accept the session (offline, draining, or pinned proxy unknown)", nodeId: null };
-  return egressRequest(opened, url, headers, payload, rawBody, DEFAULT_MAX_BYTES);
+  return egressRequest(opened, url, headers, payload, rawBody, DEFAULT_MAX_BYTES,target.signal);
+}
+
+/** This internal cleanup capability cannot run inference, change identity or select a URL. */
+export type ArchiveSnapshot={accountId:string;nodeId:string;teamId:string;proxyId:string;baseUrl:string;sessionId:string;cred:{accessToken?:string}};
+export function validateArchiveSnapshot(snapshot:ArchiveSnapshot):string|null {
+  if (!snapshot || typeof snapshot!=="object")return "cleanup_identity_invalid";
+  if (![snapshot.accountId, snapshot.nodeId, snapshot.teamId, snapshot.proxyId, snapshot.sessionId].every((v) => typeof v === "string" && /^[A-Za-z0-9_.:-]{1,180}$/.test(v)) ||
+      !isTrustedExecutionNode(snapshot.nodeId) || typeof snapshot.cred?.accessToken !== "string") return "cleanup_identity_invalid";
+  let base: URL;
+  try { base = new URL(snapshot.baseUrl); } catch { return "cleanup_target_invalid"; }
+  if (base.origin !== "https://api.anthropic.com" && !(process.env.ALLOW_UNTRUSTED_EXECUTION === "1" && ["127.0.0.1", "localhost"].includes(base.hostname))) return "cleanup_target_invalid";
+  const binding = one(`SELECT 1 FROM proxy_team_events e JOIN node_proxies p ON p.id=e.proxy_id
+    JOIN proxy_team_claims c ON c.resource_key=p.resource_key AND c.team_id=e.team_id
+    WHERE e.event='account_bound' AND e.account_id=? AND e.node_id=? AND e.team_id=? AND e.proxy_id=?
+      AND p.node_id=e.node_id AND p.team_id=e.team_id AND p.isolation_version=1 AND p.status='live'`,
+      snapshot.accountId, snapshot.nodeId, snapshot.teamId, snapshot.proxyId);
+  if (!binding) return "cleanup_binding_invalid";
+  return null;
+}
+
+export async function archiveViaNodeSnapshot(snapshot:ArchiveSnapshot):Promise<EgressResult> {
+  const invalid=validateArchiveSnapshot(snapshot);
+  if(invalid)return {nodeError:invalid,nodeId:snapshot?.nodeId??null};
+  const base=new URL(snapshot.baseUrl);
+  // The immutable account_bound event survives account deletion; the node receives
+  // only a temporary cleanup label on this same fixed organization proxy.
+  const opened = await openCleanupEgress(snapshot.nodeId, snapshot.proxyId, snapshot.accountId, snapshot.teamId, snapshot.sessionId);
+  if (!opened) return { nodeError: "cleanup_node_unavailable", nodeId: snapshot.nodeId };
+  return egressRequest(opened, `${base.origin}${CCR.sessionsPath}/${encodeURIComponent(snapshot.sessionId)}/archive`, {
+    authorization: `Bearer ${snapshot.cred.accessToken}`, "x-organization-uuid": snapshot.teamId,
+    "anthropic-version": CCR.anthropicVersion, "anthropic-beta": CCR.beta, "content-type": "application/json",
+  }, {}, undefined, 64 * 1024);
 }
 
 async function egressRequest(
@@ -62,10 +96,14 @@ async function egressRequest(
   payload: unknown | undefined,
   rawBody: string | undefined,
   maxBytes: number,
+  signal?:AbortSignal,
 ): Promise<EgressResult> {
   const { sessionId, nodeId } = opened;
   const deadline = Date.now() + NODE_REQUEST_TIMEOUT_MS;
+  const cancel=()=>closeTunnel(sessionId,"onboard_cancelled");
+  signal?.addEventListener("abort",cancel,{once:true});
   try {
+    signal?.throwIfAborted();
     const bodyText = rawBody !== undefined ? rawBody : payload === undefined ? undefined : JSON.stringify(payload);
     const spec = JSON.stringify({ url, headers, ...(bodyText === undefined ? {} : { bodyBase64: Buffer.from(bodyText, "utf8").toString("base64") }) }) + "\n";
     if (!writeTunnel(sessionId, Buffer.from(spec, "utf8"))) return { nodeError: "tunnel closed before the request was sent", nodeId };
@@ -73,6 +111,7 @@ async function egressRequest(
     let head: Record<string, unknown> | null = null;
     let closed = false;
     while (!closed && Date.now() < deadline) {
+      signal?.throwIfAborted();
       const r = await readTunnel(sessionId, Math.min(5_000, Math.max(deadline - Date.now(), 1)));
       if (!r) return { nodeError: "tunnel session vanished", nodeId };
       for (const c of r.chunks) buf = Buffer.concat([buf, Buffer.from(c.payloadBase64, "base64")]);
@@ -104,6 +143,7 @@ async function egressRequest(
     const body = encoding ? decompress(buf, encoding) : buf.subarray(0, maxBytes);
     return { status: Number(head.status) || 0, text: body.toString("utf8"), nodeId };
   } finally {
+    signal?.removeEventListener("abort",cancel);
     closeTunnel(sessionId, "test_done");
   }
 }

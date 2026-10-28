@@ -1,16 +1,19 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
-import { one, tx, type AccountRow } from "@1dayapi/core";
+import { all, one, tx, type AccountRow } from "@1dayapi/core";
 import { bad, body, notFound, num, oneOf, query, str, uuid } from "../http.js";
 import { listProxiesForPicker, resolveTeamProxy, ProxyInputError } from "../node/proxies.js";
-import { requireOps, requireProvider } from "../session.js";
+import { requireAdmin, requireOps, requireProvider } from "../session.js";
 import {
   continueAuthUrlJob,
+  cancelJob,
+  sweepStaleJobs,
   getJob,
   jobOut,
   parseCallbackUrl,
   startAuthUrlJob,
   startSessionKeyJob,
   type OnboardParams,
+  type JobRow,
   type OnboardScope,
 } from "../onboard/jobs.js";
 import { decryptJson } from "@1dayapi/core";
@@ -35,8 +38,7 @@ function loadNodeForScope(nodeId: string, scope: OnboardScope, requesterId: stri
   if (!node) notFound("node");
   if (scope === "provider" && node.provider_id !== requesterId) notFound("node"); // no cross-provider enumeration
   if (node.online !== 1) bad("node_offline", "Target node is not online");
-  const used = one<{ n: number }>("SELECT COUNT(*) AS n FROM accounts WHERE route = 'node' AND node_id = ? AND status = 'active'", nodeId)!.n;
-  if (used >= node.capacity) bad("node_at_capacity", `Node capacity reached (${used}/${node.capacity})`);
+
   return node;
 }
 
@@ -79,8 +81,10 @@ function parseParams(req: FastifyRequest, scope: OnboardScope): OnboardParams {
 /** auth_url step 2: paste the callback URL back into a pending job. */
 function continueCallback(req: FastifyRequest, scope: OnboardScope, jobId: string, reauthAccountId?: string) {
   const b = body(req);
+  sweepStaleJobs();
   const job = getJob(jobId);
   if (!job || (scope === "provider" && (job.scope !== "provider" || job.requester_id !== req.user!.id))) notFound("onboarding_job");
+  if (req.user!.role === "ops" && !reauthAccountId) bad("role_not_permitted", "Account ops may only re-authorize existing accounts",403);
   if (reauthAccountId) {
     const params = job.params_json ? (JSON.parse(job.params_json) as OnboardParams) : {};
     if (params.reauthAccountId !== reauthAccountId) notFound("onboarding_job");
@@ -166,6 +170,7 @@ async function reauth(req: FastifyRequest) {
 
 async function jobStatus(req: FastifyRequest, scope: OnboardScope) {
   const { jobId } = req.params as { jobId: string };
+  sweepStaleJobs();
   const job = getJob(jobId);
   if (!job || (scope === "provider" && (job.scope !== "provider" || job.requester_id !== req.user!.id))) {
     notFound("onboarding_job");
@@ -178,11 +183,29 @@ export function registerOnboardingRoutes(app: FastifyInstance): void {
   const preAdmin = { preHandler: requireOps };
   const preProvider = { preHandler: requireProvider };
 
-  app.post("/api/admin/accounts/onboard", preAdmin, (req) => onboard(req, "admin"));
+  app.post("/api/admin/accounts/onboard", { preHandler: requireAdmin }, (req) => onboard(req, "admin"));
   app.post("/api/provider/accounts/onboard", preProvider, (req) => onboard(req, "provider"));
   app.post("/api/admin/accounts/:id/reauth", preAdmin, (req) => reauth(req));
   app.get("/api/admin/accounts/onboard/:jobId", preAdmin, (req) => jobStatus(req, "admin"));
   app.get("/api/provider/accounts/onboard/:jobId", preProvider, (req) => jobStatus(req, "provider"));
+
+  for (const scope of ["admin", "provider"] as const) {
+    app.get(`/api/${scope}/accounts/onboard`, scope === "admin" ? preAdmin : preProvider, async (req) => {
+      sweepStaleJobs();
+      const jobs=scope==='provider' ? all<JobRow>("SELECT * FROM onboarding_jobs WHERE isolation_version=1 AND scope='provider' AND requester_id=? ORDER BY created_at DESC LIMIT 30",req.user!.id) :
+        all<JobRow>("SELECT * FROM onboarding_jobs WHERE isolation_version=1 ORDER BY created_at DESC LIMIT 30");
+      return {data:jobs.filter(j=>req.user!.role!=='ops' || (j.params_json && (JSON.parse(j.params_json) as OnboardParams).reauthAccountId)).map(j=>jobOut(j,req.user!.role==='admin'))};
+    });
+    app.post(`/api/${scope}/accounts/onboard/:jobId/cancel`, scope === "admin" ? preAdmin : preProvider, async (req) => {
+      const {jobId}=req.params as {jobId:string};
+      const job=getJob(jobId);
+      if(!job || job.isolation_version!==1 || (scope==='provider' && (job.scope!=='provider' || job.requester_id!==req.user!.id)))notFound("onboarding_job");
+      const params:OnboardParams=job.params_json?JSON.parse(job.params_json):{};
+      if(req.user!.role==='ops' && !params.reauthAccountId)bad("role_not_permitted","Account ops may only cancel re-authorization jobs",403);
+      cancelJob(jobId);
+      return {data:jobOut(getJob(jobId)!,req.user!.role==='admin')};
+    });
+  }
 
   // Provider-side proxy picker (docs/onboarding.md §4): own nodes only,
   // credential-free shape; free=1 keeps live unbound proxies.

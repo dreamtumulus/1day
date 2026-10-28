@@ -307,6 +307,7 @@ const MIGRATIONS: Array<{ version: number; up: (d: DatabaseSync, log: Log) => vo
   { version: 19, up: migration19 },
   { version: 20, up: migration20 },
   { version: 21, up: migration21 },
+  { version: 22, up: migration22 },
 ];
 
 // 上号员令牌（独立鉴权的上号站点 /onboard）：admin 签发，绑定目标节点；
@@ -718,4 +719,40 @@ function migration21(d: DatabaseSync, log: Log): void {
       BEGIN SELECT RAISE(ABORT, 'isolation history is append-only'); END`);
   }
   log("migration 21: additive organization isolation, proxy history and conversation generations; no legacy backfill");
+}
+
+// Audit repair: new state only; no legacy row is rewritten or backfilled.
+function migration22(d: DatabaseSync, log: Log): void {
+  addColumns(d, log, "onboarding_jobs", [["expires_at", "TEXT"]]);
+  d.exec(`
+    CREATE TABLE IF NOT EXISTS usage_pricing_snapshots (
+      request_id TEXT PRIMARY KEY,
+      model_id TEXT NOT NULL,
+      pricing_json TEXT NOT NULL,
+      total_cost REAL NOT NULL CHECK(total_cost >= 0),
+      cache_excess_usd REAL NOT NULL CHECK(cache_excess_usd >= 0),
+      created_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS ccr_archive_jobs (
+      id TEXT PRIMARY KEY, payload_enc TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0,
+      next_attempt_at TEXT NOT NULL, last_error TEXT, created_at TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending'
+    );
+    CREATE INDEX IF NOT EXISTS idx_ccr_archive_pending ON ccr_archive_jobs(status,next_attempt_at);
+    CREATE TABLE IF NOT EXISTS gateway_request_budgets (
+      request_id TEXT PRIMARY KEY, user_id TEXT NOT NULL, api_key_id TEXT NOT NULL,
+      reserved_usd REAL NOT NULL CHECK(reserved_usd >= 0), expires_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_gateway_budget_user ON gateway_request_budgets(user_id,expires_at);
+    CREATE INDEX IF NOT EXISTS idx_gateway_budget_key ON gateway_request_budgets(api_key_id,expires_at);
+    CREATE TABLE IF NOT EXISTS gateway_account_leases (
+      id TEXT PRIMARY KEY, account_id TEXT NOT NULL, owner TEXT NOT NULL, expires_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_gateway_account_leases ON gateway_account_leases(account_id,expires_at);
+    CREATE TABLE IF NOT EXISTS gateway_account_hits (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, account_id TEXT NOT NULL, hit_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_gateway_account_hits ON gateway_account_hits(account_id,hit_at);
+  `);
+  log("migration 22: additive audit repair leases, onboarding expiry and immutable billing snapshots");
 }

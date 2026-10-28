@@ -1,5 +1,6 @@
 import { isIP } from "node:net";
 import { all, claimProxyResource, decryptString, encryptString, ensureUpstreamTeam, getSetting, isoIn, normalizeTeamId, nowIso, one, recordProxyTeamEvent, run, tx } from "@1dayapi/core";
+import { expireJobReservations, liveReservationSql } from "../onboard/reservations.js";
 import { proxyIdFromUrl } from "./registry.js";
 
 // Node proxy pool ledger (protocol v2). Plaintext proxy URLs only exist in
@@ -132,7 +133,7 @@ export function replaceNodeProxies(nodeId: string, proxies: ProxyInput[]): Repla
   const bound = all<{ id: string; bound_account_id: string }>(
     `SELECT p.id,p.bound_account_id FROM node_proxies p WHERE p.node_id = ? AND
       (p.bound_account_id IS NOT NULL OR EXISTS(SELECT 1 FROM accounts a WHERE a.bound_proxy_id=p.id)
-       OR EXISTS(SELECT 1 FROM onboarding_jobs j WHERE j.proxy_id=p.id AND j.status IN ('working','pending_callback')))`,
+       OR EXISTS(SELECT 1 FROM onboarding_jobs j WHERE j.proxy_id=p.id AND ${liveReservationSql()}))`,
     nodeId,
   ).filter((r) => !keep.has(r.id));
   if (bound.length) {
@@ -163,7 +164,7 @@ export function replaceNodeProxies(nodeId: string, proxies: ProxyInput[]): Repla
 }
 
 /** Proxies an in-flight onboarding job has already picked (not yet bound: the bot is still running). */
-export const RESERVED_PROXY_SQL = "SELECT proxy_id FROM onboarding_jobs WHERE proxy_id IS NOT NULL AND status IN ('working', 'pending_callback')";
+export const RESERVED_PROXY_SQL = `SELECT proxy_id FROM onboarding_jobs j WHERE proxy_id IS NOT NULL AND ${liveReservationSql()}`;
 
 /** SQL predicate (one `?` = now ISO): the proxy is not in a release cooldown. */
 const NOT_COOLING_SQL = "(cooldown_until IS NULL OR cooldown_until <= ?)";
@@ -200,7 +201,7 @@ export function recordNodeProxyExit(nodeId:string,proxyId:string,ip:string):bool
     if(!key){run("UPDATE node_proxies SET status='dead',last_error='exit identity unavailable' WHERE id=?",proxyId);return false;}
     const owner=one<{team_id:string}>("SELECT team_id FROM proxy_team_claims WHERE resource_key=?",key);
     const reservedByOther=!!p.team_id && one(`SELECT 1 FROM onboarding_jobs WHERE proxy_resource_key=?
-      AND isolation_version=1 AND status IN ('working','pending_callback') AND (team_id IS NULL OR team_id<>?)`,key,p.team_id);
+      AND ${liveReservationSql('onboarding_jobs')} AND (team_id IS NULL OR team_id<>?)`,key,p.team_id);
     const conflict=!!p.team_id && (!!owner && owner.team_id!==p.team_id || !!reservedByOther || !!one("SELECT 1 FROM proxy_quarantine WHERE resource_key=?",key));
     if(conflict){
       run("INSERT OR IGNORE INTO proxy_quarantine(resource_key,reason) VALUES (?,?)",`proxy:${p.id}`,"observed exit organization conflict");
@@ -222,7 +223,7 @@ export function proxyOccupancy(resourceKey: string, excludeJobId = ""): { bound:
   const bound = one<{ n: number }>(`SELECT COUNT(*) n FROM accounts a JOIN node_proxies p ON p.id=a.bound_proxy_id
     WHERE p.resource_key=?`, resourceKey)?.n ?? 0;
   const reserved = one<{ n: number }>(`SELECT COUNT(*) n FROM onboarding_jobs j
-    WHERE j.proxy_resource_key=? AND j.isolation_version=1 AND j.id<>? AND j.status IN ('working','pending_callback')
+    WHERE j.proxy_resource_key=? AND j.isolation_version=1 AND j.id<>? AND ${liveReservationSql()}
       AND (j.reservation_account_id IS NULL OR NOT EXISTS (
         SELECT 1 FROM accounts a JOIN node_proxies p ON p.id=a.bound_proxy_id
         WHERE a.id=j.reservation_account_id AND p.resource_key=j.proxy_resource_key))`, resourceKey, excludeJobId)?.n ?? 0;
@@ -243,12 +244,13 @@ function teamCompatible(p: IsolatedProxy, teamId: string | null): boolean {
   // exclusive resource; it may not borrow another organization's exit.
   if (!teamId && proxyOccupancy(p.resource_key).total !== 0) return false;
   const pending = all<{ team_id: string | null;proxy_resource_key:string|null }>(`SELECT team_id,proxy_resource_key FROM onboarding_jobs
-    WHERE (proxy_resource_key=? OR proxy_id=?) AND isolation_version=1 AND status IN ('working','pending_callback')`, p.resource_key,p.id);
+    WHERE (proxy_resource_key=? OR proxy_id=?) AND ${liveReservationSql('onboarding_jobs')}`, p.resource_key,p.id);
   return pending.every((j) => !!teamId && j.team_id === teamId && j.proxy_resource_key===p.resource_key);
 }
 
 /** Caller reserves the returned resource inside the same BEGIN IMMEDIATE. */
 export function resolveTeamProxy(nodeId: string, teamIdInput?: string | null, requested?: string, excludeJobId=""): IsolatedProxy {
+  expireJobReservations();
   const teamId = normalizeTeamId(teamIdInput);
   if (teamIdInput && !teamId) throw new ProxyInputError("team_identity_invalid");
   const candidates = all<IsolatedProxy>("SELECT * FROM node_proxies WHERE node_id=? ORDER BY last_check_at,id", nodeId)
@@ -449,7 +451,7 @@ export function nodeProxyConfig(nodeId: string): {
     proxyAccounts[p.id]=[];
     if(!p.resource_key || one("SELECT 1 FROM proxy_quarantine WHERE resource_key IN (?,?)",p.resource_key,`proxy:${p.id}`))continue;
     const jobs = all<{id:string;team_id:string|null}>(`SELECT id,team_id FROM onboarding_jobs WHERE proxy_id=?
-      AND proxy_resource_key=? AND isolation_version=1 AND status IN ('working','pending_callback')`,p.id,p.resource_key);
+      AND proxy_resource_key=? AND ${liveReservationSql('onboarding_jobs')}`,p.id,p.resource_key);
     const team = p.team_id ?? jobs[0]?.team_id ?? (jobs[0] ? `pending:${jobs[0].id}` : null);
     if (!team) continue;
     const owner=one<{team_id:string}>("SELECT team_id FROM proxy_team_claims WHERE resource_key=?",p.resource_key);

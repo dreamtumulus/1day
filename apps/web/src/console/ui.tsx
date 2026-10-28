@@ -127,6 +127,8 @@ export function useAsync<T>(loader: () => Promise<T>, deps: unknown[] = []): Asy
   useEffect(() => {
     let alive = true;
     setLoading(true);
+    setData(null);
+    setError(null);
     loaderRef
       .current()
       .then((d) => {
@@ -678,7 +680,7 @@ export function EmptyState({ title, desc, action }: { title?: ReactNode; desc?: 
 
 /** Renders loading / error / content for an AsyncState. */
 export function Async<T>({ state, children, rows }: { state: AsyncState<T>; children: (d: T) => ReactNode; rows?: number }) {
-  if (state.error && !state.data) return <ErrorState message={state.error} onRetry={state.reload} />;
+  if (state.error) return <ErrorState message={state.error} onRetry={state.reload} />;
   if (!state.data) return <Loading rows={rows} />;
   return <>{children(state.data)}</>;
 }

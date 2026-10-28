@@ -4,6 +4,8 @@ import { bad, body, notFound, num, sendError, str, uuid } from "../http.js";
 import { listProxiesForPicker, resolveTeamProxy, ProxyInputError } from "../node/proxies.js";
 import {
   continueAuthUrlJob,
+  cancelJob,
+  sweepStaleJobs,
   getJob,
   jobOut,
   parseCallbackUrl,
@@ -12,6 +14,7 @@ import {
   type JobRow,
   type OnboardParams,
 } from "../onboard/jobs.js";
+import { nodeOccupancy } from "../node/capacity.js";
 import { requireAdmin } from "../session.js";
 
 // 上号员站点（/onboard）的独立鉴权与上号 API。管理员在控制台签发 1dk_onb_…
@@ -114,10 +117,7 @@ function generateOnboardToken(): { plaintext: string; hash: string; preview: str
 // ---------- 上号员：节点视图与上号作业 ----------
 
 function nodeView(n: NodeRowLite) {
-  const used = one<{ n: number }>(
-    "SELECT COUNT(*) AS n FROM accounts WHERE route = 'node' AND node_id = ? AND status = 'active'",
-    n.node_id,
-  )!.n;
+  const used = nodeOccupancy(n.node_id);
   const freeProxies = one<{ n: number }>(
     "SELECT COUNT(*) AS n FROM node_proxies WHERE node_id = ? AND isolation_version=1 AND status='live' AND resource_key IS NOT NULL",
     n.node_id,
@@ -143,6 +143,7 @@ async function onboardAsToken(req: FastifyRequest) {
 
   // auth_url 第二步：回填回调 URL。
   if (method === "auth_url" && typeof b.jobId === "string" && b.jobId) {
+    sweepStaleJobs();
     const job = getJob(b.jobId);
     if (!job || job.scope !== "onboarder" || job.requester_id !== requesterId) notFound("onboarding_job");
     if (job.method !== "auth_url" || job.status !== "pending_callback" || !job.payload_enc) {
@@ -231,6 +232,13 @@ export function registerOnboarderRoutes(app: FastifyInstance): void {
     return { data: listProxiesForPicker(node.node_id, true) };
   });
   app.post("/api/onboard/jobs", preOnb, (req) => onboardAsToken(req));
+  app.post("/api/onboard/jobs/:jobId/cancel", preOnb, async (req) => {
+    const {jobId}=req.params as {jobId:string};
+    const job=getJob(jobId);
+    if(!job || job.isolation_version!==1 || job.scope!=="onboarder" || job.requester_id!==`onb:${req.onboardToken!.id}`)notFound("onboarding_job");
+    cancelJob(jobId);
+    return {data:jobOut(getJob(jobId)!)};
+  });
   app.get("/api/onboard/jobs", preOnb, async (req) => ({
     data: all<JobRow>(
       "SELECT * FROM onboarding_jobs WHERE scope = 'onboarder' AND requester_id = ? ORDER BY created_at DESC LIMIT 20",
@@ -239,6 +247,7 @@ export function registerOnboarderRoutes(app: FastifyInstance): void {
   }));
   app.get("/api/onboard/jobs/:jobId", preOnb, async (req) => {
     const { jobId } = req.params as { jobId: string };
+    sweepStaleJobs();
     const job = getJob(jobId);
     if (!job || job.scope !== "onboarder" || job.requester_id !== `onb:${req.onboardToken!.id}`) {
       notFound("onboarding_job");

@@ -104,6 +104,7 @@ export class PlatformBridge {
   private graceTimer: NodeJS.Timeout | null = null;
   private pendingFrames: Array<{ sessionId: string; json: string }> = [];
   private pendingBytes = 0;
+  private sendBackpressured = false;
   private exitManager: OfficialExitManager;
   private egressManager: HttpEgressManager;
   private workerManager: CcWorkerManager;
@@ -289,6 +290,7 @@ export class PlatformBridge {
     this.ws = ws;
 
     ws.on("open", () => {
+      this.sendBackpressured = false;
       this.state = "connected";
       this.workerManager.scanIdentities(); // first heartbeat after (re)connect carries every account's device identity
       this.attempts = 0;
@@ -299,7 +301,7 @@ export class PlatformBridge {
         nodeId: id.nodeId,
         providerId: id.providerId,
         nodeVersion: NODE_VERSION,
-        capabilities: [...PROTOCOL_CAPABILITIES],
+        capabilities: [...PROTOCOL_CAPABILITIES, ...(process.env.CC_WORKER_TEAM_UIDS === "1" || (process.env.PROVIDER_TEAM_ID && process.getuid?.() !== 0) ? ["team_uid_isolation_v1"] : [])],
         ...(process.env.PROVIDER_TEAM_ID ? { runtimeTeamId: process.env.PROVIDER_TEAM_ID } : {}),
         isolatedContexts: [...this.workerManager.isolatedContexts(), ...this.egressManager.isolatedContexts()],
         acceptingSessions: !this.draining,
@@ -495,8 +497,16 @@ export class PlatformBridge {
   }
 
   private send(message: unknown): boolean {
+    if (this.sendBackpressured) return false;
     const json = JSON.stringify(message);
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      if (this.ws.bufferedAmount + Buffer.byteLength(json) > 64 * 1024 * 1024) {
+        this.sendBackpressured = true;
+        this.log("platform send buffer exceeded 64 MiB; cancelling producers");
+        this.closeAllSessions("transport_backpressure");
+        this.ws.terminate();
+        return false;
+      }
       this.ws.send(json);
       return true;
     }

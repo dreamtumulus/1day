@@ -5,7 +5,7 @@
 # api.1dayapi.com to whichever one the `gateway_live` upstream names. A release starts the idle
 # instance on the freshly built code, waits until its /health answers, points nginx at it
 # (`nginx reload` keeps every open connection), then stops the old instance, which drains its
-# in-flight requests for up to 75 s. Nothing is ever refused in between.
+# in-flight requests for up to 25 min. Nothing is ever refused in between.
 #
 # Usage: gateway-switch            after `pnpm build` in /opt/1dayapi
 #        gateway-switch --status   show which instance is live
@@ -49,4 +49,4 @@ systemctl reload nginx
 systemctl enable -q "$new_unit"
 systemctl disable -q "$old_unit" 2>/dev/null || true
 systemctl stop --no-block "$old_unit"
-echo "live=$next ($new_unit); $old_unit draining (<=75 s)"
+echo "live=$next ($new_unit); $old_unit draining (<=25 min)"

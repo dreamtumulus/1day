@@ -3,7 +3,7 @@ import Fastify, { type FastifyError, type FastifyInstance } from "fastify";
 import { HttpError, sendError } from "./http.js";
 import { startWindowPoller } from "./ccr/window-poll.js";
 import { startCacheRefundScheduler } from "./cache-refund-scheduler.js";
-import { sweepStaleJobs } from "./onboard/jobs.js";
+import { sweepStaleJobs, startOnboardingMaintenance } from "./onboard/jobs.js";
 import { registerNodeRoutes } from "./node/routes.js";
 import { registerAdminRoutes } from "./routes/admin.js";
 import { registerOnboardingRoutes } from "./routes/onboarding.js";
@@ -12,14 +12,14 @@ import { registerProviderRoutes } from "./routes/provider.js";
 import { registerPublicRoutes } from "./routes/public.js";
 import { registerUserRoutes } from "./routes/user.js";
 import { cleanupSessions, ensureInitialAdmin } from "./session.js";
+import { startArchiveCleanup } from "./node/archive-cleanup.js";
 
 export async function buildApp(): Promise<FastifyInstance> {
   const app = Fastify({
     logger: { level: process.env.LOG_LEVEL ?? "info" },
     bodyLimit: 32 * 1024 * 1024, // cc_worker open envelopes may carry base64 images (gateway bodyLimit is 32 MiB too)
-    // Behind nginx set TRUST_PROXY=1 so req.ip is the real client (login
-    // rate limiting). Internal endpoints check the socket address instead.
-    trustProxy: process.env.TRUST_PROXY === "1",
+    // Nginx overwrites XFF using the client address from its trusted CDN chain.
+    trustProxy: (process.env.TRUST_PROXY ?? "").split(",").map((v) => v.trim()).filter(Boolean),
   });
 
   const origins = (process.env.CONSOLE_CORS_ORIGINS ?? "http://localhost:8402,http://127.0.0.1:8402")
@@ -45,6 +45,9 @@ export async function buildApp(): Promise<FastifyInstance> {
   cleanupSessions();
   setInterval(cleanupSessions, 3_600_000).unref();
   const swept = sweepStaleJobs();
+  const stopOnboardingMaintenance = startOnboardingMaintenance();
+  const stopArchiveCleanup = startArchiveCleanup();
+  app.addHook("onClose", async () => { stopOnboardingMaintenance(); stopArchiveCleanup(); });
   if (swept) app.log.warn(`onboarding: ${swept} stale job(s) marked failed at boot`);
   startWindowPoller(app.log);
   startCacheRefundScheduler(app.log);

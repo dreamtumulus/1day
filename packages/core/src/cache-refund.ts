@@ -1,7 +1,6 @@
 import { applyLedger, refundCredit } from "./billing.js";
 import { newId } from "./crypto.js";
 import { all, one, run, tx } from "./db.js";
-import { computeCost } from "./models.js";
 import { q8 } from "./money.js";
 import { getSetting } from "./settings.js";
 import { nowIso } from "./time.js";
@@ -28,10 +27,14 @@ export interface CacheRefundCandidate {
   rate_multiplier: number;
   actual_cost: number;
   created_at: string;
+  cache_excess_usd?: number | null;
 }
 
-const CANDIDATE_SQL = `SELECT id, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, rate_multiplier, actual_cost, created_at
-   FROM usage_logs WHERE account_switched = 1 AND cache_refund_id IS NULL AND status_code < 300`;
+// Historic rows without a settlement-time snapshot remain read-only. They cannot
+// be repriced safely and are deliberately excluded from automatic refunds.
+const CANDIDATE_SQL = `SELECT id, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, rate_multiplier, actual_cost, u.created_at, s.cache_excess_usd
+   FROM usage_logs u JOIN usage_pricing_snapshots s ON s.request_id = u.request_id
+   WHERE account_switched = 1 AND cache_refund_id IS NULL AND status_code < 300`;
 
 /** 0–100 integer; anything unparsable falls back to the default 80. */
 export function cacheRefundPercent(): number {
@@ -53,21 +56,14 @@ export function cacheRefundEnabled(): boolean {
 /**
  * What this switched request paid over the no-switch price, after the group
  * multiplier: billed cost − the cost with every prompt token (input + cache read +
- * cache write) at the cache-read price. Output is unaffected. Prices are today's
- * table on both sides, so a price change cannot create or hide an excess; clamped
- * to [0, actual_cost].
+ * cache write) at the cache-read price. Settlement stores this value once;
+ * later price changes never revalue a historical bill. Missing snapshots do
+ * not participate in automatic refunds.
  */
 export function cacheExcessUsd(r: CacheRefundCandidate): number {
-  const billed = computeCost(r.model, {
-    input_tokens: r.input_tokens,
-    output_tokens: r.output_tokens,
-    cache_read_tokens: r.cache_read_tokens,
-    cache_write_tokens: r.cache_write_tokens,
-  });
-  const prompt = r.input_tokens + r.cache_read_tokens + r.cache_write_tokens;
-  const ideal = computeCost(r.model, { input_tokens: 0, output_tokens: r.output_tokens, cache_read_tokens: prompt, cache_write_tokens: 0 });
-  const excess = q8(Math.max(0, billed - ideal) * r.rate_multiplier);
-  return Math.min(excess, Math.max(0, q8(r.actual_cost)));
+  const excess = r.cache_excess_usd;
+  if (typeof excess !== "number" || !Number.isFinite(excess) || excess < 0) return 0;
+  return Math.min(q8(excess), Math.max(0, q8(r.actual_cost)));
 }
 
 export interface CacheRefundPending {
@@ -95,12 +91,12 @@ function summarize(rows: CacheRefundCandidate[], percent: number): CacheRefundPe
 }
 
 export function pendingCacheRefund(userId: string, percent = cacheRefundPercent()): CacheRefundPending {
-  return summarize(all<CacheRefundCandidate>(`${CANDIDATE_SQL} AND user_id = ? ORDER BY created_at`, userId), percent);
+  return summarize(all<CacheRefundCandidate>(`${CANDIDATE_SQL} AND user_id = ? ORDER BY u.created_at`, userId), percent);
 }
 
 /** Platform-wide pending excess (admin dashboard). */
 export function pendingCacheRefundAll(percent = cacheRefundPercent()): CacheRefundPending & { users: number } {
-  const rows = all<CacheRefundCandidate & { user_id: string }>(`${CANDIDATE_SQL.replace("SELECT id,", "SELECT user_id, id,")} ORDER BY created_at`);
+  const rows = all<CacheRefundCandidate & { user_id: string }>(`${CANDIDATE_SQL.replace("SELECT id,", "SELECT user_id, id,")} ORDER BY u.created_at`);
   return { ...summarize(rows, percent), users: new Set(rows.map((r) => r.user_id)).size };
 }
 
@@ -143,7 +139,7 @@ function fmtPeriod(from: string | null, to: string | null): string {
 export function runCacheRefund(userId: string, opts: RunCacheRefundOpts = {}): CacheRefundRow | null {
   const percent = Math.min(100, Math.max(0, Math.round(opts.percent ?? cacheRefundPercent())));
   return tx(() => {
-    const rows = all<CacheRefundCandidate>(`${CANDIDATE_SQL} AND user_id = ? ORDER BY created_at`, userId);
+    const rows = all<CacheRefundCandidate>(`${CANDIDATE_SQL} AND user_id = ? ORDER BY u.created_at`, userId);
     if (rows.length === 0) return null;
     const pending = summarize(rows, percent);
     const id = newId();

@@ -28,7 +28,8 @@ test("q8 rounds half away from zero to 8 decimals", () => {
   assert.equal(q8(0.000000005), 0.00000001);
   assert.equal(q8(-0.000000005), -0.00000001);
   assert.equal(q8(1.23456789123), 1.23456789);
-  assert.equal(q8(NaN), 0);
+  assert.throws(() => q8(NaN), RangeError);
+  assert.throws(() => q8(Infinity), RangeError);
 });
 
 test("effective base URL", () => {

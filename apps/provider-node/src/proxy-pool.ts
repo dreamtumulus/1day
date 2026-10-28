@@ -190,6 +190,12 @@ export class ProxyPool {
    * (never fall back to sticky, never direct). Unprobed (live=null) counts as
    * usable, matching pickForAccount.
    */
+  getPinnedForArchive(id: string, teamId: string): string | null {
+    if (!teamId || this.store.data.proxyTeams?.[id] !== teamId) return null;
+    for (const [url, health] of this.health) if (proxyId(url) === id) return health.live !== false ? url : null;
+    return null;
+  }
+
   getPinned(id: string, accountId?: string, teamId?: string): string | null {
     const team = this.store.data.proxyTeams?.[id];
     if (team || teamId) {

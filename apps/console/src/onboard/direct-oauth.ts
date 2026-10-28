@@ -12,6 +12,7 @@ import { requestViaNodeProxy } from "../node/egress-request.js";
 // The method=auth_url callback (§2.2) shares the code exchange + validate tail.
 
 export interface EgressTarget {
+  signal?:AbortSignal;
   nodeId: string;
   proxyId: string;
   /** Label for the node's session log (no account exists yet). */
@@ -33,6 +34,7 @@ export interface AuthResult {
 export class OnboardError extends Error {
   constructor(
     public readonly code:
+      | "job_expired"
       | "node_offline"
       | "proxy_unverified"
       | "proxy_team_mismatch"

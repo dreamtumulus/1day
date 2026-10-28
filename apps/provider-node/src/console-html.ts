@@ -95,10 +95,17 @@ const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 
 async function api(method, path, body) {
+  let adminToken = sessionStorage.getItem("1dayapi-management-token");
+  if (!adminToken) {
+    adminToken = prompt("请输入节点管理凭据（服务配置目录中的 management.token）");
+    if (!adminToken) throw new Error("需要节点管理凭据");
+    sessionStorage.setItem("1dayapi-management-token", adminToken.trim());
+  }
   const res = await fetch(path, {
     method,
     headers: {
       "content-type": "application/json",
+      authorization: "Bearer " + adminToken.trim(),
       ...(method !== "GET" && csrf ? { "x-1dayapi-csrf": csrf } : {}),
     },
     body: body === undefined ? undefined : JSON.stringify(body),
@@ -106,6 +113,7 @@ async function api(method, path, body) {
   const t = res.headers.get("x-csrf-token");
   if (t) csrf = t;
   const json = await res.json().catch(() => ({}));
+  if (res.status === 401) sessionStorage.removeItem("1dayapi-management-token");
   if (!res.ok) throw new Error(json?.error?.message || json?.error?.code || ("HTTP " + res.status));
   return json;
 }

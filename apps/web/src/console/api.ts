@@ -521,6 +521,9 @@ export interface ProxyPickerItem {
 export type OnboardJobStatus = "pending_callback" | "working" | "done" | "failed";
 
 export interface OnboardJob {
+  method?: "auth_url" | "session_key";
+  nodeId?: string;
+  expiresAt?: string;
   jobId: string;
   status: OnboardJobStatus;
   accountId?: string;
@@ -553,6 +556,9 @@ export const adminAccountReauth = (accountId: string, body: Record<string, unkno
 
 export const onboardJob = (scope: OnboardScope, jobId: string) =>
   api.get<OnboardJob>(`/api/${scope}/accounts/onboard/${jobId}`);
+
+export const onboardCancel = (scope: OnboardScope, jobId: string) =>
+  api.post<OnboardJob>(`/api/${scope}/accounts/onboard/${jobId}/cancel`, {});
 
 export const nodeProxies = (scope: OnboardScope, nodeId: string, freeOnly = false) =>
   api.get<ProxyPickerItem[]>(`/api/${scope}/nodes/${nodeId}/proxies`, freeOnly ? { free: 1 } : undefined);

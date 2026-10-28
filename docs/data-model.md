@@ -74,8 +74,8 @@
   `model_cooldowns`（迁移 9，JSON `{scope:{until,reason,used,resetAt}}`，目前 scope 只有 `fable`；gateway.md §3）。
   来源：网关对 Anthropic OAuth 账户每个响应的 `anthropic-ratelimit-unified-*` 头被动采样，以及 console 的 usage 探测。凭证 JSON 另含 `orgUuid`、`environmentId`。
 - 原样透传（迁移 19，gateway.md §4a）：`raw_passthrough`（1 = 同协议请求原样转给中转，不做 Claude Code 归一 / 指纹 / 身份固定）。
-- 上号（迁移 5，docs/onboarding.md）：`rpm_limit`（每分钟请求上限，0 = 不限，网关内存滑动窗口执行）、
-  `bound_proxy_id → node_proxies(id)`（一号一代理全生命周期绑定；绑定代理非 `live` 时账户跳过调度但不算失败、不冷却；
+- 上号（迁移 5，docs/onboarding.md）：`rpm_limit`（每分钟请求上限，0 = 不限，迁移 22 后由共享 SQLite 滑动窗口执行）、
+  `bound_proxy_id → node_proxies(id)`（账号固定代理全生命周期绑定；同组织默认两号共享一个 IP，正常容量不足才用第三槽，上限三号含有效预约；绑定代理非 `live` 时账户跳过调度但不算失败、不冷却；
   删除账户时同事务释放）。
 
 ### model_prices
@@ -84,7 +84,7 @@
 
 ### usage_logs
 - 每次请求一行，`request_id` 唯一（结算幂等键）。失败请求 `status_code ≥ 300`、费用 0、`error_code` 有值。
-- `input_tokens` **不含**缓存读；`cache_read_tokens`、`cache_write_tokens` 单列。`usage_estimated=1` 表示上游没报 usage、按字符 /4 估算。
+- `input_tokens` **不含**缓存读；`cache_read_tokens`、`cache_write_tokens` 单列。`usage_estimated=1` 表示上游未报告或报告非法 usage，按请求正文和已生成文本估算；图片/文档按媒体块估算，不按 base64 字节收费。计数必须为有限非负整数，每项及提示词合计最多十亿。
 - 费用三列：`total_cost`（标准价）、`actual_cost = q8(total × rate_multiplier)`（实扣）、`provider_earning = q8(total × payout_rate)`（仅号商账户）。
 - `account_id` / `provider_id` 不设外键，账户删除后历史仍可查。
 - `account_switched`（迁移 15）：1 = 该请求命中了仍有效的粘性会话却被迫落到另一个账号（网关 ForceCacheBilling，gateway.md §6），
@@ -92,9 +92,9 @@
   `idx_usage_cache_refund_pending(user_id, created_at) WHERE account_switched=1 AND cache_refund_id IS NULL` 就是"待返还集合"。
 
 ### cache_refunds（迁移 15，2026-10-21）
-缓存重建返还：每个用户每轮一行。被迫换账号的请求多付的缓存费 = 实付（`actual_cost` 口径，按当前价目表重算）−
+缓存重建返还：每个用户每轮一行。新请求在结算时固定多付的缓存费快照 = 实付（`actual_cost` 口径，使用该次结算单价）−
 "该请求全部提示词 token（input + cache_read + cache_write）都按缓存读价"的理论价，裁到 `[0, actual_cost]`；
-按 settings `cache_refund_percent`（默认 80）返还。返还顺序：**先冲减授信已用**（`credit_used_usd`，最多到 0，写 `credit_events.kind=cache_refund`，
+按 settings `cache_refund_percent`（默认 80）返还。改价不重算旧快照；没有快照的历史行不自动返还，也不回填、修改其 `cache_refund_id`。返还顺序：**先冲减授信已用**（`credit_used_usd`，最多到 0，写 `credit_events.kind=cache_refund`，
 不动 `credit_settled_at`），**余下加到预付余额**（`ledger.kind=cache_refund`，`ref` = 本行 id）。`rows / excess_usd / percent / refund_usd /
 to_credit_usd / to_balance_usd / ledger_id / credit_event_id / period_from / period_to / note / created_by`（`scheduler` 或管理员 id）。
 返还比例为 0 或差额四舍五入为 0 时仍写一行（金额 0），覆盖的 usage 行同样被绑定，不再计入待返还。
@@ -175,8 +175,8 @@ console 定时任务每 `cache_refund_interval_sec`（默认 86400）跑一轮�
 1. 用户余额只有两条写路径：`settleRequest`（用量扣费 / 号商收益）与 `applyLedger`（兑换、调账、结算出账、缓存返还，同时写 ledger）。
    授信字段同理只有四条写路径：`settleRequest`（累计已用）、`setCreditLimit`、`settleCredit`、`refundCredit`（后三者各写一行 `credit_events`；
    `refundCredit` 只由 `runCacheRefund` 调用，不改 `credit_settled_at`）。
-2. 结算在单个 `BEGIN IMMEDIATE` 事务内：插 `usage_logs`（`request_id` 冲突即回滚，幂等）→ 扣用户余额 → 累加 Key `used_usd` → 号商加收益。
-3. 结算允许透支（余额变负），不丢单；下一次请求在准入时因余额 ≤ 0 被 402 拒绝。
+2. 结算在单个 `BEGIN IMMEDIATE` 事务内：插 `usage_logs`（只忽略 `request_id` 唯一冲突；其他约束失败显式抛错）和结算单价快照 → 扣用户余额 → 累加 Key `used_usd` → 号商加收益。
+3. 结算允许单次后付费透支（余额变负），不丢单；准入除余额/Key 额度外，还受共享用户并发和在途金额预约约束。没有可用余额/授信时 402，无在途容量时 429。
 4. 对迁移之后的变动：`users.balance_usd` = Σ`ledger.amount_usd` − Σ`usage_logs.actual_cost`（consumer/admin），
    或 Σ`ledger.amount_usd` + Σ`usage_logs.provider_earning`（provider）。
    `users.credit_used_usd` = Σ授信累计（settleRequest 的授信部分）− Σ`credit_events(settlement).amount_usd` − Σ`credit_events(cache_refund).amount_usd`。
@@ -241,6 +241,28 @@ console 定时任务每 `cache_refund_interval_sec`（默认 86400）跑一轮�
 
 组织字段只在管理员 API shape 中输出，不能将数据库完整行直接返回给 provider、consumer 或 ops。完整不变量与发布状态见 [`team-isolation.md`](team-isolation.md) 和[发布记录](deployment/team-isolation-2026-10-27.md)。
 
+**迁移 22（审计修复，2026-10-28）**：仅新建表/索引和给 `onboarding_jobs` 增加 nullable `expires_at`。不更新旧表内容、不补造历史价格。
+
+| 新结构 | 用途 |
+|---|---|
+| `usage_pricing_snapshots` | 按 request_id 固定模型规范 ID、价格 JSON、标准费用和缓存返还差额；与 usage/扣款同事务写入 |
+| `gateway_request_budgets` | 所有网关共享用户/Key 在途金额预约；90 秒租期、30 秒续期，正常完成释放，崩溃后按过期时间回收 |
+| `gateway_account_leases` / `gateway_account_hits` | 所有蓝绿网关共享账号并发/RPM，避免双倍接入 |
+| `ccr_archive_jobs` | 仅新建清理任务；加密的清理凭据/路由快照、尝试次数、重试期限及完成状态，支持节点离线后补归档 |
+| `onboarding_jobs.expires_at` | 新任务绝对预约截止；旧行不回填，v1 作业可按原时间派生期限，v0 作业不自动维护 |
+
+### 结算持久化与恢复
+
+生产网关使用 `settleRequestDurably`：先把 requestId、用量、倍率、实际费用及价格快照写入 `data/settlement-journal/` 并 fsync，再提交 SQLite 账本事务。事务失败保留意图；每 10 秒自动重放，推理准入也尝试恢复。重放始终用原快照，以 `usage_logs.request_id` 幂等，不重新调用模型。
+
+有未成功补账条目或日志目录不能可靠写入时，新推理返回 503 `settlement_unavailable`，并记录明确错误。数据库仍可访问时管理查询继续可用。非流式响应在安全记录后交付；流式已交付的增量不能撤回，进程在终止事件与持久化之间突然退出仍有最终用量丢失窗口。此日志解决已生成结算意图后的 SQLite 失败，不能声称消除磁盘/主机同时损坏或所有执行中崩溃。
+
+### 默认在途额度政策
+
+`USER_MAX_INFLIGHT=4`、`USER_MAX_INFLIGHT_USD=10`（环境变量，只接受正有限数；非法配置回退默认值）。网关按请求提示词和最大输出估计费用，按组倍率预约。单请求预约取「估算费用、10 美元、用户当前余额加剩余授信、Key 剩余额度」的最小值；单次至少预约 0.000001 美元（再受可用资金封顶）。同用户所有 Key/网关合计不得超过并发上限、在途金额上限及实际可用资金，单 Key 同样扣除在途预约。例：剩余 0.01 美元仍可启动一次预计更贵的后付费请求，但第二次请求等待第一笔释放资金。
+
+这是准入预约，不提前写账或扣款；最终按实际用量结算，单次请求可以超出估计。超出资金的并发累计敞口得到限制，不宣称估计预算是上游实际费用的硬上限。用户/Key/旧账本不增加回填字段。
+
 ## 6. data/ 目录
 
 | 文件 | 说明 |
@@ -249,4 +271,5 @@ console 定时任务每 `cache_refund_interval_sec`（默认 86400）跑一轮�
 | `provider-cred.key` | 凭证主钥（0600，自动生成；`PROVIDER_CRED_KEY` 覆盖）。丢失则所有账户凭证与可查看 Key 无法解密 |
 | `internal.key` | gateway → console 内部令牌（0600，自动生成；`INTERNAL_TOKEN` 覆盖）。两个进程必须读到同一份 |
 | `admin-key.txt` | 首次启动无管理员时生成的登录密钥（0600） |
+| `settlement-journal/` | 0600 结算意图文件；只能在确认已记账后由幂等恢复删除，不得当缓存清空 |
 | `backups/` | v3 重构前的源码 / 数据库快照 |

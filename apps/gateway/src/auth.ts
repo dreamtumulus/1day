@@ -1,5 +1,5 @@
 import type { FastifyReply, FastifyRequest } from "fastify";
-import { nowIso, one, parseAllowlist, settleRequest, sha256Hex, type ModelAllowlist } from "@1dayapi/core";
+import { nowIso, one, parseAllowlist, settleRequestDurably, settlementHealthy, sha256Hex, type ModelAllowlist } from "@1dayapi/core";
 import { clientIp } from "./http.js";
 import { sendError } from "./http.js";
 import type { ClientFormat } from "./upstream.js";
@@ -38,6 +38,7 @@ interface Row {
   group_status: string | null;
   rate_multiplier: number | null;
   model_allowlist: string | null;
+  is_exclusive: number;
 }
 
 export function extractKey(req: FastifyRequest): string | null {
@@ -69,7 +70,7 @@ export function authenticate(
   const r = one<Row>(
     `SELECT k.id AS key_id, k.name AS key_name, k.status AS key_status, k.quota_usd, k.used_usd, k.expires_at,
             u.id AS user_id, u.role, u.status AS user_status, u.balance_usd, u.credit_limit_usd, u.credit_used_usd,
-            k.group_id, g.name AS group_name, g.status AS group_status, g.rate_multiplier, g.model_allowlist
+            k.group_id, g.name AS group_name, g.status AS group_status, g.rate_multiplier, g.model_allowlist, g.is_exclusive
      FROM api_keys k JOIN users u ON u.id = k.user_id LEFT JOIN groups g ON g.id = k.group_id
      WHERE k.key_hash = ?`,
     sha256Hex(key),
@@ -98,13 +99,21 @@ export function authenticate(
     sendError(reply, format, 403, "group_disabled", "The group bound to this API key is unavailable.", "permission_error");
     return null;
   }
+  if (r.is_exclusive === 1 && r.role !== "admin" && !one("SELECT 1 FROM user_allowed_groups WHERE user_id = ? AND group_id = ?", r.user_id, r.group_id)) {
+    sendError(reply, format, 403, "group_access_revoked", "Access to this exclusive group has been revoked.", "permission_error");
+    return null;
+  }
   if (forInference) {
+    if (!settlementHealthy()) {
+      sendError(reply, format, 503, "settlement_unavailable", "Accounting is recovering pending settlements. Retry shortly.", "billing_error");
+      return null;
+    }
     const reject = (status: number, code: string, message: string, type: Parameters<typeof sendError>[5]) => {
       // Admission failure after the caller is known: write a zero-cost usage row so the
       // error log shows it (docs/console-api.md 错误日志). Never throws.
       try {
         const body = (req.body && typeof req.body === "object" ? req.body : {}) as { model?: unknown; stream?: unknown };
-        settleRequest({
+        settleRequestDurably({
           requestId: crypto.randomUUID(),
           userId: r.user_id,
           apiKeyId: r.key_id,

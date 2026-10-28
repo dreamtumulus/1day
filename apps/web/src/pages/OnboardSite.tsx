@@ -26,6 +26,8 @@ interface ProxyItem {
 }
 
 interface Job {
+  nodeId?: string;
+  method?: string;
   jobId: string;
   status: "pending_callback" | "working" | "done" | "failed";
   accountId?: string;
@@ -82,7 +84,7 @@ export function parseBatchLines(text: string): BatchRow[] {
   return rows;
 }
 
-function BatchOnboard({ token, nodeId, nodeOnline, onJobsChanged }: { token: string; nodeId: string; nodeOnline: boolean; onJobsChanged: () => void }) {
+function BatchOnboard({ token, nodeId, nodeOnline, onJobsChanged, onActiveChange }: { token: string; nodeId: string; nodeOnline: boolean; onJobsChanged: () => void; onActiveChange: (active: boolean) => void }) {
   const { t } = useT();
   const [text, setText] = useState("");
   const [rows, setRows] = useState<BatchRow[]>([]);
@@ -94,6 +96,8 @@ function BatchOnboard({ token, nodeId, nodeOnline, onJobsChanged }: { token: str
   rowsRef.current = rows;
   const runningRef = useRef(false);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => { onActiveChange(running || rows.some((r) => r.state === "working" || r.state === "submitting")); }, [running, rows, onActiveChange]);
 
   const patch = useCallback((id: number, p: Partial<BatchRow>) => {
     setRows((prev) => prev.map((r) => (r.id === id ? { ...r, ...p } : r)));
@@ -315,6 +319,7 @@ export function OnboardSite() {
   const [label, setLabel] = useState<string | null>(null);
   const [node, setNode] = useState<NodeInfo | null>(null);
   const [nodes, setNodes] = useState<NodeInfo[]>([]);
+  const [batchActive, setBatchActive] = useState(false);
   const [authErr, setAuthErr] = useState("");
   const [input, setInput] = useState("");
 
@@ -501,7 +506,7 @@ export function OnboardSite() {
               className="input w-auto min-w-[260px] font-mono text-[13px]"
               value={node.nodeId}
               onChange={(e) => setNode(nodes.find((n) => n.nodeId === e.target.value) ?? node)}
-              disabled={!!job && (job.status === "pending_callback" || job.status === "working")}
+              disabled={batchActive || (!!job && (job.status === "pending_callback" || job.status === "working"))}
             >
               {nodes.map((n) => (
                 <option key={n.nodeId} value={n.nodeId}>
@@ -613,7 +618,15 @@ export function OnboardSite() {
             </p>
             {err && <p className="text-[13px]" style={{ color: "var(--error)" }}>{err}</p>}
             <div>
-              <button type="button" onClick={() => setJob(null)} className="wk-btn wk-btn-sm wk-btn-ghost">
+              <button type="button" disabled={busy} onClick={async () => {
+                setBusy(true);
+                try {
+                  const result = await authFetch<Job>(token, `/api/onboard/jobs/${job.jobId}/cancel`, "POST", {});
+                  setJob(result.status === "done" ? result : null);
+                  void loadJobs(token);
+                } catch (e) { setErr((e as Error).message); }
+                finally { setBusy(false); }
+              }} className="wk-btn wk-btn-sm wk-btn-ghost">
                 {t("onboardSite.cancel")}
               </button>
             </div>
@@ -622,7 +635,7 @@ export function OnboardSite() {
       </div>
 
       {/* 批量 sessionKey 上号 */}
-      <BatchOnboard token={token} nodeId={node.nodeId} nodeOnline={node.online} onJobsChanged={() => void loadJobs(token)} />
+      <BatchOnboard token={token} nodeId={node.nodeId} nodeOnline={node.online} onJobsChanged={() => void loadJobs(token)} onActiveChange={setBatchActive} />
 
       {/* 最近作业 */}
       <div className="card mt-4 p-5">
@@ -660,6 +673,10 @@ export function OnboardSite() {
                     >
                       {j.status}
                     </span>
+                    {(j.status === "pending_callback" || j.status === "working") && <button type="button" disabled={batchActive || busy} className="wk-btn wk-btn-sm wk-btn-ghost ml-2" onClick={() => {
+                      if (j.nodeId) setNode(nodes.find((n) => n.nodeId === j.nodeId) ?? node);
+                      setJob(j); setCallbackUrl(""); setErr("");
+                    }}>继续</button>}
                   </td>
                   <td className="ta-l text-[12px]">
                     {j.accountEmail ?? j.accountName ?? (j.accountId ? `${j.accountId.slice(0, 8)}…` : "—")}

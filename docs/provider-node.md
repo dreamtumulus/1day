@@ -20,7 +20,8 @@
 | 文件 | 职责 |
 |---|---|
 | `index.ts` | 入口 `main()`：加载配置、建桥接、起控制台、处理 SIGINT/SIGTERM |
-| `server.ts` | 本地控制台 HTTP API（Host 白名单 + CSRF） |
+| `server.ts` | 本地控制台 HTTP API（独立管理凭据 + Host 白名单 + CSRF） |
+| `management-auth.ts` | 0600 管理凭据的创建、读取和常量时间校验 |
 | `console-html.ts` | 内嵌单页控制台 HTML（每 5s 轮询 `/api/status`） |
 | `bridge.ts` | `PlatformBridge`：WS 客户端、状态机、心跳、重连 |
 | `official-exit.ts` | `OfficialExitManager`：v1 TCP 出口会话（保留） |
@@ -61,7 +62,9 @@
 
 监听 `PROVIDER_CONSOLE_HOST:PROVIDER_CONSOLE_PORT`（默认 `127.0.0.1:16889`）。
 
-两道全局防护：
+管理 API 的身份与来源校验：
+
+- **管理员凭据**：除静态首页外，API 需要 `Authorization: Bearer <management.token>`。凭据首次启动生成在配置文件同目录，文件 0600，可用 `PROVIDER_MANAGEMENT_TOKEN_FILE` 指定路径。状态 API 不返回凭据；CLI 从受保护文件读取，浏览器管理员首次输入并只保存于本次浏览会话。
 
 - **Host 头白名单**（防 DNS rebinding）：只接受 `127.0.0.1`、`localhost`、`[::1]`、`::1`，否则 403 `forbidden_host`。
 - **写请求只接受本机来源**：非 GET 请求的对端地址必须是回环（即使 `PROVIDER_CONSOLE_HOST=0.0.0.0`），否则 403 `loopback_only`——bind/unbind/authorize-local 交出节点身份与本机 OAuth 令牌。
@@ -143,7 +146,7 @@ JWT 只做 base64 解码取展示用元数据，不验签。脱敏显示为 `前
 
 ## 8. CLI（`1dayapi-node`，`cli.ts`）
 
-CLI 通过本地控制台 API 工作（`PROVIDER_CONSOLE_URL`，默认 `http://127.0.0.1:16889`），写操作前自动取 CSRF token。
+CLI 通过本地控制台 API 工作（`PROVIDER_CONSOLE_URL`，默认 `http://127.0.0.1:16889`），自动读取管理凭据并发送 Bearer，写操作前再取 CSRF token。
 
 | 命令 | 说明 |
 |---|---|
@@ -176,3 +179,15 @@ systemd unit：`Type=simple`，`ExecStart=<PROVIDER_NODE_BIN 或 /usr/local/bin/
 
 风险状态机与冷却、排空、凭证镜像更新、自动升级、设备码/授权码 OAuth 流程（只支持导入本机文件和粘贴 token）、
 binary_v1/credit_v1、Grok/Cursor/Jimeng 等 vendor、macOS/Windows 安装。
+
+## 11. 可信节点与每组织系统身份（2026-10-28）
+
+平台控制面使用 `TRUSTED_EXECUTION_NODE_IDS` 批准严格组织池的执行节点；节点自己不能经心跳赋予可信资格。生产关闭 `ALLOW_UNTRUSTED_EXECUTION` 开发选项。管理 API 的 `platformBindUrl` 必须与受保护服务配置解析出的平台地址一致，改变目标需由操作员修改服务配置；不能仅持绑定码将节点及凭据改送另一个平台。
+
+生产 worker 使用 root supervisor 加 `CC_WORKER_TEAM_UIDS=1`。每个组织 UUID 映射到确定的 `cc-t-<hash>` 系统用户/组，按独立 UID 运行 Claude 进程并设置账号目录所有权；账号、设备和对话命名空间继续保留组织和 generation 校验。系统用户无法创建、身份不合法或目录无法按要求准备时拒绝该任务，不回落公共 ccworker 身份。系统用户按新请求懒创建，不需为旧账号创建或迁移目录。
+
+控制面设 `REQUIRE_TEAM_UID_ISOLATION=1` 后，组织 worker 请求只接受带 `team_uid_isolation_v1` 能力的节点。节点能力与配置须同时验证；只安装 systemd 模板不算实际启用。root supervisor 仍能管理全部组织进程，组织 UID 与目录隔离共享同一内核，平台 root/操作员继续属于信任边界。
+
+云 CCR 退役 session 使用专用清理能力：只接受不可变历史证明的原账号、组织、节点和固定代理，构造唯一 archive 路径。归档意图加密持久化，节点离线后重试；不能借该通道选择任意 URL 或进行推理。
+
+运维不得把 management.token、节点 secret、代理 URL 凭据或团队账号 token 写入仓库、公开截图和发布清单。发布验证应记录文件权限及能力，不记录其内容。完整修复对照见 [审计修复记录](audit-remediation-2026-10-28.md)。

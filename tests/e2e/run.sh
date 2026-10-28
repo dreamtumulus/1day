@@ -5,6 +5,7 @@
 #   bash tests/e2e/run.sh            (requires `pnpm build` first)
 set -u
 unset DB_PATH
+export ALLOW_UNTRUSTED_EXECUTION=1
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 export E2E_GATEWAY_PORT=${E2E_GATEWAY_PORT:-18400} E2E_CONSOLE_PORT=${E2E_CONSOLE_PORT:-18401}
 MOCK_PORT=${E2E_MOCK_PORT:-19101}

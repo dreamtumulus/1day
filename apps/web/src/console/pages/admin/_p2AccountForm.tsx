@@ -240,13 +240,17 @@ export function AccountFormModal({
       if (f.refreshToken.trim()) body.refreshToken = f.refreshToken.trim();
       if (f.expiresAt) body.expiresAt = new Date(f.expiresAt).toISOString();
       if (f.accountId.trim()) body.accountId = f.accountId.trim();
-      if (f.orgUuid.trim()) body.orgUuid = f.orgUuid.trim();
+      if (f.orgUuid.trim() && !(isEdit && account?.teamId)) body.orgUuid = f.orgUuid.trim();
       if (f.teamName.trim()) body.teamName = f.teamName.trim();
       if (f.environmentId.trim()) body.environmentId = f.environmentId.trim();
       if (!isEdit && !body.accessToken) return t("admin.accounts.errCredential");
     } else {
       if (f.apiKey.trim()) body.apiKey = f.apiKey.trim();
       if (!isEdit && !body.apiKey) return t("admin.accounts.errCredential");
+    }
+    if (isEdit && account?.teamId) {
+      // A managed account's identity and route change only through reauthorization.
+      for (const key of ["accessToken", "refreshToken", "expiresAt", "accountId", "orgUuid", "environmentId"]) delete body[key];
     }
     return body;
   }
@@ -350,19 +354,19 @@ export function AccountFormModal({
             <>
               <p className="text-[12.5px] leading-relaxed text-on-surface-faint">{t("admin.accounts.oauthHint")}</p>
               <Field label={t("admin.accounts.accessToken")} hint={keepHint}>
-                <Textarea value={f.accessToken} onChange={(e) => set("accessToken", e.target.value)} rows={2} autoComplete="off" />
+                <Textarea disabled={isEdit && !!account?.teamId} value={f.accessToken} onChange={(e) => set("accessToken", e.target.value)} rows={2} autoComplete="off" />
               </Field>
               <div className="grid gap-4 sm:grid-cols-2">
                 <Field label={`${t("admin.accounts.refreshToken")} (${t("common.optional")})`} hint={keepHint}>
-                  <Input value={f.refreshToken} onChange={(e) => set("refreshToken", e.target.value)} className="font-mono" autoComplete="off" />
+                  <Input disabled={isEdit && !!account?.teamId} value={f.refreshToken} onChange={(e) => set("refreshToken", e.target.value)} className="font-mono" autoComplete="off" />
                 </Field>
                 <Field label={`${t("admin.accounts.expiresAt")} (${t("common.optional")})`}>
-                  <Input type="datetime-local" value={f.expiresAt} onChange={(e) => set("expiresAt", e.target.value)} />
+                  <Input type="datetime-local" disabled={isEdit && !!account?.teamId} value={f.expiresAt} onChange={(e) => set("expiresAt", e.target.value)} />
                 </Field>
               </div>
               {f.platform === "openai" && (
                 <Field label={`${t("admin.accounts.accountId")} (${t("common.optional")})`} hint={t("admin.accounts.accountIdHint")}>
-                  <Input value={f.accountId} onChange={(e) => set("accountId", e.target.value)} className="font-mono" />
+                  <Input disabled={isEdit && !!account?.teamId} value={f.accountId} onChange={(e) => set("accountId", e.target.value)} className="font-mono" />
                 </Field>
               )}
               {f.platform === "anthropic" && <Field label={`${t("team.name")} (${t("common.optional")})`} hint={t("team.verifiedHint")}>
@@ -373,7 +377,7 @@ export function AccountFormModal({
                   <Input value={f.orgUuid} onChange={(e) => set("orgUuid", e.target.value)} className="font-mono" autoComplete="off" readOnly={isEdit && !!account?.teamId} required={f.platform === "anthropic"} />
                 </Field>
                 <Field label={`${t("admin.accounts.environmentId")} (${t("common.optional")})`} hint={keepHint ?? t("admin.accounts.environmentIdHint")}>
-                  <Input value={f.environmentId} onChange={(e) => set("environmentId", e.target.value)} className="font-mono" autoComplete="off" />
+                  <Input disabled={isEdit && !!account?.teamId} value={f.environmentId} onChange={(e) => set("environmentId", e.target.value)} className="font-mono" autoComplete="off" />
                 </Field>
               </div>
               {ccrAllowed && (

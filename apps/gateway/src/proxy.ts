@@ -29,7 +29,8 @@ import {
   parseUnifiedRateLimitHeaders,
   recordWindowUsage,
   rejectedWindow,
-  settleRequest,
+  settleRequestDurably as settleRequest,
+  acquireRequestBudget, renewRequestBudget, releaseRequestBudget,
   sha256Hex,
   touchAccount,
   upstreamModelFor,
@@ -70,7 +71,7 @@ import { runCcrWorker } from "./ccr/worker.js";
 import { ccrUnsupportedReason, type CcrUnsupported } from "./ccr/translate.js";
 import { openaiChatToAnthropic } from "./convert.js";
 import { postRaw } from "./rawhttp.js";
-import { AccountGates } from "./limits.js";
+import { SharedAccountGates, type AccountLease } from "./limits.js";
 import { TunnelRequestError, fetchViaTunnel, resetConversationWorkers, type IsolationContext } from "./tunnel.js";
 import { applyResetBoundary, latestQuestion, resetBody, requestMessages, resolveConversationIdentity, conversationBranchKey, RESET_NOTICE } from "./conversation.js";
 import {
@@ -83,7 +84,8 @@ import {
   type ClientFormat,
   type Mode,
 } from "./upstream.js";
-import { UsageAccumulator, collectText } from "./usage.js";
+import { wait, responseBytes } from "./lifecycle.js";
+import { UsageAccumulator, collectText, estimateRequestTokens } from "./usage.js";
 
 type Json = Record<string, any>;
 
@@ -91,20 +93,13 @@ type Json = Record<string, any>;
 // (in-process, docs/v3-design.md §7.5 and docs/onboarding.md §6.1/§6.3).
 // A gate rejection is a skip, never a failure: no cooldown is recorded.
 
-const gates = new AccountGates();
+const gates = new SharedAccountGates();
 export function accountInFlight(id: string): number {
   return gates.inFlightCount(id);
 }
 export function inFlightSnapshot(): Record<string, number> {
   return gates.snapshot();
 }
-function acquire(a: AccountRow): boolean {
-  return gates.tryAcquire(a.id, a.concurrency, a.rpm_limit);
-}
-function release(id: string): void {
-  gates.release(id);
-}
-
 // ---------- sticky sessions (sub2api GenerateSessionHash) ----------
 //
 // Key sources, highest priority first:
@@ -404,6 +399,7 @@ interface Ctx {
   jsonArm: NodeJS.Timeout | null;
   jsonEarly: { keepalive: NodeJS.Timeout | null } | null;
   scope?: ConversationScope;
+  accountLease?: AccountLease;
 }
 
 const PASSTHROUGH_STATUSES = new Set([400, 404, 413, 422]);
@@ -421,6 +417,17 @@ interface ConversationScope {
   released?: boolean;
   branch: string;
   boundary?: ConversationBoundary;
+}
+
+function assertRequestLeases(ctx: Ctx): void {
+  ctx.abort.signal.throwIfAborted();
+  let budget;
+  try { budget = one("SELECT 1 FROM gateway_request_budgets WHERE request_id = ? AND expires_at > ?", ctx.requestId, Date.now()); }
+  catch (err) { ctx.abort.abort(err); throw err; }
+  if (!budget || (ctx.accountLease && !ctx.accountLease.isValid())) {
+    ctx.abort.abort(new Error("request scheduling lease lost"));
+    throw new Error("request scheduling lease lost");
+  }
 }
 
 function scopeContext(scope?: ConversationScope): IsolationContext | undefined {
@@ -450,9 +457,41 @@ function sendResetNotice(reply: FastifyReply, format: ClientFormat, body: Json):
 }
 
 /** Gateways take short metadata leases; normal execution remains parallel and epoch-fenced. */
+const lifecycles = new WeakMap<FastifyRequest, { requestId: string; abort: AbortController }>();
 export async function proxy(req: FastifyRequest, reply: FastifyReply, format: ClientFormat, endpoint: string): Promise<void> {
   const caller = authenticate(req, reply, format, true);
   if (!caller) return;
+  const body = (req.body && typeof req.body === "object" ? req.body : {}) as Json;
+  const requestId = crypto.randomUUID();
+  const modelEntry = getModelEntry(String(body.model ?? ""));
+  const prices = modelEntry?.prices;
+  const maxOut = Number(body.max_tokens ?? body.max_completion_tokens ?? body.max_output_tokens ?? 4096);
+  const estimatedOutput = Math.min(modelEntry?.maxOutputTokens ?? 128_000, Number.isFinite(maxOut) && maxOut > 0 ? Math.ceil(maxOut) : 4096);
+  const estimate = prices ? (estimateRequestTokens(body) * prices.inputPerM + estimatedOutput * prices.outputPerM) / 1_000_000 * caller.rateMultiplier : 0.01;
+  if (!acquireRequestBudget(requestId, caller.userId, caller.apiKeyId, estimate)) {
+    sendError(reply, format, 429, "user_inflight_limit", "Concurrent requests or reserved spending reached the account limit. Retry after an active request finishes.", "rate_limit_error");
+    return;
+  }
+  const abort = new AbortController();
+  lifecycles.set(req, { requestId, abort });
+  const onClose = () => { if (!reply.raw.writableFinished) abort.abort(); };
+  reply.raw.once("close", onClose);
+  const renew = setInterval(() => { try { renewRequestBudget(requestId); } catch (err) { console.error("[budget] renewal failed", err); abort.abort(err); } }, 30_000);
+  renew.unref();
+  try { await proxyAuthorized(req, reply, format, endpoint, caller); }
+  catch (err) { if (!abort.signal.aborted) throw err; }
+  finally {
+    clearInterval(renew);
+    try { releaseRequestBudget(requestId); } catch (err) { console.error("[budget] release failed", err); }
+    if (abort.signal.aborted && !reply.raw.destroyed && !reply.raw.writableEnded) {
+      if (reply.raw.headersSent) reply.raw.end(format === "anthropic" ? `event: error\ndata: ${JSON.stringify({type:"error",error:{type:"api_error",message:"Request scheduling lease expired. Retry shortly."}})}\n\n` : `data: ${JSON.stringify({error:{code:"scheduling_lease_lost",message:"Request scheduling lease expired. Retry shortly."}})}\n\n`);
+      else sendError(reply,format,503,"scheduling_lease_lost","Request scheduling lease expired. Retry shortly.","upstream_error");
+    }
+    reply.raw.off("close", onClose); lifecycles.delete(req);
+  }
+}
+
+async function proxyAuthorized(req: FastifyRequest, reply: FastifyReply, format: ClientFormat, endpoint: string, caller: CallerContext): Promise<void> {
   const originalBody = (req.body && typeof req.body === "object" ? req.body : {}) as Json;
   const hasSubscriptions = !!one(`SELECT 1 FROM account_groups ag JOIN accounts a ON a.id = ag.account_id WHERE ag.group_id = ? AND a.type = 'oauth' AND a.platform = 'anthropic' LIMIT 1`, caller.groupId);
   let identity = resolveConversationIdentity(caller.apiKeyId, req.headers, originalBody, format);
@@ -470,7 +509,7 @@ export async function proxy(req: FastifyRequest, reply: FastifyReply, format: Cl
   let row: ConversationRow | null = null;
   while (!row && Date.now() < deadline) {
     row = acquireConversationLease(caller.apiKeyId, identity.key, token);
-    if (!row) await new Promise((resolve) => setTimeout(resolve, 25));
+    if (!row) await wait(25, lifecycles.get(req)?.abort.signal);
   }
   if (!row) { sendError(reply, format, 503, "conversation_busy", "Another request for this conversation is still running. Retry shortly.", "upstream_error"); return; }
   const scope: ConversationScope = { row, token, reliable: identity.reliable, originalBody, triedTeams: new Set(), lost: false, branch: conversationBranchKey(originalBody, format) };
@@ -496,7 +535,7 @@ async function lockScope(scope: ConversationScope): Promise<void> {
   let row: ConversationRow | null = null;
   while (!row && Date.now() < deadline) {
     row = acquireConversationLease(scope.row.api_key_id, scope.row.external_key, scope.token);
-    if (!row) await new Promise((resolve) => setTimeout(resolve, 10));
+    if (!row) await wait(10, scope.abort?.signal);
   }
   if (!row) throw new Error("conversation ownership changed");
   scope.row = row;
@@ -622,13 +661,13 @@ async function proxyRequest(req: FastifyRequest, reply: FastifyReply, format: Cl
     body,
     model,
     stream: body.stream === true,
-    requestId: crypto.randomUUID(),
+    requestId: lifecycles.get(req)?.requestId ?? crypto.randomUUID(),
     startedAt: Date.now(),
     ccShape: null,
     trace: { mode: null, nodeId: null, upstreamStatus: null, upstreamMessage: null },
     forceCacheBilling: false,
     clientGone: false,
-    abort: new AbortController(),
+    abort: lifecycles.get(req)?.abort ?? new AbortController(),
     early: null,
     jsonArm: null,
     jsonEarly: null,
@@ -751,7 +790,7 @@ async function proxyRequest(req: FastifyRequest, reply: FastifyReply, format: Cl
   // cooldown stay last, even when the sticky session points at one of them.
   const rawDeviceKey = deviceKey(caller, scope?.originalBody ?? body);
   const dKey = namespace && rawDeviceKey ? `${namespace}:${rawDeviceKey}` : rawDeviceKey;
-  const ordered = [...orderByAffinity(usable.filter((a) => !a.cooling), sKey, dKey), ...usable.filter((a) => a.cooling)];
+  let ordered = [...orderByAffinity(usable.filter((a) => !a.cooling), sKey, dKey), ...usable.filter((a) => a.cooling)];
   let attempts = 0;
   let lastStatus = 0;
   /** The node refused the request itself (spec_too_large …): answered once, no further candidates. */
@@ -766,6 +805,10 @@ async function proxyRequest(req: FastifyRequest, reply: FastifyReply, format: Cl
     return ccrBody;
   };
 
+  const busyDeadline = Date.now() + Math.max(0, Math.min(60_000, Number(process.env.ACCOUNT_BUSY_WAIT_MS ?? 15_000)));
+  let busy: Candidate[] = [];
+  for (;;) {
+  busy = [];
   for (const account of ordered) {
     if (!scope && attempts >= config.maxAttempts) break;
     assertScope(scope);
@@ -781,7 +824,9 @@ async function proxyRequest(req: FastifyRequest, reply: FastifyReply, format: Cl
       ccrUnsupported = ccrUnsupportedReason(ccrRequest(), { images: account.executor === "ccr_worker", documents: account.executor === "ccr_worker", toolChoice: account.executor === "ccr_worker" });
       if (ccrUnsupported) continue; // this request can never run on a cloud session; try other accounts
     }
-    if (!acquire(account)) continue;
+    const lease = gates.acquireLease(account.id, account.concurrency, account.rpm_limit, () => ctx.abort.abort(new Error("account scheduling lease lost")));
+    if (!lease) { busy.push(account); continue; }
+    ctx.accountLease = lease;
     if (account.cooling) {
       console.warn(`[proxy] ${ctx.requestId} account ${account.name} is 429-cooling until ${account.rate_limited_until}; no other candidate, trying anyway`);
     }
@@ -790,7 +835,8 @@ async function proxyRequest(req: FastifyRequest, reply: FastifyReply, format: Cl
     const done = () => {
       if (!released) {
         released = true;
-        release(account.id);
+        lease.release();
+        if (ctx.accountLease === lease) ctx.accountLease = undefined;
       }
     };
     try {
@@ -805,6 +851,7 @@ async function proxyRequest(req: FastifyRequest, reply: FastifyReply, format: Cl
       const upstreamModel = raw ? model : upstreamModelFor(account, upstreamBaseModel);
       let refreshed = false;
       for (;;) {
+        assertRequestLeases(ctx);
         if (ctx.clientGone) {
           logFailure(ctx, account, 499, "client_closed", "Client closed the connection before an upstream answer");
           return;
@@ -814,8 +861,9 @@ async function proxyRequest(req: FastifyRequest, reply: FastifyReply, format: Cl
         if (teeProofRequested(req) !== "multipart") armNonStreamHeartbeat(ctx);
         let cred;
         try {
-          cred = await freshCredential(account, refreshed, isolation);
+          cred = await freshCredential(account, refreshed, isolation, ctx.abort.signal);
         } catch (err) {
+          if (ctx.abort.signal.aborted) { logFailure(ctx, account, 499, "client_closed", "Client closed during credential refresh"); return; }
           markFailure(account.id, { kind: "auth", message: `credential unreadable: ${(err as Error).message}` });
           break;
         }
@@ -839,6 +887,7 @@ async function proxyRequest(req: FastifyRequest, reply: FastifyReply, format: Cl
                 requestId: ctx.requestId,
                 stickyKey: sKey,
                 isolation,
+                signal: ctx.abort.signal,
               });
               if (!res) break; // no worker-capable node accepted: infra state, try next account without counting
             } else {
@@ -853,6 +902,7 @@ async function proxyRequest(req: FastifyRequest, reply: FastifyReply, format: Cl
                 clientHeaders: upstreamHeaders,
                 stickyKey: ccrPoolKey ? `s:${caller.apiKeyId}:${ccrPoolKey}` : null,
                 isolation,
+                signal: ctx.abort.signal,
               });
             }
           } else {
@@ -865,14 +915,15 @@ async function proxyRequest(req: FastifyRequest, reply: FastifyReply, format: Cl
             if (account.route === "node") {
               // Bound proxy (docs/onboarding.md §1/§6.2): all platform-side
               // requests of a bound account egress on that proxy.
-              res = await fetchViaTunnel(account.id, ureq.url, ureq.headers, ureq.body, account.bound_proxy_id ?? undefined, undefined, isolation);
+              res = await fetchViaTunnel(account.id, ureq.url, ureq.headers, ureq.body, account.bound_proxy_id ?? undefined, undefined, isolation, ctx.abort.signal);
               if (!res) break; // no online node: infra state, try next account without counting
             } else {
               // 原生 http 而非 fetch：避免 undici 强加 accept-language/sec-fetch-mode。
-              res = await postRaw(ureq.url, ureq.headers, ureq.body, config.upstreamTimeoutMs);
+              res = await postRaw(ureq.url, ureq.headers, ureq.body, config.upstreamTimeoutMs, ctx.abort.signal);
             }
           }
         } catch (err) {
+          if (ctx.abort.signal.aborted) { logFailure(ctx, account, 499, "client_closed", "Client closed before upstream response"); return; }
           if (err instanceof TunnelRequestError) {
             // Not this account's fault and no other account can take it either.
             requestError = err;
@@ -894,7 +945,13 @@ async function proxyRequest(req: FastifyRequest, reply: FastifyReply, format: Cl
           break;
         }
 
+        if (ctx.abort.signal.aborted) {
+          await res.body?.cancel().catch(() => {});
+          logFailure(ctx, account, ctx.clientGone ? 499 : 503, ctx.clientGone ? "client_closed" : "scheduling_lease_lost", "Request cancelled before upstream delivery");
+          return;
+        }
         if (res.ok) {
+          if (!lease.isValid()) { await res.body?.cancel().catch(() => {}); throw new Error("account scheduling lease lost"); }
           assertScope(scope);
           touchAccount(account.id);
           const prev = sKey ? getSticky(sKey) : undefined;
@@ -911,7 +968,7 @@ async function proxyRequest(req: FastifyRequest, reply: FastifyReply, format: Cl
         }
 
         const status = res.status;
-        const text = (await res.text().catch(() => "")).slice(0, 4000);
+        const text = (await responseBytes(res, 4000, ctx.abort.signal, true)).toString("utf8");
         attempts++;
         lastStatus = status;
         lastMessage = text;
@@ -998,6 +1055,19 @@ async function proxyRequest(req: FastifyRequest, reply: FastifyReply, format: Cl
     } finally {
       done();
     }
+  }
+
+  if (!busy.length || requestError || ctx.clientGone) break;
+  if (Date.now() >= busyDeadline) {
+    fail(ctx, null, 503, "account_pool_busy", "Accounts in this conversation are temporarily busy. Retry shortly; its team and context are retained.", "upstream_error");
+    return;
+  }
+  beginEarlyStream(ctx);
+  try { await wait(Math.min(100, busyDeadline - Date.now()), ctx.abort.signal); }
+  catch { logFailure(ctx, lastAccount, 499, "client_closed", "Client closed while waiting for an account slot"); return; }
+  const currentCandidates = new Set(listCandidates(caller.groupId, model).map(a => a.id));
+  ordered = busy.filter(a => currentCandidates.has(a.id));
+  if (!ordered.length) break;
   }
 
   // Every account in this generation was tried before changing organizations. The new
@@ -1240,6 +1310,7 @@ function settleSuccess(
     });
   } catch (err) {
     console.error(`[billing] settle failed for ${ctx.requestId}:`, err);
+    throw err;
   }
 }
 
@@ -1281,7 +1352,7 @@ async function deliver(
   if (ctx.clientGone) onAbort();
   else ctx.abort.signal.addEventListener("abort", onAbort, { once: true });
   try {
-    raw = Buffer.from(await res.arrayBuffer());
+    raw = await responseBytes(res, 16_777_216, ctx.abort.signal);
   } catch (err) {
     done();
     ctx.abort.signal.removeEventListener("abort", onAbort);
@@ -1325,7 +1396,8 @@ async function deliver(
     /* non-JSON body: pass through untouched */
   }
   assertScope(ctx.scope);
-  settleSuccess(ctx, account, upstreamModel, acc, null, ccrExecuted);
+  try { settleSuccess(ctx, account, upstreamModel, acc, null, ccrExecuted); }
+  catch { fail(ctx, account, 503, "settlement_unavailable", "The response could not be safely recorded. Contact the administrator with the request time before retrying.", "api_error"); return; }
 
   if (ctx.jsonEarly) {
     // 200 + headers went out during the wait (heartbeat.ts): the body follows the padding.
@@ -1403,7 +1475,8 @@ async function deliverStream(
   let completed = false;
   let reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
   const onGone = () => {
-    clientGone = true;
+    if (ctx.clientGone || reply.raw.destroyed) clientGone = true;
+    else streamError = "request scheduling lease lost";
     // Stop reading upstream right away so the account's concurrency slot is
     // not held by a stream nobody is listening to.
     reader?.cancel().catch(() => {});
@@ -1411,8 +1484,10 @@ async function deliverStream(
   if (clientGone) onGone();
   else ctx.abort.signal.addEventListener("abort", onGone, { once: true });
 
-  const write = (s: string) => {
+  let proofBytes = 0;
+  const write = async (s: string): Promise<void> => {
     if (!s || clientGone) return;
+    assertRequestLeases(ctx);
     if (ctx.scope?.row.team_id && !isConversationGenerationActive(ctx.scope.row.id, ctx.scope.row.team_id, ctx.scope.row.generation)) {
       const notice = ctx.format === "anthropic" ? `event: error\ndata: ${JSON.stringify({ type: "error", error: { type: "api_error", message: RESET_NOTICE, code: "context_reset" } })}\n\n` : `data: ${JSON.stringify({ error: { message: RESET_NOTICE, code: "context_reset" } })}\n\n`;
       reply.raw.end(notice); clientGone = true; reader?.cancel().catch(() => {}); return;
@@ -1422,8 +1497,21 @@ async function deliverStream(
       stopEarlyKeepalive(ctx);
     }
     const b = Buffer.from(s, "utf8");
-    if (wantProof) forwarded.push(b);
-    reply.raw.write(b);
+    if (wantProof) {
+      proofBytes += b.length;
+      if (proofBytes > 8_388_608) throw new Error("proof response exceeds 8 MiB");
+      forwarded.push(b);
+    }
+    if (!reply.raw.write(b)) {
+      await new Promise<void>((resolve, reject) => {
+        const cleanup = () => { clearTimeout(timer); reply.raw.off("drain", ready); reply.raw.off("close", closed); ctx.abort.signal.removeEventListener("abort", closed); };
+        const ready = () => { cleanup(); resolve(); };
+        const closed = () => { cleanup(); reject(new Error("client closed during backpressure")); };
+        const timer = setTimeout(() => { cleanup(); reject(new Error("client write stalled for 30s")); }, 30_000);
+        reply.raw.once("drain", ready); reply.raw.once("close", closed); ctx.abort.signal.addEventListener("abort", closed, { once: true });
+        if (ctx.abort.signal.aborted || reply.raw.destroyed) closed();
+      });
+    }
   };
 
   const clientWantsUsage = ctx.body.stream_options?.include_usage === true;
@@ -1431,14 +1519,14 @@ async function deliverStream(
   const toAnthropic = mode === "anthropic-via-chat" ? new OpenaiToAnthropicStream(ctx.model) : null;
   const rewriteModel = upstreamModel !== ctx.model;
 
-  const handle = (ev: SseEvent) => {
+  const handle = async (ev: SseEvent): Promise<void> => {
     if (!ev.data) {
-      if (!toOpenai && !toAnthropic) write(`${ev.raw}\n\n`);
+      if (!toOpenai && !toAnthropic) await write(`${ev.raw}\n\n`);
       return;
     }
-    if (ev.data === "[DONE]") {
+    if (ev.data === "[DONE]" && (mode === "passthrough-openai" || mode === "anthropic-via-chat")) {
       completed = true;
-      if (mode === "passthrough-openai") write("data: [DONE]\n\n");
+      if (mode === "passthrough-openai") await write("data: [DONE]\n\n");
       return; // converters emit their own terminators
     }
     let j: Json | null = null;
@@ -1458,11 +1546,11 @@ async function deliverStream(
           else if (j.type === "error" || ev.event === "error") streamError = String(j.error?.message ?? j.message ?? "upstream error");
         }
         if (toOpenai) {
-          if (j) for (const s of toOpenai.push(j)) write(s);
+          if (j) for (const s of toOpenai.push(j)) await write(s);
         } else if (rewriteModel && j?.type === "message_start" && j.message) {
-          write(`event: message_start\ndata: ${JSON.stringify({ ...j, message: { ...j.message, model: ctx.model } })}\n\n`);
+          await write(`event: message_start\ndata: ${JSON.stringify({ ...j, message: { ...j.message, model: ctx.model } })}\n\n`);
         } else {
-          write(`${ev.raw}\n\n`);
+          await write(`${ev.raw}\n\n`);
         }
         break;
       }
@@ -1475,25 +1563,27 @@ async function deliverStream(
           else if (j.choices?.[0]?.finish_reason) completed = true;
         }
         if (toAnthropic) {
-          if (j) for (const s of toAnthropic.push(j)) write(s);
+          if (j) for (const s of toAnthropic.push(j)) await write(s);
           break;
         }
         const usageOnly = j && Array.isArray(j.choices) && j.choices.length === 0 && j.usage;
         if (usageOnly && !clientWantsUsage) break;
-        if (j && rewriteModel) write(`data: ${JSON.stringify({ ...j, model: ctx.model })}\n\n`);
-        else write(`${ev.raw}\n\n`);
+        if (j && rewriteModel) await write(`data: ${JSON.stringify({ ...j, model: ctx.model })}\n\n`);
+        else await write(`${ev.raw}\n\n`);
         break;
       }
       case "passthrough-responses": {
         if (j) {
           if ((j.type === "response.completed" || j.type === "response.done") && j.response) {
             acc.addResponses(j.response.usage);
-            completed = true;
+            completed = !j.response.status || j.response.status === "completed";
+            if (!completed) streamError = `upstream response ended with status ${j.response.status}`;
           }
+          if (j.type === "response.incomplete" || j.type === "response.cancelled") streamError = "upstream response was incomplete";
           if (j.type === "response.output_text.delta") acc.addText(j.delta);
           if (j.type === "error" || j.type === "response.failed") streamError = String(j.error?.message ?? j.response?.error?.message ?? "upstream error");
         }
-        write(`${ev.raw}\n\n`);
+        await write(`${ev.raw}\n\n`);
         break;
       }
     }
@@ -1529,16 +1619,18 @@ async function deliverStream(
       while ((m = boundary.exec(pending)) !== null) {
         const chunk = pending.slice(0, m.index);
         pending = pending.slice(m.index + m[0].length);
-        if (chunk.trim()) handle(parseSseEvent(chunk));
+        if (Buffer.byteLength(chunk) > 2_097_152) throw new Error("upstream SSE event exceeds 2 MiB");
+        if (chunk.trim()) await handle(parseSseEvent(chunk));
       }
+      if (Buffer.byteLength(pending) > 2_097_152) throw new Error("upstream SSE event exceeds 2 MiB");
     }
     pending += decoder.decode();
-    if (pending.trim()) handle(parseSseEvent(pending));
-    if (toOpenai) for (const s of toOpenai.end()) write(s);
-    if (toAnthropic) for (const s of toAnthropic.end()) write(s);
+    if (pending.trim()) await handle(parseSseEvent(pending));
+    if (completed && !streamError && toOpenai) for (const s of toOpenai.end()) await write(s);
+    if (completed && !streamError && toAnthropic) for (const s of toAnthropic.end()) await write(s);
     if (wantProof) {
       const proof = makeTeeProof(upstreamHost, Buffer.concat(forwarded));
-      write(`event: tee.proof\ndata: ${JSON.stringify(proof)}\n\n`);
+      await write(`event: tee.proof\ndata: ${JSON.stringify(proof)}\n\n`);
     }
   } catch (err) {
     readError = (err as Error).message;
@@ -1550,7 +1642,7 @@ async function deliverStream(
     // A stream that failed before reaching its terminator is not a served
     // request: no charge, a failure row, a short cooldown (unless the client
     // simply went away — then whatever upstream reported is billed as usual).
-    const failed = !clientGone && (streamError !== null || readError !== null || (!completed && !acc.seen));
+    const failed = !clientGone && (streamError !== null || readError !== null || !completed);
     if (clientGone && firstTokenMs === null) {
       // Nothing ever reached the client: not a served request (the upstream work was cancelled above).
       console.warn(`[proxy] ${ctx.requestId} account ${account.name}: client closed before the first byte; not billed`);
@@ -1558,22 +1650,24 @@ async function deliverStream(
     } else if (failed) {
       const message = streamError ?? readError ?? "upstream stream ended without a terminator";
       console.warn(`[proxy] ${ctx.requestId} account ${account.name}: stream failed: ${message}`);
-      if (account.raw_passthrough !== 1) markCcrFailure(ctx, account, `stream: ${message.slice(0, 300)}`); // raw relay (§4a): no cooldown
+      const schedulingLost = ctx.abort.signal.aborted && !clientGone;
+      if (!schedulingLost && account.raw_passthrough !== 1) markCcrFailure(ctx, account, `stream: ${message.slice(0, 300)}`); // raw relay (§4a): no cooldown
       // Claude Code's context overflow / safety refusal is the request's fault: log it as such and hand
       // the client Claude Code's own sentence (the auto-compact trigger) as an invalid_request_error.
       // `mode` here is the wire mode (passthrough-anthropic for a worker stream too): the CCR flag is ccrExecuted.
       const reqErr = ccrExecuted || isCcrMode(mode) ? classifyCcRequestError(message) : null;
-      if (reqErr) logFailure(ctx, account, 400, reqErr.code, reqErr.message);
+      if (schedulingLost) logFailure(ctx, account, 503, "scheduling_lease_lost", message);
+      else if (reqErr) logFailure(ctx, account, 400, reqErr.code, reqErr.message);
       else logFailure(ctx, account, 502, "upstream_stream_error", `Stream failed before its terminator: ${message.slice(0, 300)}`);
       if (readError !== null || (!streamError && !completed) || reqErr) {
         // Nothing upstream-shaped was forwarded for this failure: tell the client in its dialect.
         const text = reqErr ? reqErr.message : `upstream: ${message}`;
         const type = reqErr ? "invalid_request_error" : "api_error";
-        write(
+        await write(
           ctx.format === "anthropic"
             ? `event: error\ndata: ${JSON.stringify({ type: "error", error: { type, message: text } })}\n\n`
             : `data: ${JSON.stringify({ error: { message: text, type, param: null, code: null } })}\n\n`,
-        );
+        ).catch(() => {});
       }
     } else {
       // A stream that reached its terminator is proof the account's credentials work.
@@ -1582,7 +1676,8 @@ async function deliverStream(
       // finish can immediately observe the charge. (144faa3 put the completed
       // case in its own branch above this call: completed streams went unbilled
       // for ~10 h on 2026-10-17 — see docs/issues-and-decisions.md.)
-      settleSuccess(ctx, account, upstreamModel, acc, firstTokenMs, ccrExecuted);
+      try { settleSuccess(ctx, account, upstreamModel, acc, firstTokenMs, ccrExecuted); }
+      catch { await write(ctx.format === "anthropic" ? `event: error\ndata: ${JSON.stringify({ type: "error", error: { type: "api_error", message: "Settlement recording unavailable; contact the administrator before retrying." } })}\n\n` : `data: ${JSON.stringify({ error: { message: "Settlement recording unavailable; contact the administrator before retrying.", code: "settlement_unavailable" } })}\n\n`).catch(() => {}); }
     }
     if (!clientGone) reply.raw.end();
   }

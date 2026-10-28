@@ -1,4 +1,4 @@
-import type { TokenUsage } from "@1dayapi/core";
+import { MAX_USAGE_TOKENS, validateTokenUsage, type TokenUsage } from "@1dayapi/core";
 
 type Json = Record<string, any>;
 
@@ -14,53 +14,59 @@ export class UsageAccumulator {
   seen = false;
   text = ""; // generated text, for estimation when upstream reports nothing
 
-  /** Anthropic message / message_start.message / message_delta usage object. */
-  addAnthropic(u: Json | undefined): void {
-    if (!u || typeof u !== "object") return;
-    this.seen = true;
-    if (typeof u.input_tokens === "number") this.input = u.input_tokens;
-    if (typeof u.output_tokens === "number") this.output = u.output_tokens;
-    if (typeof u.cache_read_input_tokens === "number") this.cacheRead = u.cache_read_input_tokens;
-    if (typeof u.cache_creation_input_tokens === "number") this.cacheWrite = u.cache_creation_input_tokens;
+  invalid = false;
+
+  private count(value: unknown): number | undefined {
+    if (value === undefined) return undefined;
+    if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0 || value > MAX_USAGE_TOKENS) {
+      this.invalid = true;
+      return undefined;
+    }
+    return value;
   }
 
-  /** OpenAI chat usage object. */
+  /** Anthropic message / message_start.message / message_delta usage object. */
+  addAnthropic(u: Json | undefined): void {
+    if (!u || typeof u !== "object" || Array.isArray(u)) return;
+    const fields = [["input_tokens", "input"], ["output_tokens", "output"],
+      ["cache_read_input_tokens", "cacheRead"], ["cache_creation_input_tokens", "cacheWrite"]] as const;
+    for (const [wire, field] of fields) {
+      const n = this.count(u[wire]);
+      if (n !== undefined) { this[field] = n; this.seen = true; }
+    }
+  }
+
+  /** OpenAI chat usage object. Cache tokens are a subset of the prompt count. */
   addOpenaiChat(u: Json | undefined): void {
-    if (!u || typeof u !== "object") return;
-    this.seen = true;
-    const cached = Number(u.prompt_tokens_details?.cached_tokens ?? 0);
-    this.input = Math.max(Number(u.prompt_tokens ?? 0) - cached, 0);
-    this.output = Number(u.completion_tokens ?? 0);
-    this.cacheRead = cached;
+    if (!u || typeof u !== "object" || Array.isArray(u)) return;
+    this.addOpenai(u.prompt_tokens, u.completion_tokens, u.prompt_tokens_details?.cached_tokens);
   }
 
   /** OpenAI Responses usage object. */
   addResponses(u: Json | undefined): void {
-    if (!u || typeof u !== "object") return;
+    if (!u || typeof u !== "object" || Array.isArray(u)) return;
+    this.addOpenai(u.input_tokens, u.output_tokens, u.input_tokens_details?.cached_tokens);
+  }
+
+  private addOpenai(input: unknown, output: unknown, cached: unknown): void {
+    const prompt = this.count(input), completion = this.count(output), read = this.count(cached) ?? 0;
+    if (prompt === undefined || completion === undefined || read > prompt) { this.invalid = true; return; }
+    this.input = prompt - read;
+    this.output = completion;
+    this.cacheRead = read;
     this.seen = true;
-    const cached = Number(u.input_tokens_details?.cached_tokens ?? 0);
-    this.input = Math.max(Number(u.input_tokens ?? 0) - cached, 0);
-    this.output = Number(u.output_tokens ?? 0);
-    this.cacheRead = cached;
   }
 
   addText(t: unknown): void {
-    if (typeof t === "string" && this.text.length < 2_000_000) this.text += t;
+    if (typeof t === "string" && this.text.length < 2_000_000) this.text += t.slice(0, 2_000_000 - this.text.length);
   }
 
   /** Final usage; estimates (chars / 4) when upstream never reported usage. */
   finalize(requestBody: unknown): { usage: TokenUsage; estimated: boolean } {
-    if (this.seen && (this.input > 0 || this.output > 0 || this.cacheRead > 0)) {
-      return {
-        usage: {
-          input_tokens: this.input,
-          output_tokens: this.output,
-          cache_read_tokens: this.cacheRead,
-          cache_write_tokens: this.cacheWrite,
-        },
-        estimated: false,
-      };
-    }
+    const usage = { input_tokens: this.input, output_tokens: this.output,
+      cache_read_tokens: this.cacheRead, cache_write_tokens: this.cacheWrite };
+    try { validateTokenUsage(usage); } catch { this.invalid = true; }
+    if (this.seen && !this.invalid) return { usage, estimated: false };
     return {
       usage: {
         input_tokens: estimateRequestTokens(requestBody),
@@ -117,7 +123,7 @@ export function estimateRequestTokens(body: unknown): number {
     for (const x of Object.values(o)) walk(x);
   };
   walk(body ?? "");
-  return Math.ceil(chars / 4) + media * MEDIA_BLOCK_TOKENS;
+  return Math.min(MAX_USAGE_TOKENS, Math.ceil(chars / 4) + media * MEDIA_BLOCK_TOKENS);
 }
 
 /** Collect generated text from a non-stream body for estimation. */

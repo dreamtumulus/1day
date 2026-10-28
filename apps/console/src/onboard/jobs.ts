@@ -23,6 +23,10 @@ import { enrichAccountProfile } from "../ccr/profile.js";
 import { claimDiscoveredProxy, claimTeamProxy, nodeProxyUrls, proxyOccupancy, quarantineJobProxy, resolveTeamProxy, type IsolatedProxy } from "../node/proxies.js";
 import { pushProxies } from "../node/registry.js";
 import { HttpError } from "../http.js";
+import { assertNodeCapacity } from "../node/capacity.js";
+import { requireTrustedExecutionNode } from "../node/trust.js";
+import { endReservation, expireJobReservations, reservationDeadline } from "./reservations.js";
+export { PENDING_CALLBACK_TTL_MS, WORKING_JOB_TTL_MS } from "./reservations.js";
 
 // Onboarding job engine (docs/onboarding.md §2/§5). Jobs are async: the POST
 // endpoint persists the job and the OAuth exchange continues in-process
@@ -71,6 +75,7 @@ export interface JobRow {
   proxy_resource_key:string|null;
   egress_started_at:string|null;
   reservation_account_id:string|null;
+  expires_at:string|null;
   params_json: string | null;
   payload_enc: string | null;
   authorize_url: string | null;
@@ -79,6 +84,13 @@ export interface JobRow {
   error: string | null;
   created_at: string;
   updated_at: string;
+}
+
+const jobControllers=new Map<string,AbortController>();
+function jobSignal(id:string):AbortSignal {
+  let controller=jobControllers.get(id);
+  if(!controller){controller=new AbortController();jobControllers.set(id,controller);}
+  return controller.signal;
 }
 
 export function getJob(id: string): JobRow | undefined {
@@ -105,6 +117,9 @@ export function jobOut(j: JobRow, admin = false) {
   const cooldownUntil = acc?.temp_unschedulable_until && acc.temp_unschedulable_until > nowIso() ? acc.temp_unschedulable_until : undefined;
   return {
     jobId: j.id,
+    method:j.method,
+    nodeId:j.node_id,
+    expiresAt:j.expires_at??undefined,
     status: j.status,
     accountId: j.account_id ?? undefined,
     accountName: acc?.name,
@@ -127,6 +142,11 @@ function insertJob(
   status: "working" | "pending_callback",
   authorizeUrl: string | null,
 ): string {
+  requireTrustedExecutionNode(nodeId);
+  expireJobReservations();
+  assertNodeCapacity(nodeId, params.reauthAccountId);
+  if(params.reauthAccountId && one("SELECT 1 FROM onboarding_jobs j WHERE reservation_account_id=? AND j.isolation_version=1 AND j.status IN ('working','pending_callback')",params.reauthAccountId))
+    throw new HttpError(409,"reauth_in_progress","This account already has an active authorization job");
   const id = newId();
   const now = nowIso();
   const p=one<IsolatedProxy>("SELECT * FROM node_proxies WHERE id=? AND node_id=?",proxyId,nodeId);
@@ -137,8 +157,8 @@ function insertJob(
   if(!alreadyBound && proxyOccupancy(p.resource_key).total>=3)throw new OnboardError("proxy_capacity_reached","Proxy account capacity reached");
   run(
     `INSERT INTO onboarding_jobs (id, requester_id, scope, method, node_id, proxy_id, params_json, payload_enc, authorize_url, status, created_at, updated_at,
-      team_id,isolation_version,proxy_resource_key,reservation_account_id)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,1,?,?)`,
+      team_id,isolation_version,proxy_resource_key,reservation_account_id,expires_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,1,?,?,?)`,
     id,
     requesterId,
     scope,
@@ -151,7 +171,7 @@ function insertJob(
     status,
     now,
     now,
-    expected,p.resource_key,params.reauthAccountId??null,
+    expected,p.resource_key,params.reauthAccountId??null,reservationDeadline(status),
   );
   recordProxyTeamEvent({resourceKey:p.resource_key,proxyId,nodeId,teamId:expected,jobId:id,actorId:requesterId,
     event:"slot_reserved",reason:alreadyBound?"reauthorize existing fixed binding":proxyOccupancy(p.resource_key,id).total>=2?"third slot: no normal capacity":"normal slot (up to two accounts)"});
@@ -266,7 +286,9 @@ export function startAuthUrlJob(
 
 /** Step 2 of method=auth_url: state already validated by the route. */
 export function continueAuthUrlJob(jobId: string, callbackUrl: string): void {
-  run("UPDATE onboarding_jobs SET status = 'working', updated_at = ? WHERE id = ?", nowIso(), jobId);
+  expireJobReservations();
+  const changed=run("UPDATE onboarding_jobs SET status = 'working', updated_at = ?, expires_at=? WHERE id = ? AND isolation_version=1 AND status='pending_callback'", nowIso(), reservationDeadline("working"), jobId).changes;
+  if (!changed) throw new HttpError(400,"job_expired","Authorization reservation is no longer active");
   void runAuthUrlJob(jobId, callbackUrl);
 }
 
@@ -276,38 +298,32 @@ export function continueAuthUrlJob(jobId: string, callbackUrl: string): void {
  * is stale (its PKCE verifier should not linger). Called at boot and on every
  * upkeep tick.
  */
-export const PENDING_CALLBACK_TTL_MS = 30 * 60_000;
-export const WORKING_JOB_TTL_MS = 3 * 60_000; // four node requests at ≤30 s each + slack
 export function sweepStaleJobs(now = Date.now()): number {
-  const iso = (ms: number) => new Date(now - ms).toISOString().slice(0, 19) + "Z";
-  const stale=all<JobRow>(`SELECT * FROM onboarding_jobs WHERE isolation_version=1 AND
-    ((status='working' AND updated_at<?) OR (status='pending_callback' AND created_at<?))`,
-    iso(WORKING_JOB_TTL_MS),iso(PENDING_CALLBACK_TTL_MS));
-  for(const job of stale)failJob(job.id,job.status==='working'?"job_expired":"callback_expired","Authorization reservation expired");
-  const a = run(
-    "UPDATE onboarding_jobs SET status = 'failed', error = 'job_expired: console restarted or the exchange timed out', payload_enc = NULL, updated_at = ? WHERE isolation_version=0 AND status = 'working' AND updated_at < ?",
-    nowIso(),
-    iso(WORKING_JOB_TTL_MS),
-  ).changes;
-  const b = run(
-    "UPDATE onboarding_jobs SET status = 'failed', error = 'callback_expired: no callback URL within 30 minutes', payload_enc = NULL, updated_at = ? WHERE isolation_version=0 AND status = 'pending_callback' AND created_at < ?",
-    nowIso(),
-    iso(PENDING_CALLBACK_TTL_MS),
-  ).changes;
-  return a + b + stale.length;
+  const before=one<{n:number}>("SELECT COUNT(*) n FROM onboarding_jobs WHERE isolation_version=1 AND status IN ('working','pending_callback')")!.n;
+  for (const nodeId of expireJobReservations(now)) pushProxies(nodeId,nodeProxyUrls(nodeId));
+  for (const [id,controller] of jobControllers) if(getJob(id)?.status!=="working") {controller.abort();jobControllers.delete(id);}
+  return before-one<{n:number}>("SELECT COUNT(*) n FROM onboarding_jobs WHERE isolation_version=1 AND status IN ('working','pending_callback')")!.n;
+}
+
+/** Runs separately from slow token refresh/probe work and also when probing is disabled. */
+export function startOnboardingMaintenance(): () => void {
+  sweepStaleJobs();
+  const timer=setInterval(()=>{try{sweepStaleJobs();}catch(error){console.error("[onboard] reservation expiry failed",error);}},15_000);
+  timer.unref();
+  return ()=>clearInterval(timer);
+}
+
+export function cancelJob(jobId:string): void {
+  failJob(jobId,"job_cancelled","Authorization cancelled by the operator");
 }
 
 // ---------- runners ----------
 
 function failJob(jobId: string, code: string, message: string): void {
   const j=getJob(jobId);
-  const claimed=j?.proxy_resource_key?one<{team_id:string}>("SELECT team_id FROM proxy_team_claims WHERE resource_key=?",j.proxy_resource_key):undefined;
-  if(j?.isolation_version===1 && j.egress_started_at && (!claimed || claimed.team_id!==j.team_id || code==="team_mismatch"))quarantineJobProxy(jobId,code);
-  run("UPDATE onboarding_jobs SET status = 'failed', error = ?, payload_enc = NULL, updated_at = ? WHERE id = ?", `${code}: ${message}`.slice(0, 500), nowIso(), jobId);
-  if(j?.isolation_version===1 && j.proxy_resource_key && !['done','failed'].includes(j.status))
-    recordProxyTeamEvent({resourceKey:j.proxy_resource_key,proxyId:j.proxy_id,nodeId:j.node_id,teamId:j.team_id,
-      jobId,actorId:j.requester_id,event:"slot_released",reason:code});
-  if(j)pushProxies(j.node_id,nodeProxyUrls(j.node_id));
+  if(endReservation(jobId,code,message) && j)pushProxies(j.node_id,nodeProxyUrls(j.node_id));
+  jobControllers.get(jobId)?.abort();
+  jobControllers.delete(jobId);
 }
 
 function failFromError(jobId: string, err: unknown): void {
@@ -316,10 +332,12 @@ function failFromError(jobId: string, err: unknown): void {
 }
 
 /** The job's egress: its node + the proxy reserved for the account-to-be (docs/onboarding.md §1 一号一代理). */
-function egressTarget(job: JobRow): { nodeId: string; proxyId: string; bindingId: string;teamId:string } {
+function egressTarget(job: JobRow): { nodeId: string; proxyId: string; bindingId: string;teamId:string; signal:AbortSignal } {
+  expireJobReservations();
+  if (getJob(job.id)?.status !== "working") throw new OnboardError("job_expired", "Authorization reservation is no longer active");
   if (!one("SELECT 1 FROM node_proxies WHERE id = ?", job.proxy_id)) throw new OnboardError("node_offline", "the reserved proxy row is gone");
   run("UPDATE onboarding_jobs SET egress_started_at=COALESCE(egress_started_at,?) WHERE id=?",nowIso(),job.id);
-  return { nodeId: job.node_id, proxyId: job.proxy_id!, bindingId: `onboard_${job.id}`,teamId:job.team_id??`pending:${job.id}` };
+  return { nodeId: job.node_id, proxyId: job.proxy_id!, bindingId: `onboard_${job.id}`,teamId:job.team_id??`pending:${job.id}`,signal:jobSignal(job.id) };
 }
 
 async function mockAuth(): Promise<AuthResult | null> {
@@ -364,6 +382,7 @@ async function runAuthUrlJob(jobId: string, callbackUrl: string): Promise<void> 
 }
 
 async function finishVerifiedJob(job:JobRow,res:AuthResult):Promise<void> {
+  expireJobReservations();
   const current=getJob(job.id);
   if(!current)return;
   job=current;
@@ -487,7 +506,9 @@ async function finishJob(job: JobRow, res: AuthResult): Promise<void> {
   let finalAccountId: string | null = null;
   try {
     tx(() => {
-      if(getJob(job.id)?.status!=='working')throw new Error("job_expired");
+      expireJobReservations();
+    if(getJob(job.id)?.status!=='working')throw new Error("job_expired");
+      assertNodeCapacity(job.node_id, "", job.id);
       const accountId = newId();
       finalAccountId = accountId;
       ensureUpstreamTeam(teamId,params.teamName);
@@ -543,6 +564,7 @@ async function finishJob(job: JobRow, res: AuthResult): Promise<void> {
     failJob(job.id, msg.startsWith("proxy_bound") || msg.startsWith("group_not_found") ? msg.split(":")[0] : "authorize_failed", msg);
     return;
   }
+  jobControllers.delete(job.id);
   pushProxies(job.node_id,nodeProxyUrls(job.node_id));
   if (finalAccountId) await fetchProfileBestEffort(finalAccountId);
 }
@@ -596,6 +618,7 @@ async function reauthorizeInPlace(job: JobRow, row: AccountRow, credential: stri
   }
   const now=nowIso();
   tx(()=>{
+    expireJobReservations();
     if(getJob(job.id)?.status!=='working')throw new Error("job_expired");
     run(`UPDATE accounts SET credential_enc=?,status='active',error_message=NULL,rate_limited_until=NULL,
       overload_until=NULL,temp_unschedulable_until=NULL,window_exhausted_until=NULL,window_reason=NULL,
@@ -607,6 +630,7 @@ async function reauthorizeInPlace(job: JobRow, row: AccountRow, credential: stri
     recordProxyTeamEvent({resourceKey:bound.resource_key!,proxyId:bound.id,nodeId:bound.node_id,teamId,
       accountId:row.id,jobId:job.id,event:"account_reauthorized",actorId:job.requester_id,reason:"fixed proxy retained"});
   });
+  jobControllers.delete(job.id);
   pushProxies(job.node_id,nodeProxyUrls(job.node_id));
   await fetchProfileBestEffort(row.id);
 }
