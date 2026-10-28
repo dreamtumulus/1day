@@ -193,6 +193,56 @@ export function removeNodeProxies(nodeId: string, proxyIds: string[], actorId: s
   return out;
 }
 
+/**
+ * ONE-OFF maintenance helper (2026-10-28, ops/maintenance/2026-10-28-rebind-revoked-proxies.mjs),
+ * deliberately NOT exposed as an API or UI: one account = one proxy for life is the rule
+ * (docs/onboarding.md §1 原则 1); the user allowed exactly one rebinding when a provider
+ * revoked 202 proxies. Move an account to another proxy on its node. Isolated (team) accounts get a proxy the scheduler would accept —
+ * verified exit, same-organization exit preferred, capacity 2 normal / 3 max — and the
+ * claim + `account_bound` event that openTunnel / boundProxyDown check; the old exit keeps
+ * its organization claim (history is append-only). Legacy accounts (no team) get any live,
+ * unbound proxy of the node. Returns the old and new proxy ids.
+ */
+export function rebindAccountProxy(accountId: string, actorId: string | null, opts: { proxyId?: string; excludeProxyIds?: string[] } = {}): { oldProxyId: string | null; newProxyId: string; exitIp: string | null } {
+  const a = one<{ id: string; node_id: string | null; route: string; team_id: string | null; bound_proxy_id: string | null; status: string }>(
+    "SELECT id, node_id, route, team_id, bound_proxy_id, status FROM accounts WHERE id = ?", accountId);
+  if (!a) throw new ProxyInputError("account_not_found");
+  if (!a.node_id) throw new ProxyInputError("account_has_no_node");
+  const exclude = new Set([...(opts.excludeProxyIds ?? []), ...(a.bound_proxy_id ? [a.bound_proxy_id] : [])]);
+  let next: IsolatedProxy;
+  if (a.team_id) {
+    // Never share an exit with an account of another organization (or a legacy one).
+    for (const r of all<{ id: string }>(`SELECT p.id FROM node_proxies p WHERE p.node_id = ? AND (p.bound_account_id IS NOT NULL
+      OR EXISTS (SELECT 1 FROM accounts x WHERE x.bound_proxy_id = p.id AND (x.team_id IS NULL OR x.team_id <> ?)))`, a.node_id, a.team_id)) exclude.add(r.id);
+    next = resolveTeamProxy(a.node_id, a.team_id, opts.proxyId ?? "auto", "", exclude);
+    ensureUpstreamTeam(a.team_id);
+    claimProxyResource(`proxy:${next.id}`, a.team_id);
+    claimProxyResource(next.resource_key!, a.team_id);
+    run("UPDATE node_proxies SET team_id = ? WHERE id = ? AND isolation_version = 1", a.team_id, next.id);
+  } else {
+    type Free = IsolatedProxy & { bound_account_id: string | null };
+    const row = opts.proxyId && opts.proxyId !== "auto"
+      ? one<Free>("SELECT * FROM node_proxies WHERE id = ? AND node_id = ?", opts.proxyId, a.node_id)
+      : all<Free>(`SELECT p.* FROM node_proxies p WHERE p.node_id = ? AND p.status = 'live' AND p.bound_account_id IS NULL
+           AND p.team_id IS NULL AND NOT EXISTS (SELECT 1 FROM accounts x WHERE x.bound_proxy_id = p.id)
+           AND p.id NOT IN (${RESERVED_PROXY_SQL}) ORDER BY p.last_check_at ASC, p.id`, a.node_id).find((p) => !exclude.has(p.id));
+    if (!row || row.status !== "live" || exclude.has(row.id)) throw new ProxyInputError("No free live proxy on this node");
+    if (row.bound_account_id || one("SELECT 1 FROM accounts WHERE bound_proxy_id = ?", row.id)) throw new ProxyInputError("proxy_bound");
+    next = row;
+  }
+  const old = a.bound_proxy_id;
+  run("UPDATE accounts SET bound_proxy_id = ?, updated_at = ? WHERE id = ?", next.id, nowIso(), accountId);
+  if (old) run("UPDATE node_proxies SET bound_account_id = NULL WHERE id = ? AND bound_account_id = ?", old, accountId);
+  if (!a.team_id) run("UPDATE node_proxies SET bound_account_id = ? WHERE id = ?", accountId, next.id);
+  run("DELETE FROM node_proxy_assignments WHERE account_id = ?", accountId);
+  const oldRow = old ? one<{ resource_key: string | null; node_id: string }>("SELECT resource_key, node_id FROM node_proxies WHERE id = ?", old) : null;
+  if (old) recordProxyTeamEvent({ resourceKey: oldRow?.resource_key ?? `proxy:${old}`, proxyId: old, nodeId: oldRow?.node_id ?? a.node_id, teamId: a.team_id,
+    accountId, actorId, event: "account_released", reason: "rebound to another proxy by an operator; organization ownership retained" });
+  recordProxyTeamEvent({ resourceKey: next.resource_key ?? `proxy:${next.id}`, proxyId: next.id, nodeId: a.node_id, teamId: a.team_id, accountId, actorId,
+    event: "account_bound", reason: a.team_id ? "rebound by an operator (verified exit, same organization)" : "rebound by an operator (legacy account)" });
+  return { oldProxyId: old, newProxyId: next.id, exitIp: next.exit_ip ?? null };
+}
+
 /** Proxies an in-flight onboarding job has already picked (not yet bound: the bot is still running). */
 export const RESERVED_PROXY_SQL = `SELECT proxy_id FROM onboarding_jobs j WHERE proxy_id IS NOT NULL AND ${liveReservationSql()}`;
 
@@ -279,12 +329,12 @@ function teamCompatible(p: IsolatedProxy, teamId: string | null): boolean {
 }
 
 /** Caller reserves the returned resource inside the same BEGIN IMMEDIATE. */
-export function resolveTeamProxy(nodeId: string, teamIdInput?: string | null, requested?: string, excludeJobId=""): IsolatedProxy {
+export function resolveTeamProxy(nodeId: string, teamIdInput?: string | null, requested?: string, excludeJobId="", excludeProxyIds?: Set<string>): IsolatedProxy {
   expireJobReservations();
   const teamId = normalizeTeamId(teamIdInput);
   if (teamIdInput && !teamId) throw new ProxyInputError("team_identity_invalid");
   const candidates = all<IsolatedProxy>("SELECT * FROM node_proxies WHERE node_id=? ORDER BY last_check_at,id", nodeId)
-    .filter((p) => teamCompatible(p, teamId))
+    .filter((p) => !excludeProxyIds?.has(p.id) && teamCompatible(p, teamId))
     .map((p) => ({ p, ...proxyOccupancy(p.resource_key!,excludeJobId),count:proxyOccupancy(p.resource_key!,excludeJobId).total }))
     .filter((x) => x.count < 3);
   const normal = candidates.filter((x) => x.count < 2);
