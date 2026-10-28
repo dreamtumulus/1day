@@ -165,7 +165,7 @@ curl -s -o /dev/null -w '%{http_code}\n' https://1dayapi.com/login   # 期望 20
 
 **新增 worker 节点检查清单**（每一步都有机器可验的产出，别跳）：
 
-1. 控制台「节点」→ SSH 部署（2026-10-17 起脚本自带：unzip、bun、claude 2.1.300 → `/opt/claude/claude`、`ccworker`、worker 根目录、隔离自检，
+1. 控制台「节点」→ SSH 部署（2026-10-17 起脚本自带：unzip、bun、claude 2.1.312 → `/opt/claude/claude`（2026-10-28 起；此前 2.1.300）、`ccworker`、worker 根目录、隔离自检，
    自检失败则整个部署失败并把输出留在 `deployMeta.log`），或手工 `install.sh`（一键或 `--local`）；日志里必须看到
    `worker isolation self-test PASSED: ccworker ran claude <ver>`；看到 `FAILED`
    先按提示修（`id ccworker`、`ls -ld /var/lib/1dayapi-cc-worker` 应为 `drwx--x--x root`、`sudo -u ccworker claude --version`）。

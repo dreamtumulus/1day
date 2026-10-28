@@ -138,7 +138,7 @@ echo "[deploy] bun $(bun --version)"
 # /var/lib/1dayapi-cc-worker; the claude binary must live where that user can
 # execute it (not under /root/.bun). Missing any of this = the 2026-10-16
 # EACCES incident, so the same self-test the node runs at startup gates the deploy.
-CLAUDE_VERSION=2.1.300
+CLAUDE_VERSION=2.1.312
 if [ "$(id -u)" -eq 0 ]; then
   if ! [ -x /opt/claude/claude ] || ! /opt/claude/claude --version 2>/dev/null | grep -q "$CLAUDE_VERSION"; then
     echo "[deploy] installing claude $CLAUDE_VERSION via bun"

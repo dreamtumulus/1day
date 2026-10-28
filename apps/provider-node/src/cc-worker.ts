@@ -20,7 +20,7 @@ import type { IsolationContext } from "./protocol.js";
 // FIFO (cap 30, then worker_overloaded). Each process is hard-killed after
 // timeoutMs (default 600s).
 
-const CC_VERSION_PIN = "2.1.300";
+const CC_VERSION_PIN = "2.1.312";
 const FIXED_SCOPES = [
   "user:profile",
   "user:inference",

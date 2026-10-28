@@ -13,7 +13,8 @@
 | 本地请求采样：`ANTHROPIC_BASE_URL` 指向本地采样服务，运行 `claude -p` | `recon/claude-code/captures.ndjson`、`capture-*.json` |
 | 采样程序 | `recon/claude-code/capture-upstream.mjs` |
 
-版本锚点：Claude Code **2.1.300**（BUILD_TIME 2026-10-14，GIT_SHA c6733ae1），内嵌 `@anthropic-ai/sdk` **0.128.0**，运行时标识 Node **v26.3.0**。采样日 2026-10-15，当日 npm latest 即 2.1.300。
+版本锚点：Claude Code **2.1.312**（2026-10-28 升级，§11），内嵌 `@anthropic-ai/sdk` **0.128.0**，运行时标识 Node **v26.12.1**（Bun 1.4.4）。
+首版锚点 2.1.300（BUILD_TIME 2026-10-14，GIT_SHA c6733ae1，运行时 v26.3.0）采样于 2026-10-15；§3–§6 的数值已按 2.1.312 更新，差异见 §11。
 
 ## 2. 端点
 
@@ -29,7 +30,7 @@ POST /v1/messages?beta=true     HTTP/1.1
 |---|---|---|
 | `Accept` | `application/json` | 即使 `stream:true` 也是 json，不是 text/event-stream |
 | `Content-Type` | `application/json` | |
-| `User-Agent` | `claude-cli/2.1.300 (external, sdk-cli)` | 格式 `claude-cli/{VERSION} (external, {entrypoint}{, agent-sdk/…}{, client-app/…}{, workload/…})`。`-p` 打印模式 entrypoint 为 `sdk-cli`；交互式为 `cli` |
+| `User-Agent` | `claude-cli/2.1.312 (external, sdk-cli)` | 格式 `claude-cli/{VERSION} (external, {entrypoint}{, agent-sdk/…}{, client-app/…}{, workload/…})`。`-p` 打印模式 entrypoint 为 `sdk-cli`；交互式为 `cli` |
 | `X-Claude-Code-Session-Id` | UUID v4 | 每会话一个 |
 | `X-Stainless-Arch` | `x64` | SDK 遥测头组 |
 | `X-Stainless-Lang` | `js` | |
@@ -123,16 +124,16 @@ thinking-display-updates-2026-08-18
 ## 6. Canonical 注入集（客户端非 CC 时网关补齐）
 
 ```
-User-Agent: claude-cli/2.1.300 (external, cli)
+User-Agent: claude-cli/2.1.312 (external, cli)
 X-Stainless-Arch: x64            (按宿主)
 X-Stainless-Lang: js
 X-Stainless-OS: Linux            (按宿主: Linux|Darwin|Windows_NT→Windows)
 X-Stainless-Package-Version: 0.128.0
 X-Stainless-Retry-Count: 0
 X-Stainless-Runtime: node
-X-Stainless-Runtime-Version: v26.3.0
+X-Stainless-Runtime-Version: v26.12.1
 X-Stainless-Timeout: 600
-anthropic-beta: claude-code-20250219,interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05
+anthropic-beta: claude-code-20250219,interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13,context-management-2025-06-27,extended-cache-ttl-2025-04-11
 anthropic-dangerous-direct-browser-access: true
 anthropic-version: 2023-06-01
 x-app: cli
@@ -196,3 +197,27 @@ CC 发版频繁（周级）。升级常量时：
   `{deviceId, accountUuid}`，console 写 `accounts.device_id / account_uuid`（迁移 11）。没有配置目录的新账号由平台 `ensureDeviceId`
   （sha256("1dayapi-device:"+id) 的 64 hex）生成，随 `cc_worker.open.deviceId` 播种为新 `.claude.json` 的 userID；节点值后续覆盖平台种子。
 - **运维约束**：`/var/lib/1dayapi-cc-worker/cc-accounts/` 不可清空重建（否则全部账号同时"换设备"）；备份已包含 `.claude.json`。
+
+## 11. 2026-10-28 升级到 2.1.312（按 §9 SOP）
+
+采样方法同 §1：两版官方 Linux x64 二进制（`bun add -g @anthropic-ai/claude-code@<ver>`，包本身只是下载器，二进制在
+`@anthropic-ai/claude-code-linux-x64`）以 worker 的真实参数（`-p --model claude-sonnet-5-5 --output-format stream-json --verbose
+--tools "" --no-session-persistence --max-thinking-tokens 1024 --settings '{"alwaysThinkingEnabled":true}' --include-partial-messages`）
+打到本地采样服务（`ANTHROPIC_BASE_URL`），逐字段比对。
+
+| 项 | 2.1.300 | 2.1.312 |
+|---|---|---|
+| `User-Agent` | `claude-cli/2.1.300 (external, sdk-cli)` | `claude-cli/2.1.312 (external, sdk-cli)` |
+| `X-Stainless-Package-Version` | 0.128.0 | 0.128.0（不变） |
+| `X-Stainless-Runtime-Version` | v26.3.0 | **v26.12.1**（内嵌 Bun 1.4.3 → 1.4.4，`HEAD /api/hello` 的 UA 同步变为 `Bun/1.4.4`） |
+| 计费头 | `cc_version=2.1.300.f23; cc_entrypoint=sdk-cli;` | `cc_version=2.1.312.6b4; …`（构建标志 `.f23` → `.6b4`，常量 `CC_BUILD_SUFFIX`） |
+| `anthropic-beta`（同参数） | claude-code, oauth, interleaved-thinking, thinking-token-count, context-management, **prompt-caching-scope**, per-turn-control, effort, **dangerous-tool-use**, thinking-display-updates, **afk-mode**, extended-cache-ttl | claude-code, oauth, interleaved-thinking, context-management, per-turn-control, thinking-token-count, effort, thinking-display-updates, extended-cache-ttl |
+| body | 含 `safeguards`（dangerous_tool_use 分类器上下文） | 无 `safeguards`；其余键相同（`output_config.effort=medium`、`thinking.adaptive`、`context_management` 同） |
+| OAuth scope / 凭据文件 / token 端点 | 同 | 同（`user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload`、`.credentials.json`、`platform.claude.com/v1/oauth/token`） |
+| stream-json 事件 | `system/init,status,api_retry`、`assistant`、`result` | 同形 |
+
+常量改动：`CC_VERSION`、`CC_RUNTIME_VERSION`、新增 `CC_BUILD_SUFFIX`、`CC_BETAS`（去掉 2.1.312 不再发送的
+`prompt-caching-scope-2026-01-05`，加入其对无工具请求也发送的 `extended-cache-ttl-2025-04-11`；`per-turn-control / effort /
+thinking-display-updates` 会改变非 CC 客户端看到的响应形态，故不纳入 canonical 注入集，与 2.1.300 时的取舍一致）。
+`normalizeCcSoftware` 把客户端版本钉到节点版本时，连构建标志一起改成节点的；钉到其他版本时保留客户端的标志。
+节点部署脚本 `CLAUDE_VERSION=2.1.312`，设置项 `direct_cc_version_pin` 同步改为 2.1.312，探针 `func.py` 的 UA 与计费头同步。

@@ -65,7 +65,7 @@ const stdoutOf = (frames, sid) =>
 // ---- happy path: accepted, stdout streams back, close=complete, creds materialized ----
 {
   const { manager, frames, dataDir } = setup();
-  assert.ok(manager.claudeVersion?.includes("2.1.300"), "fixture answers --version");
+  assert.ok(manager.claudeVersion?.includes("2.1.312"), "fixture answers --version");
   manager.handleOpen(openMsg("s1"));
   await waitFor(() => framesFor(frames, "s1").some((f) => f.type === "cc_worker.close"));
   assert.equal(framesFor(frames, "s1")[0].type, "cc_worker.open_response");

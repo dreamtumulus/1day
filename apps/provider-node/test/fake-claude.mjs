@@ -8,7 +8,7 @@
 import fs from "node:fs";
 const args = process.argv.slice(2);
 if (args.includes("--version")) {
-  console.log("2.1.300 (Claude Code) [fake]");
+  console.log("2.1.312 (Claude Code) [fake]");
   process.exit(0);
 }
 const mode = process.env.FAKE_CLAUDE_MODE ?? "ok";

@@ -1,20 +1,22 @@
 /**
  * Claude Code 请求指纹（docs/claude-code-compat.md §3/§6）。
- * 常量锚定 Claude Code 2.1.300 / @anthropic-ai/sdk 0.128.0；升级按文档 §8 SOP。
+ * 常量锚定 Claude Code 2.1.312 / @anthropic-ai/sdk 0.128.0（2026-10-28 采样，docs/claude-code-compat.md §11）；升级按文档 §9 SOP。
  */
 
 import { randomBytes, randomUUID } from "node:crypto";
 
-export const CC_VERSION = "2.1.300";
+export const CC_VERSION = "2.1.312";
+/** Build flag Claude Code appends to cc_version in the billing block (2.1.300 → "f23", 2.1.312 → "6b4"). */
+export const CC_BUILD_SUFFIX = "6b4";
 export const CC_SDK_VERSION = "0.128.0";
-export const CC_RUNTIME_VERSION = "v26.3.0";
+export const CC_RUNTIME_VERSION = "v26.12.1";
 export const CC_ANTHROPIC_VERSION = "2023-06-01";
 export const CC_BETAS = [
   "claude-code-20250219",
   "interleaved-thinking-2025-05-14",
   "thinking-token-count-2026-05-13",
   "context-management-2025-06-27",
-  "prompt-caching-scope-2026-01-05",
+  "extended-cache-ttl-2025-04-11",
 ];
 
 /**
@@ -38,7 +40,7 @@ export const CC_AUX_UA = `claude-code/${CC_VERSION}`;
 export const CC_AUX_ACCEPT = "application/json, text/plain, */*";
 
 /** 计费头 system 块与身份句（docs/claude-code-compat.md §5）；OAuth 订阅号缺计费块 → 上游 429。 */
-export const CC_BILLING_BLOCK = `x-anthropic-billing-header: cc_version=${CC_VERSION}.f23; cc_entrypoint=cli;`;
+export const CC_BILLING_BLOCK = `x-anthropic-billing-header: cc_version=${CC_VERSION}.${CC_BUILD_SUFFIX}; cc_entrypoint=cli;`;
 export const CC_IDENTITY_BLOCK = "You are Claude Code, Anthropic's official CLI for Claude.";
 
 /** metadata.user_id（JSON 字符串，docs/claude-code-compat.md §5）。 */
@@ -137,7 +139,9 @@ export function normalizeCcSoftware(
     const text = typeof b0 === "string" ? b0 : b0 && typeof b0 === "object" && (b0 as Json).type === "text" ? String((b0 as Json).text ?? "") : null;
     if (text !== null && BILLING_LINE_RE.test(text)) {
       let line = text;
-      if (changed.includes("version")) line = line.replace(/(cc_version=)\d+\.\d+\.\d+/, `$1${version}`);
+      // Pinned to the node's own build: carry its build flag too (a 2.1.300 client rewritten to 2.1.312 must not
+      // say ".f23", which no 2.1.312 build sends). Pinned to another version: keep the client's flag.
+      if (changed.includes("version")) line = line.replace(/(cc_version=)\d+\.\d+\.\d+(\.[0-9a-z]+)?/, (_m, pre, suf) => `${pre}${version}${version === CC_VERSION ? `.${CC_BUILD_SUFFIX}` : (suf ?? "")}`);
       if (entrypoint) line = line.replace(/(cc_entrypoint=)[^;]*/, `$1${entrypoint}`);
       if (line !== text) {
         const nb0 = typeof b0 === "string" ? line : { ...(b0 as Json), text: line };
@@ -177,7 +181,7 @@ const PASSTHROUGH = [
 /**
  * Build the header block for an Anthropic-wire upstream request so it matches
  * an official Claude Code request: client-sent fingerprint headers win, gaps
- * are filled with the canonical CC 2.1.300 set. Auth and anthropic-beta are
+ * are filled with the canonical CC 2.1.312 set. Auth and anthropic-beta are
  * handled by the caller (account-dependent).
  */
 export function anthropicFingerprintHeaders(clientHeaders: ClientHeaders): Record<string, string> {
