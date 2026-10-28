@@ -26,9 +26,40 @@ export function recordProxyTeamEvent(event: {
     event.actorId ?? null,event.reason ?? null,nowIso());
 }
 
+/**
+ * Quarantine is append-only history (migration 21 triggers); an operator lifts it with a
+ * row in proxy_quarantine_lifts (migration 25) instead of deleting the verdict. A quarantine
+ * is ACTIVE when it has no lift; re-quarantining a lifted key removes the lift again.
+ */
+export function quarantineActive(...resourceKeys: string[]): { resource_key: string; reason: string } | undefined {
+  const keys = resourceKeys.filter((k): k is string => typeof k === "string" && !!k);
+  if (!keys.length) return undefined;
+  return one<{ resource_key: string; reason: string }>(
+    `SELECT q.resource_key, q.reason FROM proxy_quarantine q
+      WHERE q.resource_key IN (${keys.map(() => "?").join(",")})
+        AND NOT EXISTS (SELECT 1 FROM proxy_quarantine_lifts l WHERE l.resource_key = q.resource_key)
+      ORDER BY q.created_at LIMIT 1`,
+    ...keys,
+  );
+}
+export function quarantineResource(resourceKey: string, reason: string): void {
+  run("INSERT OR IGNORE INTO proxy_quarantine(resource_key,reason) VALUES (?,?)", resourceKey, reason.slice(0, 200));
+  run("DELETE FROM proxy_quarantine_lifts WHERE resource_key=?", resourceKey);
+}
+/** Operator decision: lifts every active quarantine among `resourceKeys`; returns how many were lifted. */
+export function liftQuarantine(resourceKeys: string[], actorId: string | null, reason: string | null): number {
+  let n = 0;
+  for (const key of resourceKeys) {
+    if (!quarantineActive(key)) continue;
+    run("INSERT OR REPLACE INTO proxy_quarantine_lifts(resource_key,lifted_at,actor_id,reason) VALUES (?,?,?,?)", key, nowIso(), actorId, reason);
+    n += 1;
+  }
+  return n;
+}
+
 /** Immutable claim: removing a pool member or account cannot make this resource virgin. */
 export function claimProxyResource(resourceKey: string, teamId: string): void {
-  if (one("SELECT 1 FROM proxy_quarantine WHERE resource_key=?", resourceKey)) throw new Error("proxy_quarantined");
+  if (quarantineActive(resourceKey)) throw new Error("proxy_quarantined");
   run("INSERT OR IGNORE INTO proxy_team_claims(resource_key,team_id) VALUES (?,?)", resourceKey, teamId);
   if (one<{ team_id: string }>("SELECT team_id FROM proxy_team_claims WHERE resource_key=?", resourceKey)?.team_id !== teamId) {
     throw new Error("proxy_team_mismatch");

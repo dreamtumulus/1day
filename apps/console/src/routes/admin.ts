@@ -60,7 +60,7 @@ import {
   strArray,
 } from "../http.js";
 import { deployNodeLocal, deployNodeViaSsh } from "../node/deploy.js";
-import { ProxyInputError, addNodeProxies, listNodeProxies, listProxiesForPicker, nodeExists, nodeProxyUrls, releaseAccountProxies, releaseNodeResources, replaceNodeProxies, validateProxies, type AddProxiesResult, type ProxyInput, type ReplaceProxiesResult } from "../node/proxies.js";
+import { ProxyInputError, addNodeProxies, listNodeProxies, listProxiesForPicker, nodeExists, nodeProxyUrls, releaseAccountProxies, releaseNodeResources, replaceNodeProxies, unquarantineProxy, validateProxies, type AddProxiesResult, type ProxyInput, type ReplaceProxiesResult } from "../node/proxies.js";
 import { requestViaNode } from "../node/egress-request.js";
 import { disconnectNode, pushProxies } from "../node/registry.js";
 import { createUser, dropSessions, requireAdmin, requireOps, resetLoginKey } from "../session.js";
@@ -1377,6 +1377,23 @@ export function registerAdminRoutes(app: FastifyInstance): void {
     }
     const pushed = pushProxies(id, nodeProxyUrls(id));
     return { data: { pushed, added: res.added, skipped: res.skipped, skippedUrls: res.skippedUrls, proxies: listNodeProxies(id) } };
+  });
+
+  // Lift a quarantine (docs/onboarding.md §12.1): operator decision, kept in the history.
+  // The node gets the pool pushed again because its policy changes with the quarantine.
+  app.post("/api/admin/nodes/:id/proxies/:proxyId/unquarantine", pre, async (req) => {
+    const { id, proxyId } = req.params as { id: string; proxyId: string };
+    if (!nodeExists(id)) notFound("node");
+    let cleared: boolean;
+    try {
+      cleared = unquarantineProxy(id, proxyId, req.user!.id);
+    } catch (e) {
+      if (e instanceof ProxyInputError && e.message === "proxy_not_found") notFound("proxy");
+      throw e;
+    }
+    if (!cleared) bad("proxy_not_quarantined", "This proxy is not quarantined");
+    const pushed = pushProxies(id, nodeProxyUrls(id));
+    return { data: { ok: true, pushed } };
   });
 
   app.get("/api/admin/nodes/:id/proxies", preOps, async (req) => {

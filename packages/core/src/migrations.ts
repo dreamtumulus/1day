@@ -309,6 +309,7 @@ const MIGRATIONS: Array<{ version: number; up: (d: DatabaseSync, log: Log) => vo
   { version: 21, up: migration21 },
   { version: 22, up: migration22 },
   { version: 23, up: migration23 },
+  { version: 25, up: migration25 },
 ];
 
 // 上号员令牌（独立鉴权的上号站点 /onboard）：admin 签发，绑定目标节点；
@@ -774,4 +775,19 @@ function migration23(d: DatabaseSync, log: Log): void {
     );
   `);
   log("migration 23: onboard_orgs (saved organizations for the onboarding form)");
+}
+
+// Migration 25 (2026-10-28): proxy_quarantine_lifts — an operator's decision to lift a
+// quarantine. proxy_quarantine itself stays append-only (migration 21 triggers); a quarantine
+// is active while it has no lift row, and re-quarantining a key removes its lift.
+function migration25(d: DatabaseSync, log: Log): void {
+  d.exec(`
+    CREATE TABLE IF NOT EXISTS proxy_quarantine_lifts (
+      resource_key TEXT PRIMARY KEY,
+      lifted_at TEXT NOT NULL,
+      actor_id TEXT,
+      reason TEXT
+    );
+  `);
+  log("migration 25: proxy_quarantine_lifts (operator-lifted quarantines)");
 }

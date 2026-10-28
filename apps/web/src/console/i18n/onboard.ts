@@ -86,6 +86,20 @@ const en = {
   "onboard.batchLine": "Line {n}",
   "onboard.invalidLine": "invalid format",
   "onboard.duplicateLine": "duplicate",
+  "onboard.preExists": "This account is already in the pool ({email}, {status}); onboarding it again is refused.",
+  "onboard.batchExists": "already in the pool ({email}) · skipped",
+  "onboard.precheckFailed": "Pre-check unavailable; keys are submitted as pasted.",
+  "onboard.hintTitle": "What to do",
+  "onboard.hint.sk403": "The organization UUID probably does not belong to this account, or the key has expired. Leave the organization unspecified or pick the right one, and copy a fresh key after signing in to claude.ai again.",
+  "onboard.hint.skInvalid": "The upstream rejected this sessionKey. Sign in to claude.ai again and copy a fresh key.",
+  "onboard.hint.stale": "The account's login is not fresh enough. Sign out and in again on claude.ai, then copy the new key.",
+  "onboard.hint.cloudflare": "The proxy exit hit a Cloudflare challenge. Fill in the organization UUID (skips the claude.ai lookup) or retry on another proxy.",
+  "onboard.hint.exists": "This account is already in the pool; nothing was changed. Delete the old row first if you really want to onboard it again.",
+  "onboard.hint.nodeOffline": "Transient node/proxy problem on the platform side; the exit was not tainted. Retry right away.",
+  "onboard.hint.noProxy": "No assignable proxy on this node right now. Add proxies, lift a quarantine, or wait for the cooldowns.",
+  "onboard.hint.teamMismatch": "The organization the upstream verified differs from the one specified. Use that account's own organization UUID.",
+  "onboard.hint.expired": "The reservation expired before the exchange finished. Start over with a fresh key.",
+  "onboard.hint.format": "That is not a sessionKey. Copy the full value of the claude.ai sessionKey cookie (starts with sk-ant-sid01-).",
 };
 
 const zh: typeof en = {
@@ -171,6 +185,20 @@ const zh: typeof en = {
   "onboard.batchLine": "第 {n} 行",
   "onboard.invalidLine": "格式错误",
   "onboard.duplicateLine": "重复",
+  "onboard.preExists": "该账号已在池中（{email}，{status}），重复上号会被拒绝。",
+  "onboard.batchExists": "已存在（{email}），跳过",
+  "onboard.precheckFailed": "预检不可用，按原样提交。",
+  "onboard.hintTitle": "建议",
+  "onboard.hint.sk403": "组织 UUID 可能不属于这个账号，或 key 已失效。组织留空或选对的，重新登录 claude.ai 后复制新的 key。",
+  "onboard.hint.skInvalid": "上游拒绝了这个 sessionKey。重新登录 claude.ai 后复制新的 key。",
+  "onboard.hint.stale": "账号登录状态不够新。在 claude.ai 退出再登录，然后复制新的 key。",
+  "onboard.hint.cloudflare": "代理出口遇到 Cloudflare 人机验证。填上组织 UUID（跳过 claude.ai 查询）或换一条代理重试。",
+  "onboard.hint.exists": "该账号已在池中，本次没有改动。确实要重上，先删除旧行。",
+  "onboard.hint.nodeOffline": "平台侧节点或代理的瞬时问题，出口未被污染，可直接重试。",
+  "onboard.hint.noProxy": "这个节点当前没有可分配的代理。补充代理、解封或等待冷静期结束。",
+  "onboard.hint.teamMismatch": "上游验证出的组织与填写的不一致。请使用这个账号自己的组织 UUID。",
+  "onboard.hint.expired": "预约在交换完成前过期了。换一个新 key 重新开始。",
+  "onboard.hint.format": "这不是 sessionKey。请复制 claude.ai 的 sessionKey cookie 完整值（以 sk-ant-sid01- 开头）。",
 };
 
 export default { en, zh } satisfies DictPair;

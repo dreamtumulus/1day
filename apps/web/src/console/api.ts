@@ -362,6 +362,9 @@ export interface NodeProxy {
   /** Release cooldown (proxy freed by deleting a rejected account): not assignable to new accounts until then. */
   cooldownUntil: string | null;
   cooldownReason: string | null;
+  /** Quarantined proxy/exit (docs/onboarding.md §12.1): not assignable until an admin lifts it. */
+  quarantined?: boolean;
+  quarantineReason?: string | null;
   createdAt: string;
 }
 
@@ -516,6 +519,8 @@ export interface ProxyPickerItem {
   reservedAccounts?: number;
   normalSlots?: number;
   overflowSlots?: number;
+  quarantined?: boolean;
+  quarantineReason?: string | null;
 }
 
 export type OnboardJobStatus = "pending_callback" | "working" | "done" | "failed";
@@ -575,6 +580,20 @@ export const onboardOrgCreate = (body: { name: string; orgUuid: string; note?: s
 export const onboardOrgUpdate = (id: string, body: { name?: string; orgUuid?: string; note?: string | null }) =>
   api.patch<OnboardOrg>(`/api/admin/onboard/orgs/${id}`, body);
 export const onboardOrgDelete = (id: string) => api.del(`/api/admin/onboard/orgs/${id}`);
+
+/** Lift a proxy quarantine (admin): the node re-verifies the exit on its next heartbeat. */
+export const nodeProxyUnquarantine = (nodeId: string, proxyId: string) =>
+  api.post<{ ok: boolean; pushed: boolean }>(`/api/admin/nodes/${encodeURIComponent(nodeId)}/proxies/${encodeURIComponent(proxyId)}/unquarantine`, {});
+
+/** Pre-flight for pasted sessionKeys: shape + duplicate detection, no upstream call (docs/onboarding.md §4). */
+export interface OnboardPrecheckItem {
+  index: number;
+  formatOk: boolean;
+  accountUuid: string | null;
+  existing: { id: string; email: string | null; status: string; teamId: string | null } | null;
+}
+export const onboardPrecheck = (scope: OnboardScope, sessionKeys: string[]) =>
+  api.post<OnboardPrecheckItem[]>(`/api/${scope}/accounts/onboard/precheck`, { sessionKeys });
 
 export const nodeProxies = (scope: OnboardScope, nodeId: string, freeOnly = false) =>
   api.get<ProxyPickerItem[]>(`/api/${scope}/nodes/${nodeId}/proxies`, freeOnly ? { free: 1 } : undefined);
