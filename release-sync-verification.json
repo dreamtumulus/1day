@@ -1,12 +1,20 @@
 {
-  "releaseId": "20261027T115352Z-team-isolation",
-  "verifiedAtUtc": "2026-10-27T12:44:37Z",
-  "sourceAndDocFilesChecked": 315,
-  "copiesChecked": 2,
-  "manifestSha256": "b3101fbef0e75aa714e8854e59663fc2861aff076a77f279dfc66ca52a5087dd",
-  "recordSha256": "587b658de81b1fba29a0964ca359ae8d225ff5f23490788c3eb7f1c65b2eac73",
-  "mismatches": [],
-  "sourceBuildInputFiles": 290,
-  "compiledFiles": 241,
-  "compiledMismatches": []
+  "releaseId": "20261028T024559Z-audit-fixes",
+  "sourceCommit": "bf19bb7700c7de7931aac06fe5ab569343630626",
+  "manifestSha256": "1b5a3553de274eef1cfc7167888d75fc2a3e8c612f7f965e8b138f404130fc2d",
+  "verifiedAtUtc": "2026-10-28T03:12:29Z",
+  "roots": {
+    "/opt/1dayapi": {
+      "filesChecked": 334,
+      "mismatches": [],
+      "recordMatches": true
+    },
+    "/opt/1dayapi-releases/20261028T024559Z-audit-fixes": {
+      "filesChecked": 334,
+      "mismatches": [],
+      "recordMatches": true
+    }
+  },
+  "compiledFilesVerified": 260,
+  "workerBundleSha256": "35c3cf68bb2c33d628c90eb9b16a7a36c9713834ebc6b294908a78a2cadddc60"
 }

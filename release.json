@@ -1,7 +1,12 @@
 {
   "releaseId": "20261028T024559Z-audit-fixes",
+  "sourceTreeSha256": "c5f60dbd0fd7e6f23ad7adad5057b33ea0c89966a1ff503b98549e3284fee71e",
+  "bundleSha256": "35c3cf68bb2c33d628c90eb9b16a7a36c9713834ebc6b294908a78a2cadddc60",
+  "bundleBytes": 1526460,
   "schemaVersion": 22,
-  "status": "prepared",
+  "sourceCommit": "bf19bb7700c7de7931aac06fe5ab569343630626",
+  "installedAtUtc": "2026-10-28T03:10:33Z",
+  "status": "deployed",
   "tests": {
     "core": 74,
     "gateway": 141,
