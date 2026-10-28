@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
-import { decryptString, encryptJson } from "./crypto.js";
+import { decryptString, encryptJson, sha256Hex } from "./crypto.js";
 import { defaultProtocol } from "./platforms.js";
 import { SCHEMA_V3 } from "./schema.js";
 import { SQL_NOW } from "./time.js";
@@ -309,6 +309,7 @@ const MIGRATIONS: Array<{ version: number; up: (d: DatabaseSync, log: Log) => vo
   { version: 21, up: migration21 },
   { version: 22, up: migration22 },
   { version: 23, up: migration23 },
+  { version: 24, up: migration24 },
 ];
 
 // 上号员令牌（独立鉴权的上号站点 /onboard）：admin 签发，绑定目标节点；
@@ -774,4 +775,53 @@ function migration23(d: DatabaseSync, log: Log): void {
     );
   `);
   log("migration 23: onboard_orgs (saved organizations for the onboarding form)");
+}
+
+// Migration 24 (2026-10-28, docs/auth.md §3 / issues A-3 A-5): console session tokens are
+// stored only as sha256 hashes (the cookie still carries the random token; a DB copy no longer
+// lets anyone log in), and admin / provider mutations plus failed logins get an audit trail.
+// The old user_sessions table had the plaintext token as PRIMARY KEY, so it is rebuilt: rows are
+// copied with their hash (computed here — SQLite has no sha256) and the plaintext table dropped.
+// Runs inside runMigrations' BEGIN IMMEDIATE with foreign keys off; idempotent.
+function migration24(d: DatabaseSync, log: Log): void {
+  const cols = new Set((d.prepare("PRAGMA table_info(user_sessions)").all() as R[]).map((c) => c.name as string));
+  if (cols.has("token") && !cols.has("token_hash")) {
+    d.exec("ALTER TABLE user_sessions RENAME TO user_sessions_plain_v1");
+    d.exec(`CREATE TABLE user_sessions (
+      token_hash TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      expires_at TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (${SQL_NOW})
+    )`);
+    const rows = d.prepare("SELECT token, user_id, expires_at, created_at FROM user_sessions_plain_v1").all() as R[];
+    const ins = d.prepare(
+      "INSERT OR IGNORE INTO user_sessions (token_hash, user_id, expires_at, created_at) VALUES (?, ?, ?, ?)",
+    );
+    let n = 0;
+    for (const r of rows) {
+      if (typeof r.token !== "string" || !r.token) continue;
+      ins.run(sha256Hex(r.token), r.user_id as string, r.expires_at as string, r.created_at as string);
+      n += 1;
+    }
+    d.exec("DROP TABLE user_sessions_plain_v1");
+    log(`migration 24: user_sessions rebuilt with hashed tokens (${n} live session(s) carried over, plaintext dropped)`);
+  }
+  d.exec(`
+    CREATE INDEX IF NOT EXISTS idx_user_sessions_user ON user_sessions(user_id);
+    CREATE INDEX IF NOT EXISTS idx_user_sessions_expires ON user_sessions(expires_at);
+    CREATE TABLE IF NOT EXISTS admin_audit (
+      id TEXT PRIMARY KEY,
+      at TEXT NOT NULL,
+      user_id TEXT,
+      role TEXT,
+      method TEXT NOT NULL,
+      path TEXT NOT NULL,
+      status INTEGER NOT NULL,
+      ip TEXT,
+      summary TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_admin_audit_at ON admin_audit(at);
+    CREATE INDEX IF NOT EXISTS idx_admin_audit_user ON admin_audit(user_id, at);
+  `);
+  log("migration 24: admin_audit (admin / provider mutations and failed logins)");
 }
