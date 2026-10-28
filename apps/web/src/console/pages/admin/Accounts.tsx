@@ -663,7 +663,8 @@ export function AdminAccounts() {
   function egressCell(a: AdminAccount) {
     if (a.route !== "node") return <span className="text-[12px] text-on-surface-faint">{t("admin.accounts.egressDirect")}</span>;
     const node = a.nodeId ? (nodeNames.get(a.nodeId) ?? a.nodeId.slice(0, 14)) : t("admin.accounts.nodeAnyShort");
-    const proxy = a.boundProxyId ? (proxyHosts.get(a.boundProxyId) ?? `${a.boundProxyId.slice(0, 10)}…`) : t("admin.accounts.proxyAuto");
+    const proxyHost = a.boundProxyId ? (proxyHosts.get(a.boundProxyId) ?? `${a.boundProxyId.slice(0, 10)}…`) : t("admin.accounts.proxyAuto");
+    const proxy = a.boundProxyId && a.boundProxyCountry ? `${a.boundProxyCountry} · ${proxyHost}` : proxyHost;
     return (
       <div className="max-w-[108px] text-[12px]">
         <div className="truncate font-medium text-info" title={a.nodeId ?? ""}>

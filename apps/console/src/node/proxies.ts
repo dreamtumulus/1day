@@ -256,6 +256,7 @@ export interface IsolatedProxy {
   id: string; node_id: string; team_id: string | null; isolation_version: number;
   status: string; exit_ip: string | null; resource_key: string | null;
   cooldown_until: string | null; last_check_at: string | null;
+  exit_country?: string | null;
 }
 
 export function canonicalProxyResourceKey(ip: string): string | null {
@@ -498,12 +499,12 @@ export function listNodeProxies(nodeId: string) {
     last_check_at: string | null;
     last_error: string | null;
     created_at: string;
-    team_id: string|null; exit_ip:string|null; resource_key:string|null;
+    team_id: string|null; exit_ip:string|null; resource_key:string|null; exit_country: string | null;
     assigned: number;
     cooldown_until: string | null;
     cooldown_reason: string | null;
   }>(
-    `SELECT p.id, p.url_enc, p.label, p.status, p.last_check_at, p.last_error, p.created_at, p.cooldown_until, p.cooldown_reason,p.team_id,p.exit_ip,p.resource_key,
+    `SELECT p.id, p.url_enc, p.label, p.status, p.last_check_at, p.last_error, p.created_at, p.cooldown_until, p.cooldown_reason,p.team_id,p.exit_ip,p.resource_key,p.exit_country,
             (SELECT COUNT(*) FROM node_proxy_assignments a WHERE a.node_id = p.node_id AND a.proxy_id = p.id) AS assigned
      FROM node_proxies p WHERE p.node_id = ? ORDER BY p.created_at, p.id`,
     nodeId,
@@ -522,6 +523,7 @@ export function listNodeProxies(nodeId: string) {
       quarantineReason: proxyQuarantine(r.id, r.resource_key).reason,
       url: masked,
       label: r.label,
+      country: r.exit_country,
       status: r.status,
       lastCheckAt: r.last_check_at,
       lastError: r.last_error,
@@ -591,7 +593,7 @@ export function listProxiesForPicker(nodeId: string, freeOnly: boolean) {
       return {id:p.id,label:p.label,host,port,status:p.status,bound:slots.bound>0,quarantined:q.quarantined,quarantineReason:q.reason,
         boundAccounts:slots.bound,reservedAccounts:slots.reserved,
         normalSlots:Math.max(0,2-slots.total),overflowSlots:Math.max(0,3-slots.total),
-        exitIp:p.exit_ip,resourceKey:p.resource_key,
+        exitIp:p.exit_ip,resourceKey:p.resource_key,country:p.exit_country??null,
         usable:p.isolation_version===1 && p.status==='live' && !!p.resource_key &&
           !quarantineActive(p.resource_key,`proxy:${p.id}`) &&
           (!p.cooldown_until || p.cooldown_until<=nowIso()) && slots.total<3};

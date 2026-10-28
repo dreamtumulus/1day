@@ -80,3 +80,15 @@ console.log("proxy-pool: ALL PASSED");
   keep.stopHealthChecks();
   console.log("proxy-pool: pool push retains health OK");
 }
+
+// 2026-10-28: exit lookup parsing (ipinfo.io / ipwho.is JSON with country, ipify JSON, plain-text IP)
+{
+  const { parseExitLookup } = await import("../dist/proxy-pool.js");
+  assert.deepEqual(parseExitLookup('{"ip":"203.0.113.9","city":"X","country":"US"}'), { ip: "203.0.113.9", country: "US" });
+  assert.deepEqual(parseExitLookup('{"ip":"203.0.113.9","success":true,"country_code":"jp"}'), { ip: "203.0.113.9", country: "JP" });
+  assert.deepEqual(parseExitLookup('{"ip":"203.0.113.9"}'), { ip: "203.0.113.9", country: null });
+  assert.deepEqual(parseExitLookup("203.0.113.9\n"), { ip: "203.0.113.9", country: null });
+  assert.deepEqual(parseExitLookup('{"success":false,"message":"limit"}'), { ip: null, country: null });
+  assert.deepEqual(parseExitLookup("<html>blocked</html>"), { ip: null, country: null });
+  console.log("proxy-pool: exit lookup parsing OK");
+}

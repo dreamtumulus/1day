@@ -315,7 +315,7 @@ console 自身重启仍会切断所有在途会话（会话表在内存里）。
 |---|---|
 | `provider.hello` | capabilities 含 `team_isolation_v1`；`runtimeTeamId?` 限定专属服务实例；`isolatedContexts?` 报告现存执行上下文供重连撤销 |
 | `proxies.set` | `proxyTeams: Record<proxyId,teamId>` 与 `proxyAccounts: Record<proxyId,accountId[]>` 是平台授权的组织和账号白名单，随代理列表加密持久化 |
-| `provider.heartbeat.proxies[]` | `exitIp` 是节点实测公网出口，不以 URL host 或 URL hash 代替；平台规范化 IP 后合并容量与检查归属 |
+| `provider.heartbeat.proxies[]` | `exitCountry`（ISO 3166-1 alpha-2，查询源 ipinfo.io / ipwho.is 返回时携带，2026-10-28）、`exitMeasuredAt`、`probedAt` 随 `exitIp` 一起上报；平台只在 `exitIp` 有效时写 `node_proxies.exit_country`。`exitIp` 是节点实测公网出口，不以 URL host 或 URL hash 代替；平台规范化 IP 后合并容量与检查归属 |
 | `cc_worker.open` / `http_egress.open` | 对话执行携带 `isolation:{teamId,conversationId,generation}`；凭据刷新/探活等后台出口同样校验 team 和账号白名单 |
 | `isolation.reset` | 平台发送 `{isolation,resetId}`，精确终止旧阶段的队列、worker 进程组、挂起 MCP 与 HTTP 出口 |
 | `isolation.reset_ack` | 节点完成强制撤销后返回 `resetId`，与普通 `*.close` 的语义不同 |

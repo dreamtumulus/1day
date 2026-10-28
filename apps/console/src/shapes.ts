@@ -230,6 +230,7 @@ export function adminAccountShape(
     rpmLimit: a.rpm_limit,
     rawPassthrough: a.raw_passthrough === 1,
     boundProxyId: a.bound_proxy_id,
+    boundProxyCountry: a.bound_proxy_id ? one<{ c: string | null }>("SELECT exit_country AS c FROM node_proxies WHERE id = ?", a.bound_proxy_id)?.c ?? null : null,
     modelMapping: parseJsonMap(a.model_mapping),
     groups,
     rateLimitedUntil: a.rate_limited_until,

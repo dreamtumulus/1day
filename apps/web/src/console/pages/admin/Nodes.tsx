@@ -568,7 +568,20 @@ function ProxyPoolModal({ node, onClose }: { node: NodeRow; onClose: () => void 
                       <span className="text-[12.5px] text-error">{t("admin.nodes.undecryptable")}</span>
                     ),
                 },
-                { key: "label", header: t("admin.nodes.colLabel"), render: (p) => p.label ?? "—" },
+                {
+                  key: "label",
+                  header: t("admin.nodes.colLabel"),
+                  render: (p) => (
+                    <span className="inline-flex items-center gap-1.5">
+                      {p.country && (
+                        <span className="rounded px-1.5 py-0.5 font-mono text-[10.5px] font-bold leading-none" style={{ background: "var(--surface-variant)", color: "var(--on-surface-variant)" }} title={t("admin.nodes.colCountry")}>
+                          {p.country}
+                        </span>
+                      )}
+                      <span>{p.label ?? "—"}</span>
+                    </span>
+                  ),
+                },
                 {
                   key: "status",
                   header: t("common.status"),

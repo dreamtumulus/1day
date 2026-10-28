@@ -7,8 +7,31 @@ import { Socks5Bridge, isSocks5Url } from "./socks5-bridge.js";
 export const PROXY_HEALTHCHECK_INTERVAL_MS = 5 * 60_000;
 /** A measured exit is trusted this long before the probe asks the lookup service again. */
 export const EXIT_REMEASURE_MS = Number(process.env.PROXY_EXIT_REMEASURE_MS) > 0 ? Number(process.env.PROXY_EXIT_REMEASURE_MS) : 6 * 60 * 60_000;
-/** Exit lookup sources, in order; each returns the caller's public IP (JSON {ip} or plain text). */
-const EXIT_LOOKUP_SOURCES = ["https://api.ipify.org?format=json", "https://checkip.amazonaws.com", "https://api64.ipify.org?format=json"];
+/**
+ * Exit lookup sources, in order. The first two also return the exit's country (ISO 3166-1
+ * alpha-2) so the pool page can show where an exit is without a second lookup; the last
+ * two give the IP only. Requests go out through the proxy itself, so per-source rate
+ * limits apply per exit IP.
+ */
+const EXIT_LOOKUP_SOURCES = ["https://ipinfo.io/json", "https://ipwho.is/", "https://api.ipify.org?format=json", "https://checkip.amazonaws.com"];
+
+/** Parse one lookup response: JSON {ip, country|country_code} or a bare IP line. Exported for tests. */
+export function parseExitLookup(body: string): { ip: string | null; country: string | null } {
+  const text = body.trim();
+  if (text.startsWith("{")) {
+    try {
+      const j = JSON.parse(text) as { ip?: unknown; country?: unknown; country_code?: unknown; success?: unknown };
+      if (j.success === false) return { ip: null, country: null };
+      const ip = typeof j.ip === "string" && isIP(j.ip) ? j.ip : null;
+      const raw = typeof j.country_code === "string" ? j.country_code : typeof j.country === "string" ? j.country : "";
+      const country = /^[A-Za-z]{2}$/.test(raw) ? raw.toUpperCase() : null;
+      return { ip, country };
+    } catch {
+      return { ip: null, country: null };
+    }
+  }
+  return { ip: isIP(text) ? text : null, country: null };
+}
 const HEALTHCHECK_TIMEOUT_MS = 10_000;
 const HEALTHCHECK_URL = "https://api.anthropic.com/v1/models";
 /** Probes in flight at once: proxy vendors throttle connection bursts, which would read as false "dead". */
@@ -72,6 +95,8 @@ interface ProxyHealth {
   exitIp?: string | null;
   /** When exitIp was last measured (ms epoch); the heartbeat reports it as exitMeasuredAt. */
   exitMeasuredAt?: number | null;
+  /** ISO 3166-1 alpha-2 of the exit, when the lookup source reported it. */
+  exitCountry?: string | null;
 }
 
 export interface ProxyPoolOptions {
@@ -319,6 +344,7 @@ export class ProxyPool {
       latencyMs: h.latencyMs,
       exitIp: h.exitIp ?? null,
       exitMeasuredAt: h.exitMeasuredAt ? new Date(h.exitMeasuredAt).toISOString() : null,
+      exitCountry: h.exitCountry ?? null,
       probedAt: h.lastCheckAt ? new Date(h.lastCheckAt).toISOString() : null,
       error: h.lastError,
     }));
@@ -406,17 +432,13 @@ export class ProxyPool {
     }
   }
 
-  /** Public IP as seen from `proxy`: first source that answers with a valid address wins. */
-  private async measureExit(proxy: string): Promise<string | null> {
+  /** Public IP (and country when the source knows it) as seen from `proxy`: first source with a valid address wins. */
+  private async measureExit(proxy: string): Promise<{ ip: string; country: string | null } | null> {
     for (const src of EXIT_LOOKUP_SOURCES) {
       try {
         const res = await bunFetch(src, { proxy, signal: AbortSignal.timeout(HEALTHCHECK_TIMEOUT_MS) });
-        const body = (await res.text()).trim();
-        let ip = body;
-        if (body.startsWith("{")) {
-          try { ip = String((JSON.parse(body) as { ip?: unknown }).ip ?? ""); } catch { ip = ""; }
-        }
-        if (isIP(ip)) return ip;
+        const { ip, country } = parseExitLookup(await res.text());
+        if (ip) return { ip, country };
       } catch {
         /* next source */
       }
@@ -440,9 +462,10 @@ export class ProxyPool {
       // re-asked on every pass: 190 proxies × every pass was a lookup-service hammer), with a
       // second lookup source when the first fails; a failed lookup keeps the last known exit.
       if (!this.opts.checkUrl && (!h.exitIp || !h.exitMeasuredAt || Date.now() - h.exitMeasuredAt >= EXIT_REMEASURE_MS)) {
-        const ip = await this.measureExit(proxy);
-        if (ip) {
-          h.exitIp = ip;
+        const exit = await this.measureExit(proxy);
+        if (exit) {
+          h.exitIp = exit.ip;
+          if (exit.country) h.exitCountry = exit.country;
           h.exitMeasuredAt = Date.now();
         } else if (!h.exitIp) {
           h.exitIp = null;

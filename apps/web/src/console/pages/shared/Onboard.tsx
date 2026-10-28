@@ -519,7 +519,7 @@ export function OnboardPage({ scope }: { scope: OnboardScope }) {
       const host = p.host ? `${p.host}${p.port ? `:${p.port}` : ""}` : p.id.slice(0, 12);
       opts.push({
         value: p.id,
-        label: `${p.label ?? host} · ${host} · ${t(`status.${p.status}`)}${p.boundAccounts !== undefined ? ` · ${t("team.proxyOccupied", { n: p.boundAccounts + (p.reservedAccounts ?? 0) })}` : ""}`,
+        label: `${p.country ? `${p.country} · ` : ""}${p.label ?? host} · ${host} · ${t(`status.${p.status}`)}${p.boundAccounts !== undefined ? ` · ${t("team.proxyOccupied", { n: p.boundAccounts + (p.reservedAccounts ?? 0) })}` : ""}`,
       });
     }
     return opts;

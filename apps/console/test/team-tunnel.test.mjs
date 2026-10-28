@@ -106,6 +106,11 @@ try {
     assert.equal(core.one("SELECT last_error FROM node_proxies WHERE id='fresh-1'").last_error, "exit identity unavailable");
     assert.equal(core.one("SELECT status FROM node_proxies WHERE id='fresh-2'").status, "dead");
     run("DELETE FROM node_proxies WHERE id IN ('fresh-1','fresh-2')");
+    // exit country rides with a measured exit and lands in node_proxies.exit_country
+    ws.send(JSON.stringify({ type: "provider.heartbeat", acceptingSessions: true, proxies: [{ id: pA, live: true, exitIp: "198.51.100.10", exitCountry: "US" }, { id: pB, live: true, exitIp: "198.51.100.11", exitCountry: "xx" }], assignments: { a1: pA } }));
+    await new Promise((r) => setTimeout(r, 200));
+    assert.equal(core.one("SELECT exit_country c FROM node_proxies WHERE id=?", pA).c, "US");
+    assert.equal(core.one("SELECT exit_country c FROM node_proxies WHERE id=?", pB).c, null, "lower-case / invalid codes are ignored");
     console.log("team-tunnel: heartbeat without exit measurement OK");
   }
   assert.equal(await registry.openTunnel("a1", "cc_worker", undefined, 443, pB, worker, undefined, iso), null, "foreign proxy override refused");

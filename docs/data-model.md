@@ -229,6 +229,7 @@ console 定时任务每 `cache_refund_interval_sec`（默认 86400）跑一轮�
 |---|---|
 | `upstream_teams` | 实际 Claude 组织 UUID、管理员可见名称、启停状态 |
 | `accounts.team_id` | 新管理订阅账号的组织；旧行保持 NULL，不自动参与新隔离池 |
+| `node_proxies.exit_country` | 实测出口的国家简称（迁移 26，心跳带 `exitCountry` 时写入；代理池备注、上号选择器、账号列表显示） |
 | `node_proxies.team_id/isolation_version/exit_ip/resource_key` | 新出口的组织、隔离版本和实测 IP 资源；旧资源不自动认领 |
 | `onboarding_jobs.team_id/isolation_version/egress_started_at/proxy_resource_key/reservation_account_id` | 授权预期、是否实际出站、容量预留；原账号重新授权不重复计数 |
 | `proxy_team_claims` | 出口资源的永久组织认领；删除当前池成员或账号不清除 |

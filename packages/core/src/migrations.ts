@@ -311,6 +311,7 @@ const MIGRATIONS: Array<{ version: number; up: (d: DatabaseSync, log: Log) => vo
   { version: 23, up: migration23 },
   { version: 24, up: migration24 },
   { version: 25, up: migration25 },
+  { version: 26, up: migration26 },
 ];
 
 // 上号员令牌（独立鉴权的上号站点 /onboard）：admin 签发，绑定目标节点；
@@ -849,4 +850,12 @@ function migration25(d: DatabaseSync, log: Log): void {
     );
   `);
   log("migration 25: proxy_quarantine_lifts (operator-lifted quarantines)");
+}
+
+// Migration 26 (2026-10-28): node_proxies.exit_country — ISO 3166-1 alpha-2 of the measured exit,
+// reported by the node heartbeat next to exitIp (shown in the pool, the onboarding picker and the
+// account list). Additive; filled by the next heartbeat.
+function migration26(d: DatabaseSync, log: Log): void {
+  addColumns(d, log, "node_proxies", [["exit_country", "TEXT"]]);
+  log("migration 26: node_proxies.exit_country");
 }

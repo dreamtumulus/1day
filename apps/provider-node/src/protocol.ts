@@ -190,6 +190,8 @@ export interface ProxyStatusReport {
   exitIp?: string | null;
   /** ISO time the exit was last measured; null = never (2026-10-28). */
   exitMeasuredAt?: string | null;
+  /** ISO 3166-1 alpha-2 country of the exit, when known (2026-10-28). */
+  exitCountry?: string | null;
   /** ISO time of the last liveness probe; null = unprobed since the pool was (re)loaded. */
   probedAt?: string | null;
 }

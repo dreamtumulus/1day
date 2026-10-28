@@ -567,6 +567,10 @@ function recordProxyHealth(nodeId: string, msg: Record<string, unknown>): void {
         }
         const accepted = recordNodeProxyExit(nodeId, id, ip);
         if (!accepted || isolated.exit_ip !== ip) pushNeeded = true;
+        const country = (p as Record<string, unknown>).exitCountry;
+        if (typeof country === "string" && /^[A-Z]{2}$/.test(country)) {
+          run("UPDATE node_proxies SET exit_country = ? WHERE node_id = ? AND id = ? AND (exit_country IS NULL OR exit_country <> ?)", country, nodeId, id.slice(0, 40), country);
+        }
       }
     }
     // One pool push per heartbeat at most: pushing inside the loop (once per changed proxy)

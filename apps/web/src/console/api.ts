@@ -348,6 +348,8 @@ export interface NodeProxy {
   id: string;
   url: string | null;
   label: string | null;
+  /** ISO 3166-1 alpha-2 of the measured exit (node heartbeat), null until measured. */
+  country?: string | null;
   status: "live" | "dead" | "unknown" | string;
   lastCheckAt: string | null;
   lastError: string | null;
@@ -446,6 +448,8 @@ export interface AdminAccount extends ProviderAccount {
   /** Admin view: scheduler verdict + first failing gate (apps/console/src/pool-state.ts). */
   poolState?: "online" | "cooling" | "error" | "offline" | "unmanaged" | "unavailable" | "busy";
   poolReason?: string | null;
+  /** Country of the bound proxy's measured exit (alpha-2). */
+  boundProxyCountry?: string | null;
   tempUnschedulableUntil: string | null;
   /** CCR subscription window (null until the first probe). 0..1. */
   windowUsed: number | null;
@@ -514,6 +518,7 @@ export type OnboardScope = "admin" | "provider";
 export interface ProxyPickerItem {
   id: string;
   label: string | null;
+  country?: string | null;
   host: string | null;
   port: number | null;
   status: "live" | "dead" | "unknown" | string;
