@@ -785,6 +785,15 @@ function migration23(d: DatabaseSync, log: Log): void {
 // copied with their hash (computed here — SQLite has no sha256) and the plaintext table dropped.
 // Runs inside runMigrations' BEGIN IMMEDIATE with foreign keys off; idempotent.
 function migration24(d: DatabaseSync, log: Log): void {
+  if (!tableExists(d, "user_sessions")) {
+    // A database built without the auth tables (core-only test fixtures): create the hashed shape directly.
+    d.exec(`CREATE TABLE user_sessions (
+      token_hash TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      expires_at TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (${SQL_NOW})
+    )`);
+  }
   const cols = new Set((d.prepare("PRAGMA table_info(user_sessions)").all() as R[]).map((c) => c.name as string));
   if (cols.has("token") && !cols.has("token_hash")) {
     d.exec("ALTER TABLE user_sessions RENAME TO user_sessions_plain_v1");
