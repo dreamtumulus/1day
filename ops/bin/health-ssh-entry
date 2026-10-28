@@ -1,0 +1,6 @@
+#!/bin/bash
+# Forced command for the monitoring bot's SSH key (authorized_keys `command=`): the key can run
+# nothing but the read-only health report. Optional argument = window in minutes (digits only).
+arg="${SSH_ORIGINAL_COMMAND:-}"
+arg="${arg//[^0-9]/}"
+exec /opt/1dayapi/ops/bin/health "${arg:-15}"

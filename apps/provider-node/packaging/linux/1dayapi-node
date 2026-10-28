@@ -1,0 +1,60 @@
+#!/bin/sh
+# 1dayapi-node launcher. Installed by packaging/install.sh; __APP_DIR__ and
+# __BIN_PATH__ are substituted at install time.
+#
+# Protocol v2 requires the Bun runtime (TLS fingerprint parity with Claude
+# Code); the node refuses to serve under Node.js.
+set -eu
+
+APP_DIR="__APP_DIR__"
+# Tells `1dayapi-node install-service` which path to bake into the unit's
+# ExecStart, and lets the unit's minimal-PATH environment find this wrapper.
+export PROVIDER_NODE_BIN="__BIN_PATH__"
+# Records the Bun interpreter the installer validated, so the systemd-managed
+# `serve` (minimal PATH) reuses the very same binary.
+BUN_HINT_FILE="${APP_DIR}/bun-path"
+
+bun_ok() {
+  [ -x "$1" ] || return 1
+  "$1" --version >/dev/null 2>&1
+}
+
+find_bun() {
+  if [ -n "${PROVIDER_NODE_BUN:-}" ] && bun_ok "${PROVIDER_NODE_BUN}"; then
+    printf '%s\n' "${PROVIDER_NODE_BUN}"
+    return 0
+  fi
+  if [ -r "${BUN_HINT_FILE}" ]; then
+    hint_bun="$(cat "${BUN_HINT_FILE}" 2>/dev/null || true)"
+    if [ -n "${hint_bun}" ] && bun_ok "${hint_bun}"; then
+      printf '%s\n' "${hint_bun}"
+      return 0
+    fi
+  fi
+  path_bun="$(command -v bun 2>/dev/null || true)"
+  for candidate in "${path_bun}" "${HOME}/.bun/bin/bun" /usr/local/bin/bun /usr/bin/bun; do
+    if [ -n "${candidate}" ] && bun_ok "${candidate}"; then
+      printf '%s\n' "${candidate}"
+      return 0
+    fi
+  done
+  return 1
+}
+
+BUN_BIN="$(find_bun || true)"
+if [ -z "${BUN_BIN}" ]; then
+  echo "1dayapi-node: Bun is required but was not found." >&2
+  echo "  install: curl -fsSL https://bun.sh/install | bash -s \"bun-v1.4.3\"" >&2
+  echo "  hint: set PROVIDER_NODE_BUN=/path/to/bun, or write it to ${BUN_HINT_FILE}" >&2
+  exit 70
+fi
+
+# A platform-issued single-file bundle (bun build) takes precedence over the
+# pnpm-deployed dist tree when both exist.
+if [ -f "${APP_DIR}/bundle.js" ]; then
+  ENTRY="${APP_DIR}/bundle.js"
+else
+  ENTRY="${APP_DIR}/dist/cli.js"
+fi
+
+exec "${BUN_BIN}" "${ENTRY}" "$@"

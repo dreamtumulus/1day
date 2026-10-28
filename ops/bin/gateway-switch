@@ -1,0 +1,52 @@
+#!/bin/bash
+# Zero-downtime gateway release (docs/operations.md §4).
+#
+# Two systemd instances exist, 1dayapi-gateway@8400 and 1dayapi-gateway@8402; nginx proxies
+# api.1dayapi.com to whichever one the `gateway_live` upstream names. A release starts the idle
+# instance on the freshly built code, waits until its /health answers, points nginx at it
+# (`nginx reload` keeps every open connection), then stops the old instance, which drains its
+# in-flight requests for up to 75 s. Nothing is ever refused in between.
+#
+# Usage: gateway-switch            after `pnpm build` in /opt/1dayapi
+#        gateway-switch --status   show which instance is live
+set -euo pipefail
+UP=/etc/nginx/conf.d/1dayapi-gateway-upstream.conf
+# Only the `server` directive counts (comments may mention ports too).
+live=$(grep -E '^\s*server\s+127\.0\.0\.1:[0-9]+' "$UP" | grep -oE '[0-9]+;?$' | tr -d ';' | head -1)
+case "$live" in 8400|8402) ;; *) echo "cannot read the live port from $UP (got '$live')" >&2; exit 1 ;; esac
+if [ "${1:-}" = "--status" ]; then
+  echo "live port: $live"
+  for u in 1dayapi-gateway.service 1dayapi-gateway@8400.service 1dayapi-gateway@8402.service; do
+    printf '  %-32s %s (enabled: %s)\n' "$u" "$(systemctl is-active "$u")" "$(systemctl is-enabled "$u" 2>/dev/null || echo -)"
+  done
+  exit 0
+fi
+if [ "$live" = 8400 ]; then next=8402; else next=8400; fi
+# The legacy non-template unit (1dayapi-gateway.service) may still own 8400: first run after the migration.
+old_unit=1dayapi-gateway@$live.service
+if [ "$live" = 8400 ] && systemctl is-active --quiet 1dayapi-gateway.service; then old_unit=1dayapi-gateway.service; fi
+new_unit=1dayapi-gateway@$next.service
+echo "live=$live ($old_unit) -> starting $new_unit on the current build"
+systemctl restart "$new_unit"
+ok=0
+for _ in $(seq 1 100); do
+  if curl -fsS -o /dev/null --max-time 2 "http://127.0.0.1:$next/health" 2>/dev/null; then ok=1; break; fi
+  sleep 0.2
+done
+if [ "$ok" != 1 ]; then
+  echo "new instance on $next did not become healthy within 20 s; stopping it, nginx untouched" >&2
+  systemctl stop "$new_unit"
+  journalctl -u "$new_unit" --since "-1 min" --no-pager | tail -20 >&2
+  exit 1
+fi
+sed -i -E "s/^(\s*server\s+127\.0\.0\.1:)$live;/\1$next;/" "$UP"
+if ! nginx -t >/dev/null 2>&1; then
+  sed -i -E "s/^(\s*server\s+127\.0\.0\.1:)$next;/\1$live;/" "$UP"
+  echo "nginx -t failed; upstream file reverted, nothing switched" >&2
+  exit 1
+fi
+systemctl reload nginx
+systemctl enable -q "$new_unit"
+systemctl disable -q "$old_unit" 2>/dev/null || true
+systemctl stop --no-block "$old_unit"
+echo "live=$next ($new_unit); $old_unit draining (<=75 s)"

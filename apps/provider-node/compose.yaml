@@ -1,0 +1,19 @@
+services:
+  provider-node:
+    build:
+      context: ../..
+      dockerfile: apps/provider-node/Dockerfile
+    image: 1dayapi-provider-node:0.1.0
+    container_name: 1dayapi-provider-node
+    restart: unless-stopped
+    ports:
+      # console is loopback-only on the host; Host-header whitelist still applies
+      - "127.0.0.1:16889:16889"
+    volumes:
+      - provider-node-data:/data
+    environment:
+      # inside the container, the console/dev platform typically runs on the host
+      PROVIDER_PLATFORM_WS_URL: ${PROVIDER_PLATFORM_WS_URL:-ws://host.docker.internal:8401/internal/provider/connect}
+
+volumes:
+  provider-node-data:

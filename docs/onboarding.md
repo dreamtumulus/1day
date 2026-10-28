@@ -1,0 +1,358 @@
+# 账号接入平台（上号）契约
+
+> 状态：**已实现**（2026-10-15 晚）。供给端 Claude 订阅账号的自助接入系统。
+> 相关：`ccr-supply.md`（CCR 供给总设计）、`v3-design.md` §5（账户体系）、`provider-protocol.md`（节点协议）。
+> 参考 sub2api 的账户添加形态，按 1DayAPI 架构精简。
+>
+> 2026-10-27 修订：订阅账号按实际 Claude 组织 UUID 接入；账号固定代理，一个实测出口 IP 默认两号、常规容量不足时最多三号，均须同组织。
+> 旧账号、代理和会话不回填、不修改、不删除。详细隔离与跨组织清空规则见 [`team-isolation.md`](team-isolation.md)，发布事实见 [`发布记录`](deployment/team-isolation-2026-10-27.md)。
+
+## 1. 原则
+
+1. **账号固定绑定代理，组织限定出口**：每个实测出口 IP 默认绑定两个账号；同组织授权范围内所有常规名额不足时才启用第三槽，三为硬上限。
+   容量包括已绑定账号与有效上号预留，跨 URL、跨节点合并计算。账号绑定后，令牌刷新、巡检、推理和会话 API 都使用该固定出口，不自动改绑。
+2. **代理即命脉**：绑定代理失联（节点探活失败）→ 账号立即不参与调度（`proxy_down`），恢复后自动回到调度。
+3. **删除账号只释放名额，保留组织归属和历史**：暂停、失效、额度耗尽不自动释放名额。新隔离资源的组织认领不因删除账号、节点或代理池成员而清除。
+   **旧式单账号代理的释放冷静期（历史兼容）**：被删除的旧账号若处于 `error` 状态（上游 401 吊销、on hold 等被拒账号），其代理释放后写
+   `node_proxies.cooldown_until = now + proxy_release_cooldown_sec`（默认 24 小时）和 `cooldown_reason`；期间自动分配跳过它、
+   手选它返回 400 `proxy_cooling`、上号选择器不显示它，代理池列表标「冷静期至 …」。健康账号删除释放的代理立即可用。
+4. **一号一行，重复上号拒绝（2026-10-20 起）**：同一个底层 Claude 账号（按 OAuth `accountUuid` 判定，缺省回退 email）
+   再次上号时**不允许上号**：作业以 `account_exists` 失败，提示"账号已存在（邮箱 / id / 状态），不允许重复上号，已有账号未替换"；
+   已有账号行的凭据、状态、冷却、代理绑定一律不动，本次换到的 token 对直接丢弃，作业预留的代理也不会被占用。
+   此重复检查只针对已纳入隔离管理的账号；无 team 的旧记录原样保留，不因新接入被更新或删除。新管理账号命中另一个组织中的同一上游身份时拒绝跨组织改挂。
+   （2026-10-16 ～ 10-20 的旧行为是覆盖已有行并重绑代理，已按用户要求取消。）
+   **例外（2026-10-22 起，§11）**：已有行处于 `error`（上游 401 吊销、on hold 等）且归属相同（同一号商，或都是平台池）时，
+   再次上号**原地重授权**：换凭据、清错误与冷却，分组 / 优先级 / 限额 / 代理绑定不动，不插新行，作业返回 `reused: true`。健康行仍拒绝。
+5. **多人可上号**：管理员上号立即可调度（`approved`），归属随节点：平台节点 → 平台池（`owner_id=NULL`），号商节点 → 归该号商（与 `POST /api/admin/accounts` 的 `nodeId` 规则一致，号商按分成结算）；号商上号进自己名下。**2026-10-26 起号商上号不再审核**：授权完成即 `approved`、`payout_rate` 取 `provider_default_payout_rate`、挂入该号商的 `users.onboard_group_id`（控制台用户详情「上号自动挂组」，`PATCH /api/admin/users/:id {onboardGroupId}`；未设则默认分组），落库即参与调度（2026-10-20～10-25 期间的 `pending` + 管理员审核流程仅保留给手工 `POST /accounts` 的 API 账号）。
+6. **当前只接入 Claude（Anthropic）系列**：上号表单、模型选择、目录展示均只出现 Claude；其余平台隐藏（前端过滤，注册表不动）。
+7. **新号冷静期（2026-10-20 起；号商自己上的号不适用，2026-10-26）**：授权完成落库时写 `temp_unschedulable_until = now + random(onboard_cooldown_min_sec, onboard_cooldown_max_sec)`
+   （默认 3720～4200 秒 = 62～70 分钟；2026-10-20 先定 15～20 分钟，同日加长），`error_message` 以 `onboard_cooldown:` 开头；期间调度器不选它（与临时冷却同一字段），
+   账号列表显示为「新号冷静期」而非错误，上号结果附 `cooldownUntil`。冷静期内仍会做授权后的 usage 基线探测与 profile 回填
+   （真实 Claude Code 登录后也会立即做这两件事）。两项设置都为 0 = 关闭。
+
+## 2. 上号方式与凭据分流
+
+### 2.1 推荐：sessionKey 非浏览器直连（2026-10-18 协议验证通过）
+
+号商粘贴账号的 `sessionKey` 后，平台直接用 SK 作为 Bearer 调用官方 OAuth authorize 接口，完成授权码 + PKCE 交换。
+**不打开同意页，不启动 Chromium，也不依赖浏览器指纹。** 实现：`apps/console/src/onboard/direct-oauth.ts`
+（2026-10-18 起为 `method=session_key` 的唯一实现，服务器浏览器 bot 已删除）。四个请求
+（organizations → authorize → token → validate）**全部经该任务预留的节点代理发出**（http_egress 隧道，
+`openEgressOnNode`，与网关同一条路径）。已知组织可直接预留该组织容量；未知组织先独占未认领出口完成发现，确认后永久认领发现出口，再在同组织内选最终名额并重新验证 token。最终绑定建立后不自动更换出口。
+注意节点对 `api.anthropic.com/v1/*` 会补齐 Claude Code 指纹头（UA / x-app / stainless），authorize 与 token
+两步因此带有这些头；控制台未发送 `anthropic-client-platform/version`。
+`claude.ai/api/organizations` 一步在 Cloudflare 人机验证之后：请求按 claude.ai 前端自身 XHR 的形态发
+（Chrome UA、Origin/Referer、sec-ch-ua / sec-fetch-*），否则节点默认的 `Bun/x` UA 会直接拿到 403 "Just a moment..."
+（2026-10-18 首次真实上号即如此失败）；仍被拦即为该代理 IP 信誉问题，任务失败码 `cloudflare_challenge`——此时表单填「组织 UUID」
+（`orgUuid`，§3）即可完全绕开这一步，不再有任何 claude.ai 请求。
+
+```http
+POST https://api.anthropic.com/v1/oauth/{org}/authorize
+anthropic-version: 2023-06-01
+Authorization: Bearer <sessionKey>
+Content-Type: application/json
+anthropic-client-platform: desktop_app
+anthropic-client-version: 2.42304.0
+
+{
+  "response_type": "code",
+  "client_id": "<按 §2.3 选择>",
+  "organization_uuid": "<org>",
+  "redirect_uri": "<按 §2.3 选择>",
+  "scope": "<按 §2.3 选择>",
+  "state": "<随机值>",
+  "code_challenge": "<SHA256(code_verifier) 的 base64url>",
+  "code_challenge_method": "S256"
+}
+```
+
+成功响应的 `redirect_uri` 含 `code` 与 `state`，随后交换 token：
+
+```http
+POST https://api.anthropic.com/v1/oauth/token
+Authorization: Bearer <sessionKey>
+Content-Type: application/json
+
+{
+  "grant_type": "authorization_code",
+  "client_id": "<同 authorize>",
+  "code": "<上一步 code>",
+  "redirect_uri": "<同 authorize>",
+  "state": "<同一个 state>",
+  "code_verifier": "<原始 code_verifier>"
+}
+```
+
+上述 JSON/Bearer 示例用于 Claude Code；Chrome Extension 的表单 token exchange 见 §2.3，不能混用。
+
+- `organization_uuid` 来自 `GET https://claude.ai/api/organizations`。
+- `accountUuid` 可由 SK 第 13–35 个字符做 Base64URL 解码得到 16 字节 UUID；Chrome 静默重授权时可附 `prompt=none`、`login_hint=<accountUuid>`。
+- 旧 SK 可能返回 `session_stale_relogin`（授权所需的新鲜度不足），应与 token 无效区分处理。
+- 已验证：`authorize` 返回 code，token endpoint 返回 access/refresh token，`/api/oauth/validate` 返回 `valid: true`。
+
+### 2.2 备选：授权链接（`method=auth_url`，保留人工路径）
+
+平台生成授权 URL（PKCE 参数由平台持有）→ 上号人**在自己已登录该账号的浏览器**中打开并完成同意
+→ 浏览器跳转到回调地址 → 上号人把回调 URL 粘贴回平台 → 平台经绑定代理换取令牌并落库。
+
+> 授权请求来自上号人自己的浏览器 IP。为保持 IP 一致性（见 `ccr-supply.md` §2 的实验结论），
+> 上号人应在其账号日常使用的网络环境中操作，界面必须提示这一点。
+
+### 2.3 client、scope 与用途不能混用
+
+| 用途 | client_id / redirect_uri | scope | 已验证结论 |
+|---|---|---|---|
+| Chrome Extension | `dae2cad8-15c5-43d2-9046-fcaecc135fa4` / `chrome-extension://fcoeoabgfenejglbffodgkkbkcdhcgfn/oauth_callback.html` | `user:profile user:inference user:chat` | token 有效，`/chrome/{accountUuid}` 返回 `waiting` |
+| Claude Code runner | `9d1c250a-e61b-44d9-88ed-5944d1962f5e` / `https://console.anthropic.com/oauth/code/callback` | `user:ccr_inference user:file_upload` | token 有效，但 `/chrome/{accountUuid}` 返回 403；不得用于 Chrome Bridge |
+| Bridge environment / SI | 同 Claude Code client | `user:sessions:claude_code user:file_upload` | `/v1/environments/bridge` 必需；token 可用于 environment/work/SI |
+| 官方 Remote Control 全量接入 | 同 Claude Code client | `user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload` | 官方进程完成 environment、work、ack、worker/register 全链路 |
+
+Chrome Extension 的 token exchange 使用 `POST https://platform.claude.com/v1/oauth/token`，请求体为
+`application/x-www-form-urlencoded`；其 `redirect_uri` 与 client 必须保持上表一致。将 `ccr_inference` 放到
+Chrome Extension client 上会被拒绝为“scope 未注册”。
+
+### 2.4 已删除：服务器浏览器 bot
+
+2026-10-18 起浏览器 bot（xvfb + Chromium 完成同意页）从代码库删除（`bot-runner.ts`、`recon/lab/onboard_bot.py`），
+`ONBOARD_BOT_CMD` / `onboard_bot_unavailable` 不再存在；服务器上的 `/opt/ccr-lab/` 只剩实验脚本，不再被控制台调用。
+测试/开发用 `ONBOARD_MOCK=1`（可配 `ONBOARD_MOCK_DELAY_MS`）跳过上游交换。
+上号不再创建云端环境（`environment_providers/cloud/create`）：executor=ccr_worker 不需要，executor=ccr 懒 provisioning。
+
+## 3. 上号参数
+
+| 参数 | 必填 | 默认 | 说明 |
+|---|---|---|---|
+| `method` | ✅ | — | `session_key` / `auth_url` |
+| `sessionKey` | 方式一 | — | 站点会话 cookie，仅用于一次性授权，用完即弃（不落库明文之外的长期存储） |
+| `orgUuid` | 方式一可选，管理员界面显示 | 自动查询 | 预期的实际组织 UUID，最终与授权结果核对；不是手工创建的隔离池 ID。可跳过 organizations 查询；格式无效则拒绝，实际组织不符则失败并记录隔离事件。组织名称和 UUID 不在非管理员界面或返回字段中展示 |
+| `teamName` | 管理员可选 | profile 资料或空 | 组织显示名称，仅管理员设置和读取，不改变组织 UUID |
+| `nodeId` | ✅ | — | 出网节点（该账号运行期请求的出口节点） |
+| `proxyId` | — | `"auto"` | 指定或自动选择经实测、健康且组织兼容的出口；优先填已有一个账号的出口，常规两号容量不足后才使用第三槽 |
+| `concurrencyLimit` | — | 0（不限） | 账号最大并发请求数 |
+| `rpmLimit` | — | 0（不限） | 每分钟请求数上限 |
+| `name` / `note` | — | 自动 | 备注 |
+| `groupId` | 管理员可选 | default | 号商上号忽略此参数：挂该号商的 `users.onboard_group_id`（未设则默认分组，2026-10-26） |
+
+## 4. API
+
+号商前缀换成 `/api/provider`（号商只能选自己的节点与代理）。
+
+```
+POST /api/admin/accounts/onboard
+  方式一 body: {method:"session_key", sessionKey, orgUuid?, teamName?, nodeId, proxyId?, concurrencyLimit?, rpmLimit?, name?}
+       → {data:{jobId, status:"working"}}
+  方式二 第一步 body: {method:"auth_url", nodeId, orgUuid?, teamName?, proxyId?, ...}
+       → {data:{jobId, status:"pending_callback", authorizeUrl}}
+  方式二 第二步 body: {method:"auth_url", jobId, callbackUrl}
+       → {data:{jobId, status:"working"}}
+
+GET  /api/admin/accounts/onboard/:jobId
+  → {data:{status, accountId?, error?, authorizeUrl?}}
+  status: pending_callback | working | done | failed
+
+GET  /api/admin/nodes/:id/proxies?free=1
+  → {data:[{id,label,host,port,status,boundAccounts,reservedAccounts,normalSlots,overflowSlots,...}]}
+     // 不含用户名密码；free=1 表示有剩余容量，实际组织与预留条件在创建作业时再次校验
+```
+
+错误码：`proxy_pool_empty`（无符合组织与容量规则的健康出口，手选同样校验）、
+`node_offline`、`callback_invalid`（回调 URL 无法解析 / state 不匹配）。任务态失败（`GET …/:jobId` 的 `error` 字段，
+形如 `code: 摘要`）：`node_offline`（节点未接受隧道 / 预留代理已不存在）、`session_key_invalid`（claude.ai 或 authorize 返回 401/403）、
+`cloudflare_challenge`（claude.ai 对该代理 IP 返回 Cloudflare 人机验证页，SK 根本未被评估——换代理重试）、
+`session_stale_relogin`（登录新鲜度不足，需重新登录再取 SK，不等于 SK 无效）、`authorize_failed`（organizations/authorize 其他错误，含上游摘要）、
+`token_exchange_failed`、`validate_failed`（仅 auth_url 路径：token 可用但 validate 不返回组织）。
+
+## 5. 数据模型（迁移 5 与 21）
+
+- `accounts` 新增：`rpm_limit INTEGER NOT NULL DEFAULT 0`、`bound_proxy_id TEXT REFERENCES node_proxies(id)`。
+  （`concurrency` 列沿用——语义即并发上限，0=不限。）
+- 旧 `node_proxies.bound_account_id` 保留兼容，不能用于新资源的容量计算。新关系以多个 `accounts.bound_proxy_id` 和上号预留为准。
+- 新表 `onboarding_jobs`：`id PK, requester_id, scope('admin'|'provider'), method, node_id, proxy_id,
+  params_json, payload_enc, authorize_url, status, account_id, error, created_at, updated_at`。
+  payload_enc 存 sessionKey / PKCE verifier+state（加密），job 完成后清空。
+- 迁移 21 新增 `upstream_teams`、`accounts.team_id`、代理的组织/出口资源字段、上号任务的组织与预留字段。
+  `proxy_team_claims`、`proxy_quarantine` 和 `proxy_team_events` 为追加记录，删除账号或重新导入代理不能擦除过去归属。
+- 现有行不回填，旧无 team 订阅账号和旧代理不自动纳入新隔离池；新建表从新接入与新观测开始记录。
+
+## 6. 运行时行为
+
+### 6.1 代理绑定与调度
+
+- 上号成功后，在同一事务提交账号的 team / 固定代理、出口组织认领和分配事件。
+- 调度过滤（gateway `listCandidates` 之后）：`bound_proxy_id` 非空而代理 `status!='live'` → 跳过该账号
+  （不计入错误冷却，代理恢复即自动可用）。
+- auto 在授权节点范围内选择健康、实测且组织兼容的资源，先用占用小于二的名额并优先填已有一个账号的出口；全部常规名额用完才允许第三个。
+  手动选择也不能绕过组织、全局 IP 容量、隔离和预留检查。
+
+代理"死"的判定在节点侧只认代理层失败（SOCKS 握手/认证、连不上代理、407）；上游侧的复位/超时只触发一次立即重探，不直接把代理标 dead。
+**判死放宽（2026-10-17，用户要求"代理池只是有波动，评判标准放宽"）**：一次代理层失败（探活或真实请求）只记一次 strike，代理进入
+"suspect"但照常使用、钉死照常生效，并立即重探一次；**连续** `PROXY_DEAD_AFTER`（默认 3，即 5 分钟探活连续 3 次 ≈ 15 分钟）次失败才标 dead、
+撤销粘性分配、心跳报 `live:false` → 平台 `status='dead'` → 绑定账号退出调度；期间任何一次成功（探活或请求）清零 strike。探活并发 8 → 4，
+减少供应商对突发连接的误拒。节点重启后代理在重探完成前报 `live:null`，平台保留上一次的 live/dead 结论（不再整批翻成 `unknown`），绑定账户的调度不因节点重启中断。
+
+### 6.2 账号操作出口（CCR 账号）
+
+`executor=ccr` 的账号，其会话 API 请求（建环境/建会话/events 推拉）与令牌刷新、巡检，
+一律经隧道 `http_egress` 下行到 `accounts.node_id` 对应节点，节点用**钉死的代理**
+（spec 新增 `proxyId` 字段，绕过粘性分配；代理缺失或死亡 → `no_proxy_available` 硬错误）。
+新订阅账号即使使用 `executor=direct`，平台侧请求也经固定节点代理；不能把 direct 理解为主服务器直接出网。
+
+### 6.3 并发与 RPM 限额
+
+网关在内存中按账号维护：在途请求计数（并发上限）与 60s 滑动窗口计数（RPM 上限）。
+候选循环中超限账号跳过（不算失败、不触发冷却）。两者默认 0=不限。
+限额是平台侧自我保护，与订阅窗口配额（`ccr-supply.md` §7）正交。
+
+### 6.4 删除释放
+
+删除账号（admin/号商自有）→ 释放该账号名额并追加释放事件，保留出口组织认领和历史。旧式单账号字段仅按兼容逻辑处理。
+删除节点（管理员或号商自删）在同一事务里释放其全部资源：绑定在其代理上的账户解绑并 `disabled`、删代理与分配、进行中的上号任务置 `failed`。代理池替换（`PUT /nodes/:id/proxies`）保留仍在列表中的条目（含绑定），已绑定账号的代理不能被移除（400 `proxy_bound`）。平台在节点每次 `provider.hello` 后推送整份代理池，节点本地副本与平台不会长期分叉。
+
+### 6.5 预留与过期
+
+上号任务创建时在事务中预留一个容量名额，已绑定与有效预留合计不能超过三。组织未知的发现出口先独占，不允许拿其他组织出口探测。
+`working` 超过交换期限或 `pending_callback` 超过 30 分钟后失败并释放预留；已实际出站但组织无法确认或出现冲突的资源保留隔离记录，不能当作全新空闲出口。迟到授权结果不能复活失败任务。
+
+## 7. 前端（web）
+
+- 新增「账号接入」页（admin 与 provider 控制台均有入口）：
+  方式切换（sessionKey / 授权链接）、参数表单（并发/RPM/节点选择/代理选择器含 auto）、
+  job 状态轮询（pending_callback 时展示授权链接与回调粘贴框；working 时转圈；done 跳转账号详情；failed 展示错误）。
+- 代理选择器：`GET .../proxies?free=1` 下拉，展示探活、已绑定与预留占用。组织字段与历史只向管理员展示，非管理员错误不返回组织身份。
+- **全站 Claude-only**：公开站点模型页/价格页、控制台分组模型选择器只显示 `platform=anthropic` 的模型；
+  其余平台前端隐藏（注册表与网关行为不变，方便日后恢复）。
+
+## 8. （已废弃）授权 bot 服务化
+
+浏览器 bot 已删除，见 §2.4。本节编号保留以免引用失效。
+
+## 9. Bridge environment 与 session-ingress token（2026-10-18 已验证）
+
+### 9.1 注册环境
+
+```http
+POST https://api.anthropic.com/v1/environments/bridge
+Authorization: Bearer <accessToken>
+Content-Type: application/json
+anthropic-version: 2023-06-01
+anthropic-beta: environments-2025-11-01
+x-organization-uuid: <org>
+
+{
+  "machine_name": "1dayapi-worker",
+  "directory": "/path/to/workdir",
+  "max_sessions": 1,
+  "metadata": {"worker_type": "claude_code"}
+}
+```
+
+成功响应包含 `environment_id`、`environment_secret` 与 `environment_secret_expires_in=2592000`（30 天）。
+`environment_secret` 只用于该环境的 work/ack/heartbeat 等后续调用，不能与 OAuth access token 混用。
+
+### 9.2 work/poll 与 work.secret
+
+```http
+GET https://api.anthropic.com/v1/environments/{environment_id}/work/poll
+Authorization: Bearer <environment_secret>
+anthropic-version: 2023-06-01
+anthropic-beta: environments-2025-11-01
+```
+
+work 中的 `secret` 是 **Base64URL 编码的 JSON**，不是普通文本 token。解码后的基本结构：
+
+```json
+{
+  "version": 1,
+  "session_ingress_token": "<SI token>",
+  "api_base_url": "https://api.anthropic.com",
+  "claude_code_args": [],
+  "mcp_config": {"content": "...", "path": "..."}
+}
+```
+
+后续 `worker/register` 和 `work/{workId}/ack` 都使用解码得到的 `session_ingress_token`：
+
+```http
+POST {api_base_url}/v1/code/sessions/{session_id}/worker/register
+Authorization: Bearer <session_ingress_token>
+Content-Type: application/json
+anthropic-version: 2023-06-01
+```
+
+实测返回 HTTP 200 与 `worker_epoch`。`ack` 路径为
+`POST /v1/environments/{environment_id}/work/{work_id}/ack`，heartbeat 路径为
+`POST /v1/environments/{environment_id}/work/{work_id}/heartbeat`。
+
+注意：`POST /v1/code/sessions/{id}/bridge` 返回的 `worker_jwt` 属于另一条 worker 凭据链，
+不要与 `work.secret.session_ingress_token` 混淆。空会话或没有用户任务的会话不会自动产生 work；
+官方 Remote Control 的实际顺序是 environment 注册 → 初始 work → ack → worker/register → 子进程取得 SI token。
+
+### 9.3 Chrome Extension Bridge 握手
+
+Chrome Extension 使用 OAuth access token 连接：
+
+```text
+wss://bridge.claudeusercontent.com/chrome/{accountUuid}
+```
+
+首条消息：
+
+```json
+{
+  "type": "connect",
+  "client_type": "chrome-extension",
+  "device_id": "<本地生成并持久化的随机 UUID>",
+  "os_platform": "Linux",
+  "extension_version": "1.0.101",
+  "scoped_peer_disconnect": true,
+  "oauth_token": "<accessToken>"
+}
+```
+
+`device_id` 只是本地持久化随机 ID，不是浏览器指纹。实测 `user:profile user:inference user:chat` 返回 `waiting`；
+`user:ccr_inference user:file_upload` 用于该地址则返回 403。`waiting` 表示服务器已接受凭据并等待扩展/执行端配对，
+不代表浏览器工具已经执行。
+
+## 10. 上号员站点（/onboard，2026-10-16）
+
+独立于控制台登录体系的上号工作站，供外包上号员使用：
+
+- 管理员在控制台「上号员」页签发令牌（`1dk_onb_…`，`onboard_tokens` 表，migration 8），**令牌绑定目标节点**（签发时选择）。
+- 上号员在 `https://1dayapi.com/onboard` 凭令牌进入（Bearer 鉴权，无 cookie 会话），只能看到并使用被绑定的节点：
+  查看节点在线/容量/空闲代理 → 选代理（或自动分配）→ auth_url 流程上号。
+- **重复上号**：已管理的健康账号仍拒绝重复接入；同归属、同组织且已失效的账号可走 §11 原地重授权，结果为 `reused: true`。上号员界面只返回通用失败摘要，不回显组织 UUID 或管理员诊断信息。
+- **落库默认值与资料回填（2026-10-16）**：新账号 `executor` 取 settings `onboard_default_executor`（默认 `ccr_worker`，可改 `ccr`）；
+  并发 / RPM 上限在表单留空或 0 时取 settings `onboard_default_concurrency` / `onboard_default_rpm_limit`（用户定：9 / 100；0 = 不限
+  只能事后在账号里改）。
+  作业完成后 console 立即经该账号的节点/绑定代理调用 `GET /api/oauth/profile`（Bearer，UA 为 Claude Code 辅助调用形态），回填
+  `account_email` 与 `subscription_type`（`has_claude_max` → `max`、`has_claude_pro` → `pro`，否则取组织 `billing_type` / `rate_limit_tier`）；
+  失败只记日志，管理员可 `POST /api/admin/accounts/:id/profile` 重试。env `ONBOARD_PROFILE_FETCH=0` 关闭（测试用）。
+- 作业以 `scope='onboarder'`、`requester_id='onb:<tokenId>'` 落库：账号**归平台池**（owner NULL、approved、进默认分组），
+  与管理员上号的区别仅在于无分组选择权。
+- 吊销令牌即断该上号员的访问；job 状态/列表接口均校验 requester 归属。
+- **节点可选（2026-10-20）**：签发令牌时可选「全部节点」（`node_id='*'`），上号员在站点顶部下拉选择本次上号的节点（显示名称 / 在线 / 容量 / 空闲代理），
+  单次与批量作业都带 `nodeId`，服务端校验必须在令牌允许的节点内；绑定单节点的令牌行为不变。`GET /api/onboard/me` 新增 `nodes[]`、`anyNode`，
+  `GET /api/onboard/proxies?nodeId=`。
+- **批量 SK 上号**：站点新增「批量 SK 上号」面板，每行一个 `sessionKey`；组织由服务端授权验证，非管理员表格不回显组织 UUID。
+  前端解析、去重后按随机间隔（默认 5–7 s，可调）逐条 `POST /api/onboard/jobs {method:"session_key", sessionKey, orgUuid, proxyId:"auto"}`，
+  每条作业 3 s 轮询一次，表格显示 待提交 / 提交中 / 授权中 / 已新增 / 重新授权 / 失败，失败行可一键复制重试。
+  令牌失效或节点无兼容容量时停止提交，当前行留在队列。所有方式共用组织验证、出口名额和追加历史规则。
+
+## 11. 原地重授权（2026-10-22）
+
+掉授权的账号不用删行重上。两条路都落到同一段引擎代码（`jobs.ts` `reauthorizeInPlace`）：
+
+- **行操作「重新授权」**：`POST /api/admin/accounts/:id/reauth`，body 与上号相同
+  （`{method:"session_key", sessionKey, orgUuid?}`；或 `{method:"auth_url"}` → `authorizeUrl`，第二步 `{method:"auth_url", jobId, callbackUrl}`）。
+  限 Anthropic 订阅（oauth）账号且 **status ≠ active**（active 返回 400 `account_active`：新授权不能和仍在用旧 token 的会话抢；要换先停用）。
+  作业钉在账号自己的节点（须在线）和**绑定代理**，原账号的固定名额不重复计数；固定出口不可用时失败，不能自动挑其他代理改绑。
+  授权完成后校验账号身份和实际组织 UUID，均必须与这一行一致；不符则失败，不改变账号的组织或固定代理。
+  作业的 `params_json.reauthAccountId` 记录目标行；auth_url 第二步会校验 jobId 属于该账号（否则 404）。
+- **普通上号撞到 error 行**（§1 原则 4 例外）：同样原地重授权；归属不同仍拒绝（`account_exists`）。作业预留的代理不消耗（绑定代理保留时）。
+
+原地重授权做的事：`credential_enc` 换新；`status='active'`，`error_message` / 四个冷却字段 / `window_reason` / `model_cooldowns` 清空（窗口水位保留）；
+`account_email` 若新拿到则更新；`route='node'`，`team_id` / `node_id` / `bound_proxy_id` 保持固定；分组、优先级、并发 / RPM、owner、review 状态、名字一律不动。
+**不加新号冷静期**（这是已知账号的再登录）；授权后仍做 profile 回填。作业 `jobOut` 带 `reused: true`，`params_json.reauthorized=true`。
+
+谁能做：admin 与 ops（账号管理员，`auth.md` §2）。控制台「账号池」行菜单对非 active 的订阅账号显示「重新授权」（error 行高亮），弹窗内两种方式与上号页一致。
+

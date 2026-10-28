@@ -1,0 +1,12 @@
+{
+  "releaseId": "20261027T115352Z-team-isolation",
+  "verifiedAtUtc": "2026-10-27T12:44:37Z",
+  "sourceAndDocFilesChecked": 315,
+  "copiesChecked": 2,
+  "manifestSha256": "b3101fbef0e75aa714e8854e59663fc2861aff076a77f279dfc66ca52a5087dd",
+  "recordSha256": "587b658de81b1fba29a0964ca359ae8d225ff5f23490788c3eb7f1c65b2eac73",
+  "mismatches": [],
+  "sourceBuildInputFiles": 290,
+  "compiledFiles": 241,
+  "compiledMismatches": []
+}

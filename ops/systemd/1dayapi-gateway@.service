@@ -1,0 +1,28 @@
+[Unit]
+Description=1dayAPI inference gateway on 127.0.0.1:%i (blue/green instance, fronted by nginx api.1dayapi.com)
+After=network.target 1dayapi-mock-upstream.service
+Wants=1dayapi-mock-upstream.service
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/1dayapi
+ExecStart=/usr/local/bin/node apps/gateway/dist/index.js
+Environment=HOST=127.0.0.1
+Environment=PORT=%i
+Environment=UPSTREAM_OPENAI_BASE=http://127.0.0.1:19001
+Environment=UPSTREAM_OPENAI_KEY=mock
+Environment=UPSTREAM_ANTHROPIC_BASE=http://127.0.0.1:19001
+Environment=UPSTREAM_ANTHROPIC_KEY=mock
+Environment=STREAM_IDLE_TIMEOUT_MS=300000
+Environment=TUNNEL_TRACE=1
+# Blue/green: the stopped instance no longer has to free its port, so let it drain in-flight streams for up to
+# 15 min (worker sessions are capped at 10 min; the 75 s default cut 4 long streams on 2026-10-19 08:59).
+# Worker turn cap 20 min (2026-10-19; node side CC_WORKER_TIMEOUT_MS matches); drain must outlast it.
+Environment=CCR_SESSION_TIMEOUT_MS=1200000
+Environment=DRAIN_TIMEOUT_MS=1500000
+TimeoutStopSec=1560
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

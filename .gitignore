@@ -1,0 +1,23 @@
+# dependencies / build output
+node_modules/
+dist/
+*.tsbuildinfo
+
+# runtime data (SQLite db, key files, backups) — never in git
+data/
+
+# credentials and deployment notes with plaintext access details (docs/README.md 脱敏规范)
+secrets/
+docs/deployment/
+docs/**/deployment/
+
+# protocol-analysis reference material (local only; contains vendored third-party repos and a 46 MB bundle)
+recon/
+
+# local env / logs / editor
+.env
+.env.*
+*.log
+.DS_Store
+.idea/
+.vscode/

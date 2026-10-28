@@ -1,0 +1,31 @@
+[Unit]
+Description=1DayAPI worker runtime for upstream team %i
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Each instance receives a distinct systemd-managed UID and private state directory.
+DynamicUser=yes
+StateDirectory=1dayapi-team-%i
+WorkingDirectory=/var/lib/1dayapi-team-%i
+Environment=PROVIDER_TEAM_ID=%i
+Environment=PROVIDER_CONFIG_PATH=/var/lib/1dayapi-team-%i/node/config.json
+Environment=CC_WORKER_ROOT=/var/lib/1dayapi-team-%i/worker
+Environment=CC_WORKER_CLAUDE_BIN=/usr/local/bin/claude
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+EnvironmentFile=-/etc/1dayapi/teams/%i.env
+ExecStart=/usr/bin/bun /opt/1dayapi/apps/provider-node/dist/index.js
+Restart=always
+RestartSec=3
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ProtectProc=invisible
+ProcSubset=pid
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

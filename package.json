@@ -1,0 +1,18 @@
+{
+  "name": "1dayapi",
+  "version": "0.1.0",
+  "private": true,
+  "description": "1dayAPI.com — OpenRouter-style low-cost multi-model AI API gateway (local rebuild of wokey.ai architecture)",
+  "type": "module",
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "scripts": {
+    "build": "pnpm -r build",
+    "dev:gateway": "pnpm --filter @1dayapi/gateway dev",
+    "dev:console": "pnpm --filter @1dayapi/console dev",
+    "dev:web": "pnpm --filter @1dayapi/web dev",
+    "test": "pnpm -r test",
+    "test:e2e": "bash tests/e2e/run.sh"
+  }
+}

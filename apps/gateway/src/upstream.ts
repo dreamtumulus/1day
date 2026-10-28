@@ -1,0 +1,303 @@
+import {
+  CC_ANTHROPIC_VERSION,
+  CC_BETAS,
+  accountBaseUrl,
+  anthropicFingerprintHeaders,
+  ensureDeviceId,
+  getSetting,
+  isCcrExecutor,
+  normalizeCcSoftware,
+  type AccountRow,
+  type Credential,
+} from "@1dayapi/core";
+import { anthropicToOpenaiChat, openaiChatToAnthropic } from "./convert.js";
+
+type Json = Record<string, any>;
+
+/** What the client spoke. */
+export type ClientFormat = "openai-chat" | "anthropic" | "responses";
+
+/** How a request is carried to one account (docs/v3-design.md §7.1). */
+export type Mode =
+  | "passthrough-anthropic" // anthropic -> anthropic
+  | "passthrough-openai" // chat -> chat
+  | "passthrough-responses" // responses -> responses
+  | "chat-via-anthropic" // client chat, upstream anthropic
+  | "anthropic-via-chat" // client anthropic, upstream chat
+  | "ccr-anthropic" // client anthropic, cloud session (docs/ccr-supply.md)
+  | "ccr-chat"; // client chat, cloud session
+
+export function isCcrMode(mode: Mode): boolean {
+  return mode === "ccr-anthropic" || mode === "ccr-chat";
+}
+
+/** The Anthropic-wire mode a CCR response is delivered as (the executor synthesizes Anthropic wire). */
+export function wireModeFor(mode: Mode): Mode {
+  if (mode === "ccr-anthropic") return "passthrough-anthropic";
+  if (mode === "ccr-chat") return "chat-via-anthropic";
+  return mode;
+}
+
+/**
+ * How a request is carried to one account (docs/v3-design.md §7.1).
+ * `ccClient` (Claude Code 系 UA) enables dual-mode routing (docs/ccr-supply.md
+ * §5.2 R1): executor=ccr/ccr_worker subscription accounts then serve in DIRECT
+ * mode (passthrough-anthropic wire) instead of a cloud session / on-node
+ * worker — CC clients never land on either CCR path.
+ */
+export function modeFor(
+  format: ClientFormat,
+  a: Pick<AccountRow, "protocol" | "type" | "platform" | "executor">,
+  ccClient = false,
+): Mode | null {
+  if (isCcrExecutor(a.executor) && !ccClient) {
+    if (format === "anthropic") return "ccr-anthropic";
+    if (format === "openai-chat") return "ccr-chat";
+    return null; // Responses API has no cloud-session/worker translation
+  }
+  const openaiOauth = a.type === "oauth" && a.platform === "openai";
+  if (openaiOauth) return format === "responses" ? "passthrough-responses" : null;
+  if (format === "responses") return a.protocol === "openai" ? "passthrough-responses" : null;
+  if (format === "anthropic") return a.protocol === "anthropic" ? "passthrough-anthropic" : "anthropic-via-chat";
+  return a.protocol === "openai" ? "passthrough-openai" : "chat-via-anthropic";
+}
+
+export interface UpstreamRequest {
+  url: URL;
+  headers: Record<string, string>;
+  body: string;
+}
+
+/**
+ * Headers the gateway never forwards verbatim: hop-by-hop, transport, the
+ * client's own credential (replaced by the account's), and whatever the edge
+ * (Cloudflare / nginx) or the platform added on the way in.
+ */
+const RAW_DROP_HEADERS = new Set([
+  "host", "connection", "content-length", "transfer-encoding", "accept-encoding", "te", "upgrade", "keep-alive", "expect",
+  "authorization", "x-api-key", "proxy-authorization", "proxy-connection", "via", "forwarded", "x-real-ip", "true-client-ip", "cdn-loop",
+]);
+const RAW_DROP_PREFIXES = ["cf-", "x-forwarded-", "x-1dayapi-"];
+
+/** The client's headers as they should reach a raw-passthrough relay (lower-cased names, multi-values joined). */
+export function rawClientHeaders(clientHeaders: Record<string, string | string[] | undefined>): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(clientHeaders)) {
+    const name = k.toLowerCase();
+    if (v === undefined || RAW_DROP_HEADERS.has(name) || RAW_DROP_PREFIXES.some((p) => name.startsWith(p))) continue;
+    out[name] = Array.isArray(v) ? v.join(", ") : v;
+  }
+  return out;
+}
+
+export function buildUpstreamRequest(
+  account: AccountRow,
+  cred: Credential,
+  mode: Mode,
+  clientBody: Json,
+  upstreamModel: string,
+  clientHeaders: Record<string, string | string[] | undefined>,
+  clientQuery = "",
+  upstreamSession?: string,
+): UpstreamRequest | null {
+  if (upstreamSession) clientBody = { ...clientBody, metadata: { user_id: JSON.stringify({ session_id: upstreamSession }) } };
+  const base = accountBaseUrl(account);
+  if (!base) return null;
+  const secret = cred.apiKey ?? cred.accessToken ?? "";
+  const anthropicWire = mode === "passthrough-anthropic" || mode === "chat-via-anthropic";
+  // Raw passthrough (gateway.md §4a, 官Key 分组 2026-10-23): a same-protocol request to a relay account
+  // goes out as the client sent it — its headers (minus transport / credential), its body byte for
+  // byte (since 2026-10-26 not even the model is rewritten: the account's model mapping is ignored),
+  // its query string. No Claude Code UA/version normalisation, fingerprint headers, device-identity
+  // pinning, thinking normalisation, `?beta=true` or beta injection.
+  if (account.raw_passthrough === 1 && mode.startsWith("passthrough-")) {
+    const headers = rawClientHeaders(clientHeaders);
+    headers["content-type"] = "application/json";
+    if (anthropicWire) {
+      headers["x-api-key"] = secret;
+      headers.authorization = `Bearer ${secret}`;
+      if (!headers["anthropic-version"]) headers["anthropic-version"] = CC_ANTHROPIC_VERSION;
+    } else {
+      headers.authorization = `Bearer ${secret}`;
+    }
+    const path = mode === "passthrough-anthropic" ? "/v1/messages" : mode === "passthrough-openai" ? "/chat/completions" : "/responses";
+    const q = clientQuery ? (clientQuery.startsWith("?") ? clientQuery : `?${clientQuery}`) : "";
+    return { url: new URL(base + path + q), headers, body: JSON.stringify(clientBody) };
+  }
+  // One account = one software (docs/gateway.md §3): a Claude Code client's UA entrypoint
+  // and version are aligned with the node's Claude Code before the fingerprint layer.
+  if (mode === "passthrough-anthropic") {
+    const pin = getSetting("direct_cc_version_pin").trim();
+    const n = normalizeCcSoftware(clientHeaders, clientBody, {
+      normalizeEntrypoint: getSetting("direct_cc_entrypoint_normalize") === "1",
+      versionPin: pin || null,
+    });
+    clientHeaders = n.headers;
+    clientBody = n.body;
+  }
+  const headers: Record<string, string> = anthropicWire
+    ? { "content-type": "application/json", ...anthropicFingerprintHeaders(clientHeaders) }
+    : { "content-type": "application/json", accept: "*/*" };
+  let path: string;
+  let body: Json;
+
+  switch (mode) {
+    case "passthrough-anthropic":
+      // Claude Code 恒定带 ?beta=true（docs/claude-code-compat.md §2）
+      path = "/v1/messages?beta=true";
+      body = pinDeviceIdentity(normalizeThinking({ ...clientBody, model: upstreamModel }, upstreamModel), account);
+      break;
+    case "chat-via-anthropic":
+      path = "/v1/messages?beta=true";
+      body = pinDeviceIdentity(normalizeThinking({ ...openaiChatToAnthropic(clientBody, upstreamModel), ...(upstreamSession ? { metadata: clientBody.metadata } : {}) }, upstreamModel), account);
+      break;
+    case "passthrough-openai":
+      path = "/chat/completions";
+      body = { ...clientBody, model: upstreamModel };
+      if (body.stream === true) {
+        body.stream_options = { ...(body.stream_options ?? {}), include_usage: true };
+      }
+      break;
+    case "anthropic-via-chat":
+      path = "/chat/completions";
+      body = anthropicToOpenaiChat(clientBody, upstreamModel);
+      break;
+    case "passthrough-responses":
+      path = "/responses";
+      body = { ...clientBody, model: upstreamModel };
+      break;
+    default:
+      throw new Error(`buildUpstreamRequest: mode ${mode} is not an HTTP upstream mode`);
+  }
+
+  if (anthropicWire) {
+    const v = clientHeaders["anthropic-version"];
+    headers["anthropic-version"] = typeof v === "string" && v ? v : CC_ANTHROPIC_VERSION;
+    const betas = new Set<string>();
+    const clientBeta = clientHeaders["anthropic-beta"];
+    if (mode === "passthrough-anthropic" && typeof clientBeta === "string") {
+      for (const b of clientBeta.split(",")) if (b.trim()) betas.add(b.trim());
+    }
+    // 客户端非 Claude Code 时注入 canonical beta 集（docs/claude-code-compat.md §6）
+    if (betas.size === 0) for (const b of CC_BETAS) betas.add(b);
+    if (account.type === "oauth") {
+      betas.add("oauth-2025-04-20");
+      headers.authorization = `Bearer ${secret}`;
+    } else {
+      headers["x-api-key"] = secret;
+      // Third-party Anthropic-compatible relays often expect Bearer instead.
+      if (account.type === "upstream") headers.authorization = `Bearer ${secret}`;
+    }
+    headers["anthropic-beta"] = [...betas].join(",");
+  } else {
+    headers.authorization = `Bearer ${secret}`;
+    if (account.type === "oauth" && account.platform === "openai") {
+      if (cred.accountId) headers["chatgpt-account-id"] = cred.accountId;
+      headers["openai-beta"] = "responses=experimental";
+      headers.originator = "codex_cli_rs";
+      body.store = false;
+    }
+  }
+  // anthropic wire 保持 CC 行为：流式也发 accept: application/json
+  if (!anthropicWire && body.stream === true) headers.accept = "text/event-stream";
+
+  return { url: new URL(base + path), headers, body: JSON.stringify(body) };
+}
+
+// OAuth refresh lives in @1dayapi/core (shared with the console keep-alive
+// loop). Every node-routed account (ccr, ccr_worker or direct executor)
+// refreshes through the tunnel pinned to its bound proxy (docs/onboarding.md
+// §1/§6.2: all platform-side requests of a bound account leave on that proxy);
+// a failed/unavailable tunnel keeps the old token (core returns null).
+import { freshCredential as coreFreshCredential, readCredential } from "@1dayapi/core";
+import { pinnedTunnelTransport, type IsolationContext } from "./tunnel.js";
+
+export function freshCredential(account: AccountRow, force = false, isolation?: IsolationContext): Promise<Credential> {
+  if (isolation && readCredential(account).orgUuid?.toLowerCase() !== isolation.teamId) return Promise.reject(new Error("account organization does not match conversation"));
+  const transport = account.route === "node" ? pinnedTunnelTransport(account.id, account.bound_proxy_id, isolation) : undefined;
+  return coreFreshCredential(account, force, transport);
+}
+export { canRefresh } from "@1dayapi/core";
+
+/**
+ * One account = one device (docs/claude-code-compat.md §8): the client's
+ * `metadata.user_id` carries *its* device_id / account_uuid, so passing it
+ * through made one upstream account appear to log in from every customer's
+ * machine. Rewrite device_id (and account_uuid when known) to the account's own
+ * pinned identity and keep the client's session_id — upstream still sees one
+ * device with many conversations, and the gateway's sticky key (computed from
+ * the original body) is untouched. Both Claude Code forms are handled: the JSON
+ * string and the legacy `user_<hex>_account_<uuid>_session_<uuid>`.
+ */
+/** `claude-<family>-<major>[-<minor>][-<yyyymmdd>]` → family + numeric version (4.7, 5, 5.5). */
+function claudeLine(model: string): { family: string; version: number } | null {
+  const m = /^claude-(fable|mythos|opus|sonnet|haiku)-(\d+)(?:-(\d))?(?:-\d{8})?$/.exec(model);
+  if (!m) return null;
+  return { family: m[1], version: Number(m[2]) + (m[3] ? Number(m[3]) / 10 : 0) };
+}
+
+/**
+ * Make the client's `thinking` object acceptable to the upstream model
+ * (Anthropic rules as of 2026-10, claude-api skill shared/error-codes.md):
+ *   - `enabled`/`budget_tokens` → 400 on every 5.x line and on Opus 4.7/4.8 → `adaptive`
+ *   - `disabled` → 400 on Fable/Mythos 5.x and Opus 5.5 (always-on thinking) → omit `thinking`
+ *   - `disabled` → 400 on Sonnet 5.5 → `between_tools` (its thinking-off form; omit at effort xhigh/max)
+ *   - `disabled` → 400 on Opus 5 / Sonnet 5 / Haiku 5.5 only at effort xhigh/max → omit there
+ *   - `between_tools` exists only on Sonnet 5.5 at effort ≤ high → omit elsewhere
+ * Older lines (4.6 and before) still take every form; the body is returned as is.
+ * The CCR worker path maps the same intent through planThinking; this covers the
+ * passthrough wires (10 × 400 from a Claude Code 2.1.220 client on 2026-10-19).
+ */
+export function normalizeThinking(body: Json, model: string): Json {
+  const t = body.thinking;
+  if (!t || typeof t !== "object") return body;
+  const line = claudeLine(model);
+  if (!line) return body;
+  const { family, version } = line;
+  const type = typeof t.type === "string" ? t.type : "";
+  const effort = typeof body.output_config?.effort === "string" ? body.output_config.effort : typeof body.effort === "string" ? body.effort : "";
+  const highEffort = effort === "xhigh" || effort === "max";
+  const drop = (): Json => {
+    const { thinking: _omit, ...rest } = body;
+    return rest;
+  };
+  if (type === "enabled") {
+    const rejectsBudget = version >= 5 || (family === "opus" && version >= 4.7);
+    return rejectsBudget ? { ...body, thinking: { type: "adaptive" } } : body;
+  }
+  if (type === "disabled") {
+    const alwaysOn = ((family === "fable" || family === "mythos") && version >= 5) || (family === "opus" && version >= 5.5);
+    if (alwaysOn) return drop();
+    if (family === "sonnet" && version >= 5.5) return highEffort ? drop() : { ...body, thinking: { type: "between_tools" } };
+    if (version >= 5 && highEffort) return drop();
+    return body;
+  }
+  if (type === "between_tools") {
+    return family === "sonnet" && version >= 5.5 && !highEffort ? body : drop();
+  }
+  return body;
+}
+
+export function pinDeviceIdentity(body: Json, account: Pick<AccountRow, "id" | "device_id" | "account_uuid">): Json {
+  const meta = body.metadata;
+  const raw = meta && typeof meta === "object" ? (meta as Json).user_id : undefined;
+  if (typeof raw !== "string" || !raw) return body;
+  const deviceId = account.device_id ?? ensureDeviceId(account.id);
+  let next: string | null = null;
+  const t = raw.trim();
+  if (t.startsWith("{")) {
+    try {
+      const j = JSON.parse(t) as Json;
+      j.device_id = deviceId;
+      if (account.account_uuid) j.account_uuid = account.account_uuid;
+      next = JSON.stringify(j);
+    } catch {
+      return body;
+    }
+  } else {
+    next = t.replace(/^user_[0-9a-fA-F]+/, `user_${deviceId}`);
+    if (account.account_uuid) next = next.replace(/_account_[0-9a-fA-F-]+/, `_account_${account.account_uuid}`);
+  }
+  if (!next || next === raw) return body;
+  return { ...body, metadata: { ...(meta as Json), user_id: next } };
+}

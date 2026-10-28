@@ -1,0 +1,1589 @@
+import crypto from "node:crypto";
+import type { FastifyReply, FastifyRequest } from "fastify";
+import {
+  accountBaseUrl,
+  accountTeamId,
+  getConversation,
+  getConversationByExternalKey,
+  getConversationBoundary,
+  saveBranchBoundary,
+  isConversationGenerationActive,
+  type ConversationBoundary,
+  acquireConversationLease,
+  renewConversationLease,
+  releaseConversationLease,
+  conversationLeaseHeld,
+  bindConversationTeam,
+  resetConversationGeneration,
+  saveConversationBoundary,
+  type ConversationRow,
+  one,
+  boundProxyDown,
+  getModelEntry,
+  getSetting,
+  hasSubscriptionWindow,
+  isModelAllowed,
+  listCandidates,
+  markFailure,
+  nowIso,
+  parseUnifiedRateLimitHeaders,
+  recordWindowUsage,
+  rejectedWindow,
+  settleRequest,
+  sha256Hex,
+  touchAccount,
+  upstreamModelFor,
+  groupIsRawPassthrough,
+  type AccountRow,
+  type Candidate,
+  type WindowSnapshot,
+  classifyCcRequest,
+  parseCcShapePolicy,
+  fableRejectedWindow,
+  isCreditsRequired,
+  ccLimitReset,
+  modelScope,
+  modelSuspensionSummary,
+  parseModelSuspension,
+  clearAffinityBindings,
+  countAffinityBindings,
+  loadDeviceBinding,
+  loadStickyBinding,
+  saveDeviceBinding,
+  saveStickyBinding,
+  sweepAffinityBindings,
+} from "@1dayapi/core";
+import { authenticate, type CallerContext } from "./auth.js";
+import { AUTH_FAILURE_COOLDOWN_MS, AuthFailureTracker, isCcAccountOnHold, isCcAuthFailure } from "./ccr/auth-failure.js";
+import { classifyCcRequestError, isCcModelUnavailable } from "./ccr/model-unavailable.js";
+import { config } from "./config.js";
+import {
+  AnthropicToOpenaiStream,
+  OpenaiToAnthropicStream,
+  anthropicMessageToOpenai,
+  openaiChatToAnthropicMessage,
+} from "./convert.js";
+import { CORS_HEADERS, conversationResponseHeaders, clientIp, errorBody, makeTeeProof, sendError, teeProofRequested } from "./http.js";
+import { armNonStreamHeartbeat, beginEarlyStream, endEarlyJson, endEarlyJsonWithError, endEarlyStreamWithError, stopEarlyKeepalive, stopNonStreamHeartbeat } from "./heartbeat.js";
+import { runCcr, retireCcrConversation } from "./ccr/executor.js";
+import { runCcrWorker } from "./ccr/worker.js";
+import { ccrUnsupportedReason, type CcrUnsupported } from "./ccr/translate.js";
+import { openaiChatToAnthropic } from "./convert.js";
+import { postRaw } from "./rawhttp.js";
+import { AccountGates } from "./limits.js";
+import { TunnelRequestError, fetchViaTunnel, resetConversationWorkers, type IsolationContext } from "./tunnel.js";
+import { applyResetBoundary, latestQuestion, resetBody, requestMessages, resolveConversationIdentity, conversationBranchKey, RESET_NOTICE } from "./conversation.js";
+import {
+  buildUpstreamRequest,
+  canRefresh,
+  freshCredential,
+  isCcrMode,
+  modeFor,
+  wireModeFor,
+  type ClientFormat,
+  type Mode,
+} from "./upstream.js";
+import { UsageAccumulator, collectText } from "./usage.js";
+
+type Json = Record<string, any>;
+
+// ---------- per-account gates: concurrency + RPM + bound-proxy liveness ----------
+// (in-process, docs/v3-design.md §7.5 and docs/onboarding.md §6.1/§6.3).
+// A gate rejection is a skip, never a failure: no cooldown is recorded.
+
+const gates = new AccountGates();
+export function accountInFlight(id: string): number {
+  return gates.inFlightCount(id);
+}
+export function inFlightSnapshot(): Record<string, number> {
+  return gates.snapshot();
+}
+function acquire(a: AccountRow): boolean {
+  return gates.tryAcquire(a.id, a.concurrency, a.rpm_limit);
+}
+function release(id: string): void {
+  gates.release(id);
+}
+
+// ---------- sticky sessions (sub2api GenerateSessionHash) ----------
+//
+// Key sources, highest priority first:
+//   1. metadata.user_id → the client's own session id (Claude Code sends
+//      `user_<hash>_account_<uuid>_session_<uuid>` or a JSON {device_id, session_id})
+//   2. content blocks marked cache_control (the prompt-cache prefix the client wants kept warm)
+//   3. api key + client ip + user-agent + system text + all message texts
+// TTL from settings.sticky_session_ttl_sec (default 30 min).
+//
+// Persistence (2026-10-21, core/affinity.ts): the Map is only the hot cache.
+// Every binding is written through to the affinity_bindings table and a miss
+// is looked up there, so a blue/green release (ops/bin/gateway-switch) does not
+// start with empty maps and re-deal every live conversation and device to a
+// new account — that made Anthropic see devices hop between accounts, rebuilt
+// prompt caches, and (because the new process had no "previous" binding) the
+// hop was never flagged account_switched, so never refunded.
+
+const sticky = new Map<string, { accountId: string; expiresAt: number }>();
+
+/** Live sticky binding: process cache first, then the shared table (the other instance may have written it). */
+function getSticky(key: string, now = Date.now()): { accountId: string; expiresAt: number } | undefined {
+  const hit = sticky.get(key);
+  if (hit && hit.expiresAt >= now) return hit;
+  if (hit) sticky.delete(key);
+  const stored = loadStickyBinding(key, now);
+  if (stored) sticky.set(key, stored);
+  return stored;
+}
+
+function stickyTtlMs(): number {
+  const sec = Number(getSetting("sticky_session_ttl_sec"));
+  return (Number.isFinite(sec) && sec > 0 ? sec : 1800) * 1000;
+}
+
+function blockTexts(content: unknown, onlyCacheable: boolean): string {
+  if (typeof content === "string") return onlyCacheable ? "" : content;
+  if (!Array.isArray(content)) return "";
+  const out: string[] = [];
+  for (const b of content as Json[]) {
+    if (!b || typeof b !== "object") continue;
+    if (onlyCacheable && !b.cache_control) continue;
+    if (typeof b.text === "string") out.push(b.text);
+    else if (b.type === "tool_result") out.push(blockTexts(b.content, false));
+    else if (b.type === "tool_use") out.push(JSON.stringify(b.input ?? {}));
+  }
+  return out.join("\n");
+}
+
+/** Session id from Claude Code's metadata.user_id (legacy string or JSON form). */
+export function sessionIdFromMetadata(userId: unknown): string | null {
+  if (typeof userId !== "string" || !userId) return null;
+  const raw = userId.trim();
+  if (raw.startsWith("{")) {
+    try {
+      const j = JSON.parse(raw) as Json;
+      return typeof j.session_id === "string" && j.session_id ? j.session_id : null;
+    } catch {
+      return null;
+    }
+  }
+  const m = /session_([0-9a-fA-F-]{8,})/.exec(raw);
+  return m ? m[1] : null;
+}
+
+export function stickyKey(caller: Pick<CallerContext, "apiKeyId">, body: Json, req: Pick<FastifyRequest, "headers" | "ip">): string | null {
+  // The prompt cache is per account *and per model*: Claude Code runs its side
+  // tasks (titles, summaries) on Sonnet/Haiku inside the same session, and when
+  // such a call had to move accounts it used to drag the Opus binding along —
+  // the next Opus turn then rewrote a 900K-token prefix on the new account
+  // (安安, 2026-10-20 06:56). One binding per session × model keeps them apart.
+  const model = typeof body.model === "string" ? body.model.trim() : "";
+  const sid = sessionIdFromMetadata(body.metadata?.user_id);
+  if (sid) return `s:${caller.apiKeyId}:${sid}:${model}`;
+  const msgs: Json[] = Array.isArray(body.messages) ? body.messages : [];
+  // Only the conversation root's breakpoints count (system + first user turn). Clients such as
+  // opencode put cache_control on the *last* messages as well, so a key over every marked block
+  // changed each turn: the conversation landed on a new account every request, never hit the
+  // account-scoped prompt cache and never continued its worker process (reseller customer
+  // conversation, 2026-10-23: 35 turns on 30 accounts, cache_read flat at the identity prefix).
+  // The first user turn's own marking is not stable either (it is the last message, hence marked,
+  // only on turn 1), so its text counts whether marked or not.
+  const firstUser = msgs.find((m) => m?.role === "user");
+  const cachedSystem = blockTexts(body.system, true);
+  if (cachedSystem) return `c:${sha256Hex(`${caller.apiKeyId}|${model}|${cachedSystem}|${firstUser ? blockTexts(firstUser.content, false) : ""}`)}`;
+  const ua = String(req.headers["user-agent"] ?? "").replace(/[\d.]+/g, "");
+  // Conversation root only (system + first user turn): hashing the whole history
+  // changed the key every turn, so multi-turn conversations hopped accounts and
+  // never hit the account-scoped prompt cache (2026-10-17).
+  const parts = [caller.apiKeyId, model, clientIp(req as FastifyRequest), ua, blockTexts(body.system, false)];
+  if (firstUser) parts.push(blockTexts(firstUser.content, false));
+  if (msgs.length === 0 && body.input !== undefined) parts.push(typeof body.input === "string" ? body.input : JSON.stringify(body.input));
+  const text = parts.join("|");
+  if (text.length <= caller.apiKeyId.length + 3) return null;
+  return `f:${sha256Hex(text)}`;
+}
+
+function orderBySticky(cands: Candidate[], key: string | null): Candidate[] {
+  if (!key) return cands;
+  const hit = getSticky(key);
+  if (!hit) return cands;
+  const i = cands.findIndex((c) => c.id === hit.accountId);
+  if (i <= 0) return cands;
+  return [cands[i], ...cands.slice(0, i), ...cands.slice(i + 1)];
+}
+
+function rememberSticky(key: string | null, accountId: string): void {
+  if (!key) return;
+  if (sticky.size > 20_000) {
+    const now = Date.now();
+    for (const [k, v] of sticky) if (v.expiresAt < now) sticky.delete(k);
+  }
+  const expiresAt = Date.now() + stickyTtlMs();
+  sticky.set(key, { accountId, expiresAt });
+  saveStickyBinding(key, accountId, expiresAt);
+}
+
+// ---------- device affinity (2026-10-19) ----------
+//
+// A session key keeps one conversation on one account but says nothing about the
+// other conversations of the same client machine, so a busy customer spread one
+// device over dozens of accounts and every account served many devices, Claude
+// Code versions and OSes in the same hour. The device key (api key + the client's
+// metadata.user_id device_id) remembers the few accounts a device has recently
+// used; they rank right after the sticky account, so a new conversation or a moved
+// session lands on an account that already serves this device (and often still
+// holds its warm prompt-cache prefix). Overflow beyond the pool behaves as before:
+// the pool is a preference, not a cap.
+// Settings: device_affinity_pool_size (default 3, 0 = off), device_affinity_ttl_sec (default 7200).
+
+const devicePool = new Map<string, { accounts: string[]; expiresAt: number }>();
+
+/** Live device pool: process cache first, then the shared table. */
+function getDevicePool(key: string, now = Date.now()): { accounts: string[]; expiresAt: number } | undefined {
+  const hit = devicePool.get(key);
+  if (hit && hit.expiresAt >= now) return hit;
+  if (hit) devicePool.delete(key);
+  const stored = loadDeviceBinding(key, now);
+  if (stored) devicePool.set(key, stored);
+  return stored;
+}
+
+function devicePoolSize(): number {
+  const n = Number(getSetting("device_affinity_pool_size"));
+  return Number.isFinite(n) && n >= 0 ? Math.floor(n) : 3;
+}
+
+function deviceTtlMs(): number {
+  const sec = Number(getSetting("device_affinity_ttl_sec"));
+  return (Number.isFinite(sec) && sec > 0 ? sec : 7200) * 1000;
+}
+
+/** Client device id from Claude Code's metadata.user_id (JSON `device_id` or legacy `user_<hex>`). */
+export function deviceIdFromMetadata(userId: unknown): string | null {
+  if (typeof userId !== "string" || !userId) return null;
+  const raw = userId.trim();
+  if (raw.startsWith("{")) {
+    try {
+      const j = JSON.parse(raw) as Json;
+      return typeof j.device_id === "string" && /^[0-9a-f]{16,}$/i.test(j.device_id) ? j.device_id.toLowerCase() : null;
+    } catch {
+      return null;
+    }
+  }
+  const m = /^user_([0-9a-fA-F]{16,})/.exec(raw);
+  return m ? m[1].toLowerCase() : null;
+}
+
+export function deviceKey(caller: Pick<CallerContext, "apiKeyId">, body: Json): string | null {
+  const id = deviceIdFromMetadata(body?.metadata?.user_id);
+  return id ? `d:${caller.apiKeyId}:${id}` : null;
+}
+
+/** Sticky account first, then the device's recent accounts in recorded order, then everything else. */
+export function orderByAffinity(cands: Candidate[], sessionKey: string | null, devKey: string | null, now = Date.now()): Candidate[] {
+  const bySticky = orderBySticky(cands, sessionKey);
+  if (!devKey) return bySticky;
+  const pool = getDevicePool(devKey, now);
+  if (!pool || pool.accounts.length === 0) return bySticky;
+  const stickyHit = sessionKey ? getSticky(sessionKey, now) : undefined;
+  const stickyId = stickyHit ? stickyHit.accountId : null;
+  const rank = new Map(pool.accounts.map((id, i) => [id, i]));
+  const head: Candidate[] = [];
+  const known: Candidate[] = [];
+  const rest: Candidate[] = [];
+  for (const c of bySticky) {
+    if (c.id === stickyId) head.push(c);
+    else if (rank.has(c.id)) known.push(c);
+    else rest.push(c);
+  }
+  known.sort((a, b) => rank.get(a.id)! - rank.get(b.id)!);
+  return [...head, ...known, ...rest];
+}
+
+/** Record that `accountId` served this device; a full pool is kept as is (overflow is not sticky). */
+export function rememberDevice(devKey: string | null, accountId: string, now = Date.now()): void {
+  if (!devKey) return;
+  const size = devicePoolSize();
+  if (size === 0) return;
+  if (devicePool.size > 20_000) {
+    for (const [k, v] of devicePool) if (v.expiresAt < now) devicePool.delete(k);
+  }
+  const prev = getDevicePool(devKey, now);
+  const accounts = prev ? prev.accounts : [];
+  if (!accounts.includes(accountId) && accounts.length < size) accounts.push(accountId);
+  const expiresAt = now + deviceTtlMs();
+  devicePool.set(devKey, { accounts, expiresAt });
+  saveDeviceBinding(devKey, accounts, expiresAt);
+}
+
+// Expired bindings leave the table every 10 min (the process maps prune themselves on size).
+const AFFINITY_SWEEP_MS = 10 * 60_000;
+setInterval(() => {
+  try {
+    const n = sweepAffinityBindings();
+    if (n > 0) console.log(`[affinity] swept ${n} expired bindings`);
+  } catch (err) {
+    console.warn(`[affinity] sweep failed: ${(err as Error).message}`);
+  }
+}, AFFINITY_SWEEP_MS).unref();
+
+/** Startup line: how many live bindings this instance inherits from the previous one. */
+export function affinityBindingsSummary(): string {
+  const c = countAffinityBindings();
+  return `${c.session} session / ${c.device} device bindings, ${c.turn} worker turn memories carried over`;
+}
+
+/** Test hooks: forget every binding / bind a session key the way a real hit would. */
+export function resetAffinityForTests(): void {
+  devicePool.clear();
+  sticky.clear();
+  clearAffinityBindings();
+}
+/** Tests only: forget the process maps but keep the table — what a gateway restart looks like. */
+export function forgetAffinityMemoryForTests(): void {
+  devicePool.clear();
+  sticky.clear();
+}
+export function rememberStickyForTests(key: string, accountId: string): void {
+  rememberSticky(key, accountId);
+}
+
+// ---------- passive subscription-window sampling (sub2api) ----------
+
+/** Read anthropic-ratelimit-unified-* from an upstream response into the account row. */
+function sampleWindow(account: AccountRow, headers: Headers): WindowSnapshot | null {
+  if (!hasSubscriptionWindow(account)) return null;
+  const snap = parseUnifiedRateLimitHeaders(headers);
+  if (!snap) return null;
+  try {
+    recordWindowUsage(account.id, snap);
+  } catch (err) {
+    console.warn(`[window] sample write failed for ${account.id}: ${(err as Error).message}`);
+  }
+  return snap;
+}
+
+// ---------- main entry ----------
+
+interface Ctx {
+  req: FastifyRequest;
+  reply: FastifyReply;
+  format: ClientFormat;
+  endpoint: string;
+  caller: CallerContext;
+  body: Json;
+  model: string;
+  stream: boolean;
+  requestId: string;
+  startedAt: number;
+  /** Claude Code shape verdict (docs/gateway.md §2a); null = not a CC-UA request. */
+  ccShape: "genuine" | "suspect" | null;
+  /** Observability trace for the usage row: last path tried, its node, what upstream answered. */
+  trace: { mode: Mode | null; nodeId: string | null; upstreamStatus: number | null; upstreamMessage: string | null };
+  /**
+   * sub2api ForceCacheBilling: the request had a live sticky binding but had to
+   * run on a different account (cooldown / failover / proxy down), so its prompt
+   * cache was rebuilt through no fault of the client. Settlement bills this
+   * request's input_tokens at the cache-read price instead.
+   */
+  forceCacheBilling: boolean;
+  /** The client's socket closed before the response finished (set by the listener attached at request start). */
+  clientGone: boolean;
+  /** Fired when the client goes away: whoever holds an upstream body cancels it. */
+  abort: AbortController;
+  /**
+   * Streaming requests: response headers + a keepalive comment go out as soon as the first
+   * upstream attempt starts (earlyStream), so neither Cloudflare's 125 s origin timeout nor a
+   * client's time-to-first-byte timeout fires while upstream (or a failover chain) is still
+   * working on it. Once started, errors are SSE `error` events, not HTTP statuses.
+   */
+  early: { keepalive: NodeJS.Timeout | null } | null;
+  /**
+   * Non-stream requests: the real HTTP status stays available for the first
+   * NON_STREAM_HEARTBEAT_AFTER_MS; after that a 200 + JSON headers is committed and padded with
+   * whitespace so Cloudflare / nginx / the client keep waiting for the body (heartbeat.ts).
+   */
+  jsonArm: NodeJS.Timeout | null;
+  jsonEarly: { keepalive: NodeJS.Timeout | null } | null;
+  scope?: ConversationScope;
+}
+
+const PASSTHROUGH_STATUSES = new Set([400, 404, 413, 422]);
+
+interface ConversationScope {
+  row: ConversationRow;
+  token: string;
+  reliable: boolean;
+  originalBody: Json;
+  triedTeams: Set<string>;
+  lost: boolean;
+  abort?: AbortController;
+  responseCtx?: Ctx;
+  justReset?: boolean;
+  released?: boolean;
+  branch: string;
+  boundary?: ConversationBoundary;
+}
+
+function scopeContext(scope?: ConversationScope): IsolationContext | undefined {
+  return scope?.row.team_id ? { teamId: scope.row.team_id, conversationId: scope.row.id, generation: scope.row.generation } : undefined;
+}
+
+function assertScope(scope?: ConversationScope): void {
+  if (!scope) return;
+  const current = scope.row.team_id ? isConversationGenerationActive(scope.row.id, scope.row.team_id, scope.row.generation) : conversationLeaseHeld(scope.row.id, scope.token, scope.row.generation);
+  if (scope.lost || !current) throw new Error("conversation ownership changed");
+}
+
+function sendResetNotice(reply: FastifyReply, format: ClientFormat, body: Json): void {
+  const id = crypto.randomUUID();
+  if (!reply.raw.headersSent) reply.header("x-1day-context-reset", "1");
+  const send = (payload: unknown) => reply.raw.headersSent ? reply.raw.end(typeof payload === "string" ? payload : JSON.stringify(payload)) : reply.send(payload);
+  const message = { id: `msg_${id}`, type: "message", role: "assistant", model: body.model ?? "", content: [{ type: "text", text: RESET_NOTICE }], stop_reason: "end_turn", stop_sequence: null, usage: { input_tokens: 0, output_tokens: 0 } };
+  const chat = { id: `chatcmpl_${id}`, object: "chat.completion", created: Math.floor(Date.now() / 1000), model: body.model ?? "", choices: [{ index: 0, message: { role: "assistant", content: RESET_NOTICE }, finish_reason: "stop" }], usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 } };
+  if (body.stream === true) {
+    reply.header("content-type", "text/event-stream; charset=utf-8");
+    if (format === "anthropic") send(`event: message_start\ndata: ${JSON.stringify({ type: "message_start", message: { ...message, content: [], stop_reason: null } })}\n\nevent: content_block_start\ndata: ${JSON.stringify({ type: "content_block_start", index: 0, content_block: { type: "text", text: "" } })}\n\nevent: content_block_delta\ndata: ${JSON.stringify({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: RESET_NOTICE } })}\n\nevent: content_block_stop\ndata: {"type":"content_block_stop","index":0}\n\nevent: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":0}}\n\nevent: message_stop\ndata: {"type":"message_stop"}\n\n`);
+    else if (format === "openai-chat") send(`data: ${JSON.stringify({ ...chat, object: "chat.completion.chunk", choices: [{ index: 0, delta: { role: "assistant", content: RESET_NOTICE }, finish_reason: null }] })}\n\ndata: ${JSON.stringify({ ...chat, object: "chat.completion.chunk", choices: [{ index: 0, delta: {}, finish_reason: "stop" }] })}\n\ndata: [DONE]\n\n`);
+    else send(`event: response.completed\ndata: ${JSON.stringify({ type: "response.completed", response: { id: `resp_${id}`, object: "response", status: "completed", output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: RESET_NOTICE, annotations: [] }] }] } })}\n\n`);
+  } else if (format === "anthropic") send(message);
+  else if (format === "openai-chat") send(chat);
+  else send({ id: `resp_${id}`, object: "response", status: "completed", output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: RESET_NOTICE, annotations: [] }] }], usage: { input_tokens: 0, output_tokens: 0, total_tokens: 0 } });
+}
+
+/** Gateways take short metadata leases; normal execution remains parallel and epoch-fenced. */
+export async function proxy(req: FastifyRequest, reply: FastifyReply, format: ClientFormat, endpoint: string): Promise<void> {
+  const caller = authenticate(req, reply, format, true);
+  if (!caller) return;
+  const originalBody = (req.body && typeof req.body === "object" ? req.body : {}) as Json;
+  const hasSubscriptions = !!one(`SELECT 1 FROM account_groups ag JOIN accounts a ON a.id = ag.account_id WHERE ag.group_id = ? AND a.type = 'oauth' AND a.platform = 'anthropic' LIMIT 1`, caller.groupId);
+  let identity = resolveConversationIdentity(caller.apiKeyId, req.headers, originalBody, format);
+  const returnedId = req.headers["x-1day-conversation-id"];
+  if (typeof returnedId === "string") {
+    const known = getConversation(returnedId);
+    if (known?.api_key_id === caller.apiKeyId) identity = { key: known.external_key, reliable: true };
+  }
+  const existing = getConversationByExternalKey(caller.apiKeyId, identity.key);
+  const requestedModel = typeof originalBody.model === "string" ? originalBody.model.trim() : "";
+  const newTeamSupply = hasSubscriptions && listCandidates(caller.groupId, requestedModel).some((a) => !!accountTeamId(a) && modeFor(format, a, false) !== null);
+  if (!existing?.team_id && !newTeamSupply) return proxyRequest(req, reply, format, endpoint, caller);
+  const token = crypto.randomUUID();
+  const deadline = Date.now() + 60_000;
+  let row: ConversationRow | null = null;
+  while (!row && Date.now() < deadline) {
+    row = acquireConversationLease(caller.apiKeyId, identity.key, token);
+    if (!row) await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  if (!row) { sendError(reply, format, 503, "conversation_busy", "Another request for this conversation is still running. Retry shortly.", "upstream_error"); return; }
+  const scope: ConversationScope = { row, token, reliable: identity.reliable, originalBody, triedTeams: new Set(), lost: false, branch: conversationBranchKey(originalBody, format) };
+  const renewal = setInterval(() => {
+    if (scope.released) return;
+    try { if (renewConversationLease(scope.row.id, token)) return; } catch { /* fence on DB failure */ }
+    scope.lost = true;
+    scope.abort?.abort();
+  }, 20_000);
+  renewal.unref();
+  try { await proxyRequest(req, reply, format, endpoint, caller, scope); }
+  catch (err) {
+    if ((err as Error).message !== "conversation ownership changed") throw err;
+    if (scope.responseCtx) { stopEarlyKeepalive(scope.responseCtx); stopNonStreamHeartbeat(scope.responseCtx); }
+    if (!reply.raw.writableEnded) sendResetNotice(reply, format, originalBody);
+  }
+  finally { clearInterval(renewal); releaseConversationLease(scope.row.id, token); }
+}
+
+async function lockScope(scope: ConversationScope): Promise<void> {
+  if (!scope.released) return;
+  const deadline = Date.now() + 10_000;
+  let row: ConversationRow | null = null;
+  while (!row && Date.now() < deadline) {
+    row = acquireConversationLease(scope.row.api_key_id, scope.row.external_key, scope.token);
+    if (!row) await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  if (!row) throw new Error("conversation ownership changed");
+  scope.row = row;
+  scope.released = false;
+}
+
+function unlockScope(scope?: ConversationScope): void {
+  if (!scope || scope.released) return;
+  releaseConversationLease(scope.row.id, scope.token);
+  scope.released = true;
+}
+
+async function switchTeam(scope: ConversationScope, nextTeam: string, format: ClientFormat, reason: string): Promise<void> {
+  const previous = scopeContext(scope);
+  const generation = scope.row.generation;
+  await lockScope(scope);
+  // Another request won the reset. Follow that winner; never overwrite its generation.
+  if (scope.row.generation !== generation) { scope.boundary = undefined; return; }
+  assertScope(scope);
+  const question = latestQuestion(scope.originalBody, format);
+  scope.row = resetConversationGeneration(scope.row.id, scope.token, scope.row.generation, nextTeam, question.anchor, question.prefix, reason);
+  scope.boundary = saveBranchBoundary(scope.row.id, scope.token, scope.row.generation, scope.branch, question.anchor, question.prefix);
+  scope.justReset = true;
+  unlockScope(scope);
+  if (previous) {
+    retireCcrConversation(previous);
+    await resetConversationWorkers(previous);
+  }
+}
+
+async function proxyRequest(req: FastifyRequest, reply: FastifyReply, format: ClientFormat, endpoint: string, caller: CallerContext, scope?: ConversationScope): Promise<void> {
+  assertScope(scope);
+  let body = scope ? scope.originalBody : (req.body && typeof req.body === "object" ? req.body : {}) as Json;
+  if (scope) {
+    await lockScope(scope);
+    const question = latestQuestion(body, format);
+    const unknownInitialHistory = !scope.row.team_id && (!scope.reliable || requestMessages(body, format).filter((m) => m?.role && !["system", "developer"].includes(m.role)).length > 1 || !!body.previous_response_id);
+    if (unknownInitialHistory && !scope.row.reset_active) scope.row = saveConversationBoundary(scope.row.id, scope.token, scope.row.generation, question.anchor, question.prefix);
+    if (scope.row.reset_active) {
+      scope.boundary = getConversationBoundary(scope.row.id, scope.row.generation, scope.branch);
+      const prepared = scope.boundary ? applyResetBoundary(body, format, { ...scope.row, reset_anchor: scope.boundary.anchor, reset_prefix: scope.boundary.prefix }) : null;
+      if (!prepared?.matched || scope.justReset) {
+        scope.boundary = saveBranchBoundary(scope.row.id, scope.token, scope.row.generation, scope.branch, question.anchor, question.prefix);
+        body = resetBody(body, format, question.message ? [question.message] : []);
+      } else body = prepared.body;
+      scope.justReset = false;
+      if (!latestQuestion(body, format).message) {
+        unlockScope(scope);
+        if (scope.responseCtx) { stopEarlyKeepalive(scope.responseCtx); stopNonStreamHeartbeat(scope.responseCtx); }
+        sendResetNotice(reply, format, scope.originalBody); return;
+      }
+    }
+    if (!reply.raw.headersSent) {
+      reply.header("x-1day-conversation-id", scope.row.id).header("x-1day-conversation-generation", String(scope.row.generation));
+      if (scope.row.reset_active) reply.header("x-1day-context-reset", "1");
+    }
+  }
+  const model = typeof body.model === "string" ? body.model.trim() : "";
+  // Admission rejections after auth are logged as zero-cost usage rows so the
+  // error log is complete (who asked for what, and why it was refused).
+  const reject = (status: number, code: string, message: string, type: Parameters<typeof sendError>[5]): void => {
+    try {
+      settleRequest({
+        requestId: crypto.randomUUID(),
+        userId: caller.userId,
+        apiKeyId: caller.apiKeyId,
+        groupId: caller.groupId,
+        rateMultiplier: caller.rateMultiplier,
+        accountId: null,
+        providerId: null,
+        payoutRate: 0,
+        model: model || "-",
+        upstreamModel: null,
+        endpoint,
+        stream: body.stream === true,
+        statusCode: status,
+        errorCode: code,
+        usage: { input_tokens: 0, output_tokens: 0 },
+        usageEstimated: false,
+        durationMs: 0,
+        clientIp: clientIp(req),
+        errorMessage: message,
+      });
+    } catch (err) {
+      console.error("[proxy] failed to log admission failure:", err);
+    }
+    sendError(reply, format, status, code, message, type);
+  };
+  // Raw passthrough group (gateway.md §4a, user rule 2026-10-26 "直接透传，不做任何判断"): no admission
+  // checks — a missing model / max_tokens or an unknown model id is the relay's call, not ours. The
+  // group's own model allowlist (an operator rule, not a judgement about the request) still applies.
+  const rawGroup = groupIsRawPassthrough(caller.groupId);
+  let upstreamBaseModel = model;
+  if (!rawGroup) {
+    if (!model) {
+      reject(400, "missing_required_parameter", "Missing required parameter: model", "invalid_request_error");
+      return;
+    }
+    if (format === "anthropic" && typeof body.max_tokens !== "number") {
+      reject(400, "missing_required_parameter", "Missing required parameter: max_tokens", "invalid_request_error");
+      return;
+    }
+    const entry = getModelEntry(model);
+    if (!entry || !entry.enabled) {
+      reject(404, "model_not_found", `Model '${model}' does not exist or is not available.`, "not_found_error");
+      return;
+    }
+    // Billing/logging keep the client's spelling; the upstream gets the canonical id (claude-opus-5.5 → claude-opus-5-5).
+    upstreamBaseModel = entry.upstreamModelId ?? model;
+  }
+  if (!isModelAllowed(caller.allowlist, model)) {
+    reject(403, "model_not_allowed", `Model '${model}' is not allowed for group '${caller.groupName}'.`, "permission_error");
+    return;
+  }
+
+  const firstResponse = !scope?.responseCtx;
+  const ctx: Ctx = scope?.responseCtx ?? {
+    req,
+    reply,
+    format,
+    endpoint,
+    caller,
+    body,
+    model,
+    stream: body.stream === true,
+    requestId: crypto.randomUUID(),
+    startedAt: Date.now(),
+    ccShape: null,
+    trace: { mode: null, nodeId: null, upstreamStatus: null, upstreamMessage: null },
+    forceCacheBilling: false,
+    clientGone: false,
+    abort: new AbortController(),
+    early: null,
+    jsonArm: null,
+    jsonEarly: null,
+    scope,
+  };
+  ctx.body = body;
+  if (scope) { scope.abort = ctx.abort; scope.responseCtx = ctx; }
+  // Attached now, not when the stream starts: a client that gives up during account selection,
+  // a slow upstream head or a failover chain used to go unnoticed, so the request ran to the end
+  // and was billed (2026-10-22: 816 requests a customer never received).
+  if (firstResponse) reply.raw.once("close", () => {
+    if (reply.raw.writableFinished) return;
+    ctx.clientGone = true;
+    stopEarlyKeepalive(ctx);
+    stopNonStreamHeartbeat(ctx);
+    ctx.abort.abort();
+  });
+
+  // Dual-mode routing (docs/ccr-supply.md §5.2): Claude Code clients are
+  // served by executor=ccr subscription accounts in DIRECT mode instead.
+  // The gate (docs/gateway.md §2a): a Claude Code UA alone is not enough — the
+  // request must be *shaped* like Claude Code, otherwise the subscription
+  // account would carry a forged, anomalous request (Anthropic answers 429).
+  // A raw passthrough group gets no shape classification either (§4a): nothing is judged, nothing logged.
+  const shape = rawGroup || !!scope?.row.reset_active ? null : classifyCcRequest(req.headers as Record<string, string | string[] | undefined>, body);
+  let ccClient = shape?.verdict === "genuine";
+  if (shape && shape.verdict !== "not_cc") {
+    ctx.ccShape = shape.verdict;
+    if (shape.verdict === "suspect") {
+      const policy = parseCcShapePolicy(getSetting("cc_shape_policy"));
+      console.warn(
+        `[cc-shape] ${ctx.requestId} key=${caller.apiKeyId} ua=${JSON.stringify(req.headers["user-agent"] ?? "")} suspect missing=${shape.missing.join(",")} soft=${shape.soft.join(",") || "-"} policy=${policy}`,
+      );
+      if (policy === "reject") {
+        fail(
+          ctx,
+          null,
+          400,
+          "cc_shape_mismatch",
+          `Request claims a Claude Code client but is not shaped like one (missing: ${shape.missing.join(", ")}). Send a genuine Claude Code request or drop the Claude Code user-agent.`,
+          "invalid_request_error",
+        );
+        return;
+      }
+      // observe: keep today's behaviour (direct path) but record the verdict.
+      // downgrade: treat as a non-CC client → ccr / worker path, never the subscription direct path.
+      ccClient = policy === "observe";
+    } else if (shape.soft.length > 0) {
+      // Genuine but drifting from the canonical build: surfaces CC upgrades early.
+      console.info(`[cc-shape] ${ctx.requestId} genuine v${shape.version} soft=${shape.soft.join(",")}`);
+    }
+  }
+
+  let all = listCandidates(caller.groupId, model);
+  let usable = all.filter((a) => modeFor(format, a, ccClient) !== null);
+  if (scope) {
+    // A generation has exactly one verified upstream organization. Non-subscription relays
+    // cannot silently become a fallback for a subscription conversation.
+    const teams = usable.filter((a) => !!accountTeamId(a));
+    if (!scope.row.team_id && teams.length) scope.row = bindConversationTeam(scope.row.id, scope.token, scope.row.generation, accountTeamId(teams[0])!);
+    const current = scope.row.team_id;
+    if (current) scope.triedTeams.add(current);
+    all = all.filter((a) => current ? accountTeamId(a) === current : a.type !== "oauth");
+    usable = all.filter((a) => modeFor(format, a, ccClient) !== null);
+    if (current && usable.length === 0) {
+      const next = teams.find((a) => !scope.triedTeams.has(accountTeamId(a)!));
+      if (next) { await switchTeam(scope, accountTeamId(next)!, format, "team_pool_exhausted"); return proxyRequest(req, reply, format, endpoint, caller, scope); }
+    }
+  }
+  unlockScope(scope);
+  // "No account" must say why when the reason is upstream: an organization-level
+  // model suspension (403 "suspended for this organization until …") takes whole
+  // orgs out at once (2026-10-20: 96 accounts for an hour) — the client should
+  // read that it is Anthropic's limit with a lift time, not a dead platform.
+  const failNoAccount = (): void => {
+    const susp = scope ? { accounts: 0, liftsAt: null } : modelSuspensionSummary(caller.groupId, upstreamBaseModel);
+    if (susp.accounts > 0) {
+      const lifts = susp.liftsAt ? ` The earliest suspension lifts at ${susp.liftsAt}.` : "";
+      fail(
+        ctx,
+        null,
+        503,
+        "upstream_model_suspended",
+        `Anthropic has temporarily suspended '${upstreamBaseModel}' for the organizations behind ${susp.accounts} of our subscription accounts (upstream 403 "model is suspended for this organization"), and no other account is free right now.${lifts} Retry later or use another model; this is an upstream limit, not a platform outage.`,
+        "upstream_error",
+      );
+      return;
+    }
+    fail(ctx, null, 503, "no_available_account", `No upstream account is currently available for '${model}'.`, "upstream_error");
+  };
+  if (usable.length === 0) {
+    if (all.length > 0) {
+      fail(ctx, null, 400, "unsupported_endpoint", `No account in this group serves '${model}' through ${endpoint}.`, "invalid_request_error");
+    } else {
+      failNoAccount();
+    }
+    return;
+  }
+
+  const isolation = scopeContext(scope);
+  const namespace = isolation ? `team:${isolation.teamId}:conversation:${isolation.conversationId}:generation:${isolation.generation}:branch:${scope!.branch}:${scope!.boundary?.nonce ?? "original"}` : null;
+  const hash = namespace ? sha256Hex(namespace) : null;
+  const upstreamSession = hash ? `${hash.slice(0, 8)}-${hash.slice(8, 12)}-${hash.slice(12, 16)}-${hash.slice(16, 20)}-${hash.slice(20, 32)}` : undefined;
+  const upstreamHeaders = { ...req.headers };
+  if (upstreamSession) {
+    for (const key of Object.keys(upstreamHeaders)) if (/^(?:x-(?:1day-)?conversation-|x-(?:claude-code-|claude-)?session-id$|session_id$)/i.test(key)) delete upstreamHeaders[key];
+    upstreamHeaders["x-claude-code-session-id"] = upstreamSession;
+    if (format !== "responses") {
+      body = { ...body, metadata: { user_id: JSON.stringify({ session_id: upstreamSession }) } };
+      ctx.body = body;
+    }
+  }
+  const sKey = namespace ? `${namespace}:model:${model}` : stickyKey(caller, body, req);
+  // §5.3 污染防护: pool reuse requires the strongest conversation identity —
+  // metadata.user_id's session_id only; weaker fingerprints stay stateless.
+  // A content fingerprint can fence history but cannot identify a particular caller's
+  // live cloud session. Unidentified calls must remain one-shot and be archived.
+  const ccrPoolKey = scope ? (scope.reliable ? namespace : null) : sessionIdFromMetadata(body.metadata?.user_id);
+  // Soft 429 cooldown (core listCandidates): accounts inside a plain Retry-After
+  // cooldown stay last, even when the sticky session points at one of them.
+  const rawDeviceKey = deviceKey(caller, scope?.originalBody ?? body);
+  const dKey = namespace && rawDeviceKey ? `${namespace}:${rawDeviceKey}` : rawDeviceKey;
+  const ordered = [...orderByAffinity(usable.filter((a) => !a.cooling), sKey, dKey), ...usable.filter((a) => a.cooling)];
+  let attempts = 0;
+  let lastStatus = 0;
+  /** The node refused the request itself (spec_too_large …): answered once, no further candidates. */
+  let requestError: TunnelRequestError | null = null;
+  let lastMessage = "";
+  let lastAccount: AccountRow | null = null;
+  // CCR capability check is per request, not per account (docs/ccr-supply.md §6).
+  let ccrBody: Json | null = null;
+  let ccrUnsupported: CcrUnsupported | null = null;
+  const ccrRequest = (): Json => {
+    if (!ccrBody) ccrBody = format === "openai-chat" ? openaiChatToAnthropic(body, model) : body;
+    return ccrBody;
+  };
+
+  for (const account of ordered) {
+    if (!scope && attempts >= config.maxAttempts) break;
+    assertScope(scope);
+    if (ctx.clientGone) {
+      logFailure(ctx, lastAccount, 499, "client_closed", "Client closed the connection before an upstream answer");
+      return;
+    }
+    // Bound proxy down (docs/onboarding.md §6.1): skip without counting a
+    // failure; the account rejoins scheduling when the proxy recovers.
+    if (boundProxyDown(account)) continue;
+    const mode0 = modeFor(format, account, ccClient)!;
+    if (isCcrMode(mode0)) {
+      ccrUnsupported = ccrUnsupportedReason(ccrRequest(), { images: account.executor === "ccr_worker", documents: account.executor === "ccr_worker", toolChoice: account.executor === "ccr_worker" });
+      if (ccrUnsupported) continue; // this request can never run on a cloud session; try other accounts
+    }
+    if (!acquire(account)) continue;
+    if (account.cooling) {
+      console.warn(`[proxy] ${ctx.requestId} account ${account.name} is 429-cooling until ${account.rate_limited_until}; no other candidate, trying anyway`);
+    }
+    lastAccount = account;
+    let released = false;
+    const done = () => {
+      if (!released) {
+        released = true;
+        release(account.id);
+      }
+    };
+    try {
+      const mode = modeFor(format, account, ccClient)!;
+      ctx.trace.mode = mode;
+      ctx.trace.nodeId = account.node_id;
+      ctx.trace.upstreamStatus = null;
+      ctx.trace.upstreamMessage = null;
+      // Raw passthrough relay on a same-protocol request (§4a): the client's model spelling travels as-is
+      // (no canonical id, no account model mapping), upstream errors come back verbatim, no cooldown.
+      const raw = account.raw_passthrough === 1 && mode.startsWith("passthrough-");
+      const upstreamModel = raw ? model : upstreamModelFor(account, upstreamBaseModel);
+      let refreshed = false;
+      for (;;) {
+        if (ctx.clientGone) {
+          logFailure(ctx, account, 499, "client_closed", "Client closed the connection before an upstream answer");
+          return;
+        }
+        beginEarlyStream(ctx);
+        // Multipart tee-proof answers cannot start before the body is in; everything else may.
+        if (teeProofRequested(req) !== "multipart") armNonStreamHeartbeat(ctx);
+        let cred;
+        try {
+          cred = await freshCredential(account, refreshed, isolation);
+        } catch (err) {
+          markFailure(account.id, { kind: "auth", message: `credential unreadable: ${(err as Error).message}` });
+          break;
+        }
+        let res: Response | null;
+        let upstreamHost: string;
+        try {
+          if (isCcrMode(mode)) {
+            // Cloud session / on-node worker: the executor returns an
+            // Anthropic-wire Response (JSON or SSE).
+            const ccrReq = { ...ccrRequest(), model: upstreamModel };
+            upstreamHost = new URL(accountBaseUrl(account) ?? "https://api.anthropic.com").host;
+            if (account.executor === "ccr_worker") {
+              // Worker mode (docs/ccr-supply.md §8.1): real Claude Code on the node.
+              res = await runCcrWorker({
+                account,
+                cred,
+                body: ccrReq,
+                clientModel: model,
+                upstreamModel,
+                stream: ctx.stream,
+                requestId: ctx.requestId,
+                stickyKey: sKey,
+                isolation,
+              });
+              if (!res) break; // no worker-capable node accepted: infra state, try next account without counting
+            } else {
+              res = await runCcr({
+                account,
+                cred,
+                body: ccrReq,
+                clientModel: model,
+                upstreamModel,
+                stream: ctx.stream,
+                requestId: ctx.requestId,
+                clientHeaders: upstreamHeaders,
+                stickyKey: ccrPoolKey ? `s:${caller.apiKeyId}:${ccrPoolKey}` : null,
+                isolation,
+              });
+            }
+          } else {
+            const ureq = buildUpstreamRequest(account, cred, mode, body, upstreamModel, upstreamHeaders, req.url.includes("?") ? req.url.slice(req.url.indexOf("?")) : "", upstreamSession);
+            if (!ureq) {
+              markFailure(account.id, { kind: "auth", message: "account has no base URL" });
+              break;
+            }
+            upstreamHost = ureq.url.host;
+            if (account.route === "node") {
+              // Bound proxy (docs/onboarding.md §1/§6.2): all platform-side
+              // requests of a bound account egress on that proxy.
+              res = await fetchViaTunnel(account.id, ureq.url, ureq.headers, ureq.body, account.bound_proxy_id ?? undefined, undefined, isolation);
+              if (!res) break; // no online node: infra state, try next account without counting
+            } else {
+              // 原生 http 而非 fetch：避免 undici 强加 accept-language/sec-fetch-mode。
+              res = await postRaw(ureq.url, ureq.headers, ureq.body, config.upstreamTimeoutMs);
+            }
+          }
+        } catch (err) {
+          if (err instanceof TunnelRequestError) {
+            // Not this account's fault and no other account can take it either.
+            requestError = err;
+            ctx.trace.upstreamMessage = `node: ${err.nodeCode}`;
+            break;
+          }
+          attempts++;
+          lastStatus = 502;
+          lastMessage = (err as Error).message;
+          ctx.trace.upstreamStatus = null;
+          ctx.trace.upstreamMessage = `network: ${lastMessage}`.slice(0, 500);
+          console.warn(`[proxy] ${ctx.requestId} account ${account.name}: network error ${lastMessage}`);
+          if (raw) {
+            // Raw passthrough: no cooldown, no failover — answer once.
+            fail(ctx, account, 502, "upstream_error", `Upstream unreachable (${lastMessage}).`, "upstream_error");
+            return;
+          }
+          markFailure(account.id, { kind: "transient", message: `network: ${lastMessage}` });
+          break;
+        }
+
+        if (res.ok) {
+          assertScope(scope);
+          touchAccount(account.id);
+          const prev = sKey ? getSticky(sKey) : undefined;
+          if (prev && prev.accountId !== account.id) {
+            ctx.forceCacheBilling = true;
+            console.log(`[proxy] ${ctx.requestId} sticky session moved off its account to ${account.name}: billing input at cache-read price (sub2api ForceCacheBilling)`);
+          }
+          rememberSticky(sKey, account.id);
+          rememberDevice(dKey, account.id);
+          sampleWindow(account, res.headers);
+          console.log(`[proxy] ${ctx.requestId} ${endpoint} ${model} -> ${account.name} (${account.route}/${mode}) headers +${((Date.now() - ctx.startedAt) / 1000).toFixed(1)}s`);
+          await deliver(ctx, res, account, wireModeFor(mode), upstreamModel, upstreamHost, done, isCcrMode(mode));
+          return;
+        }
+
+        const status = res.status;
+        const text = (await res.text().catch(() => "")).slice(0, 4000);
+        attempts++;
+        lastStatus = status;
+        lastMessage = text;
+        ctx.trace.upstreamStatus = status;
+        ctx.trace.upstreamMessage = text.replace(/\s+/g, " ").slice(0, 500);
+        // Body excerpt makes shape-caused 4xx diagnosable (e.g. an OAuth account answers 429
+        // to a Claude Code UA request that lacks the billing system block, docs/claude-code-compat.md §5).
+        console.warn(`[proxy] ${ctx.requestId} account ${account.name} -> HTTP ${status} ${text.replace(/\s+/g, " ").slice(0, 240)}`);
+
+        if (raw) {
+          // Raw passthrough (§4a): every upstream status and body goes back verbatim — 429 and 5xx included —
+          // with no account marking and no failover; the relay's own scheduling is the only one that applies.
+          passUpstreamError(ctx, account, wireModeFor(mode), status, text, res.headers.get("retry-after"));
+          return;
+        }
+        const reqErr = isCcrMode(mode) ? classifyCcRequestError(text) : null;
+        if (reqErr) {
+          // Context overflow / safety-classifier refusal inside Claude Code: the request is the problem.
+          // 400 with Claude Code's own sentence (clients auto-compact on "prompt is too long"), no failover/cooldown.
+          console.warn(`[proxy] ${ctx.requestId} ${reqErr.code} on Claude Code (${account.name}): 400 to client, no failover/cooldown`);
+          fail(ctx, account, 400, reqErr.code, reqErr.message, "invalid_request_error");
+          return;
+        }
+        if (isCcrMode(mode) && isCcModelUnavailable(text)) {
+          // Claude Code reports a retired / unlicensed model as an is_error result,
+          // which the worker tunnel surfaces as a 502 body. The consumer's request is
+          // the problem, not the account: 404 now, no failover, no cooldown (gateway.md §3).
+          console.warn(`[proxy] ${ctx.requestId} model ${upstreamModel} unavailable on Claude Code (${account.name}): 404 to client, no failover/cooldown`);
+          fail(ctx, account, 404, "model_not_found", `Model '${model}' is not available on the subscription path (Claude Code: model may not exist or the account has no access).`, "not_found_error");
+          return;
+        }
+        if (PASSTHROUGH_STATUSES.has(status) && !isCcrMode(mode)) {
+          passUpstreamError(ctx, account, wireModeFor(mode), status, text);
+          return;
+        }
+        if (PASSTHROUGH_STATUSES.has(status)) {
+          // Cloud session / environment API rejected the call: the account's
+          // CCR state is bad (stale environment, unsupported config), never the
+          // consumer's request. Cool it and fail over; never echo the session-API body.
+          markCcrFailure(ctx, account, `ccr ${status}: ${text.slice(0, 300)}`);
+          break;
+        }
+        // Per-model org suspension (403, time-boxed): cool that model only and let the
+        // next account (another org) serve; never treat it as a dead credential.
+        const suspended = status === 403 ? parseModelSuspension(text) : null;
+        if (suspended) {
+          markFailure(account.id, { kind: "model_suspended", model: suspended.model, until: suspended.until });
+          console.warn(`[proxy] ${ctx.requestId} account ${account.name}: model ${suspended.model} suspended for its organization until ${suspended.until} → model cooldown, trying next account`);
+          break;
+        }
+        if ((status === 401 || status === 403) && !refreshed && canRefresh(account)) {
+          refreshed = true;
+          continue; // retry once with a forced token refresh
+        }
+        if (status === 401 || status === 403) {
+          markFailure(account.id, { kind: "auth", message: `upstream ${status}: ${text.slice(0, 300)}` });
+        } else if (status === 402) {
+          markFailure(account.id, { kind: "payment" });
+        } else if (status === 429) {
+          const now429 = nowIso();
+          const snap429 = sampleWindow(account, res.headers);
+          // Fable-only 7d window (7d_oi) or "credits_required": limits just the Fable
+          // family — cool that scope, the account keeps serving other models.
+          const fab = fableRejectedWindow(snap429, now429);
+          const credits = isCreditsRequired(text);
+          // Anthropic names the exhausted 5h/7d window: cool until it resets instead of Retry-After's seconds.
+          const rej = rejectedWindow(snap429, now429);
+          if ((fab || credits) && modelScope(upstreamModel) === "fable") {
+            const resetAt = fab?.resetAt ?? snap429?.resetAt ?? new Date(Date.now() + 86_400_000).toISOString().slice(0, 19) + "Z";
+            markFailure(account.id, { kind: "model_window_rejected", scope: "fable", resetAt, reason: credits ? "credits_required (429)" : "7d_oi rejected (429)" });
+          } else if (rej) {
+            markFailure(account.id, { kind: "window_rejected", window: rej.window, resetAt: rej.resetAt });
+          } else {
+            const ra = Number(res.headers.get("retry-after"));
+            markFailure(account.id, { kind: "rate_limited", retryAfterSec: Number.isFinite(ra) && ra > 0 ? ra : undefined });
+          }
+        } else if (status === 529 || status === 503) {
+          markFailure(account.id, { kind: "overloaded" });
+        } else {
+          markFailure(account.id, { kind: "transient", message: `upstream ${status}` });
+        }
+        break;
+      }
+    } finally {
+      done();
+    }
+  }
+
+  // Every account in this generation was tried before changing organizations. The new
+  // generation receives a rebuilt body, never the failed generation's full transcript.
+  if (scope?.row.team_id && !requestError && !ctx.clientGone && !ccrUnsupported) {
+    const next = listCandidates(caller.groupId, model).find((a) => accountTeamId(a) && !scope.triedTeams.has(accountTeamId(a)!) && modeFor(format, a, ccClient) !== null);
+    if (next) {
+      // Heartbeats may have committed HTTP headers, but no model output was delivered.
+      // Reuse the existing response state rather than opening a second SSE response.
+      await switchTeam(scope, accountTeamId(next)!, format, "team_pool_exhausted");
+      return proxyRequest(req, reply, format, endpoint, caller, scope);
+    }
+  }
+
+  if (requestError) {
+    const tooLarge = requestError.nodeCode === "spec_too_large";
+    // Node-side codes (spec_too_large, bad_spec …) name the node; platform-side ones (console_*, empty_prompt) carry their own text.
+    const fromNode = !requestError.nodeCode.startsWith("console_") && requestError.nodeCode !== "empty_prompt";
+    fail(
+      ctx,
+      lastAccount,
+      tooLarge ? 413 : 400,
+      tooLarge ? "request_too_large" : "invalid_request",
+      tooLarge ? `Request body is too large for the node egress path (${requestError.message}); Anthropic's own limit is 32 MB.` : fromNode ? `The node rejected the request: ${requestError.message}` : requestError.message,
+      "invalid_request_error",
+    );
+  } else if (lastStatus === 429) {
+    fail(ctx, lastAccount, 429, "upstream_rate_limited", "All upstream accounts are rate limited. Retry later.", "rate_limit_error");
+  } else if (attempts === 0 && ccrUnsupported) {
+    fail(ctx, null, 400, ccrUnsupported.code, ccrUnsupported.message, "invalid_request_error");
+  } else if (attempts === 0) {
+    failNoAccount();
+  } else {
+    fail(ctx, lastAccount, 502, "upstream_error", `Upstream request failed (last status ${lastStatus || "network"}).`, "upstream_error");
+  }
+}
+
+// ---------- failure paths ----------
+
+/**
+ * A CCR executor failure: Claude Code's own limit text ("You've hit your
+ * session limit · resets 8:50am (Europe/Berlin)") is the worker path's 429 —
+ * no unified headers ever reach us there — so it pauses the account until the
+ * quoted reset (core window_exhausted; 1h fallback when unparseable) instead of
+ * the generic transient cooldown, which let one exhausted account be re-picked
+ * every few seconds (2026-10-17, mirasim: 6 × 502 + 10 × 503 in 3 minutes).
+ */
+const authFailures = new AuthFailureTracker();
+
+function markCcrFailure(ctx: Ctx, account: AccountRow, message: string): void {
+  const limit = ccLimitReset(message);
+  if (limit) {
+    markFailure(account.id, { kind: "window_exhausted", resetAt: limit.resetAt });
+    console.warn(`[proxy] ${ctx.requestId} account ${account.name}: cc ${limit.window} limit → window_exhausted until ${limit.resetAt ?? "(fallback 1h)"}`);
+    return;
+  }
+  const suspended = parseModelSuspension(message);
+  if (suspended) {
+    markFailure(account.id, { kind: "model_suspended", model: suspended.model, until: suspended.until });
+    console.warn(`[proxy] ${ctx.requestId} account ${account.name}: model ${suspended.model} suspended for its organization until ${suspended.until} → model cooldown`);
+    return;
+  }
+  const reqErr = classifyCcRequestError(message);
+  if (isCcModelUnavailable(message) || reqErr) {
+    console.warn(`[proxy] ${ctx.requestId} account ${account.name}: ${reqErr ? reqErr.code : "model unavailable"} on Claude Code — request problem, account not cooled`);
+    return;
+  }
+  if (isCcAccountOnHold(message)) {
+    // Account put on hold by Anthropic (claude.ai/restricted): unusable at once, no threshold (user rule 2026-10-20).
+    markFailure(account.id, { kind: "auth", message: `account on hold: ${message.slice(0, 400)}` });
+    console.error(`[proxy] ${ctx.requestId} account ${account.name}: account on hold → status error (${message.slice(0, 160)})`);
+    return;
+  }
+  if (isCcAuthFailure(message)) {
+    // Claude Code's "Failed to authenticate …" is the worker path's 401: one hit
+    // may be a refresh race (2026-10-17), repeated hits mean the OAuth session is gone.
+    const hit = authFailures.record(account.id);
+    if (hit.escalate) {
+      markFailure(account.id, { kind: "auth", message: `cc auth failure ×${hit.count}: ${message.slice(0, 400)}` });
+      console.error(`[proxy] ${ctx.requestId} account ${account.name}: cc auth failure ×${hit.count} → status error (${message.slice(0, 160)})`);
+    } else {
+      markFailure(account.id, { kind: "transient", message, cooldownMs: AUTH_FAILURE_COOLDOWN_MS });
+      console.warn(`[proxy] ${ctx.requestId} account ${account.name}: cc auth failure ×${hit.count} → cooldown ${AUTH_FAILURE_COOLDOWN_MS / 1000}s (${message.slice(0, 160)})`);
+    }
+    return;
+  }
+  markFailure(account.id, { kind: "transient", message });
+}
+
+function logFailure(ctx: Ctx, account: AccountRow | null, status: number, code: string, message?: string): void {
+  try {
+    const up = ctx.trace.upstreamMessage ? `upstream ${ctx.trace.upstreamStatus ?? "-"}: ${ctx.trace.upstreamMessage}` : null;
+    const errorMessage = [message, up].filter(Boolean).join(" | ") || null;
+    settleRequest({
+      requestId: ctx.requestId,
+      userId: ctx.caller.userId,
+      apiKeyId: ctx.caller.apiKeyId,
+      groupId: ctx.caller.groupId,
+      rateMultiplier: ctx.caller.rateMultiplier,
+      accountId: account?.id ?? null,
+      providerId: null,
+      payoutRate: 0,
+      model: ctx.model,
+      upstreamModel: null,
+      endpoint: ctx.endpoint,
+      stream: ctx.stream,
+      statusCode: status,
+      errorCode: code,
+      usage: { input_tokens: 0, output_tokens: 0 },
+      usageEstimated: false,
+      durationMs: Date.now() - ctx.startedAt,
+      clientIp: clientIp(ctx.req),
+      ccShape: ctx.ccShape,
+      errorMessage,
+      mode: ctx.trace.mode,
+      upstreamStatus: ctx.trace.upstreamStatus,
+      nodeId: account?.node_id ?? ctx.trace.nodeId,
+    });
+  } catch (err) {
+    console.error("[proxy] failed to log failed request:", err);
+  }
+}
+
+function fail(
+  ctx: Ctx,
+  account: AccountRow | null,
+  status: number,
+  code: string,
+  message: string,
+  type: Parameters<typeof sendError>[5],
+): void {
+  logFailure(ctx, account, status, code, message);
+  if (ctx.early) {
+    endEarlyStreamWithError(ctx, code, message, type);
+    return;
+  }
+  if (ctx.jsonEarly) {
+    endEarlyJsonWithError(ctx, status, code, message, type);
+    return;
+  }
+  stopNonStreamHeartbeat(ctx);
+  sendError(ctx.reply, ctx.format, status, code, message, type);
+}
+
+/**
+ * Hand an upstream error back to the client: same dialect → status + body verbatim; otherwise the
+ * upstream message wrapped in the client's dialect. 4xx (400/404/413/422) on the normal path; every
+ * status on a raw passthrough relay (§4a), where `retryAfter` is relayed too.
+ */
+function passUpstreamError(ctx: Ctx, account: AccountRow, mode: Mode, status: number, text: string, retryAfter: string | null = null): void {
+  const code = status === 429 ? "upstream_rate_limited" : status >= 500 ? "upstream_error" : "upstream_client_error";
+  const type: Parameters<typeof sendError>[5] = status === 429 ? "rate_limit_error" : status >= 500 ? "upstream_error" : "invalid_request_error";
+  logFailure(ctx, account, status, code, `Upstream returned ${status} (passed through)`);
+  const sameDialect = mode.startsWith("passthrough");
+  if (ctx.early) {
+    let m = text;
+    try {
+      const j = JSON.parse(text) as Json;
+      m = String(j.error?.message ?? j.message ?? text);
+    } catch {
+      /* keep raw text */
+    }
+    endEarlyStreamWithError(ctx, code, m || `Upstream returned ${status}`, type);
+    return;
+  }
+  if (ctx.jsonEarly) {
+    let m = text;
+    try {
+      const j = JSON.parse(text) as Json;
+      m = String(j.error?.message ?? j.message ?? text);
+    } catch {
+      /* keep raw text */
+    }
+    endEarlyJsonWithError(ctx, status, code, m || `Upstream returned ${status}`, type, sameDialect && text ? text : undefined);
+    return;
+  }
+  stopNonStreamHeartbeat(ctx);
+  if (retryAfter) ctx.reply.header("retry-after", retryAfter);
+  if (sameDialect && text) {
+    ctx.reply.status(status).header("content-type", "application/json").send(text);
+    return;
+  }
+  let message = text;
+  try {
+    const j = JSON.parse(text) as Json;
+    message = j.error?.message ?? j.message ?? text;
+  } catch {
+    /* keep raw text */
+  }
+  ctx.reply
+    .status(status)
+    .header("content-type", "application/json")
+    .send(errorBody(ctx.format, code, String(message || `Upstream returned ${status}`), type));
+}
+
+// ---------- success paths ----------
+
+function settleSuccess(
+  ctx: Ctx,
+  account: AccountRow,
+  upstreamModel: string,
+  acc: UsageAccumulator,
+  firstTokenMs: number | null,
+  /**
+   * Unused since 2026-10-16: CCR rows carry the upstream meter minus the identity
+   * baseline (docs/ccr-supply.md §7.1); `usage_estimated` now means only "upstream
+   * reported no usage, tokens are chars/4". Kept so call sites stay unchanged.
+   */
+  _ccrExecuted = false,
+): void {
+  try {
+    const { usage, estimated } = acc.finalize(ctx.body);
+    if (ctx.forceCacheBilling && usage.input_tokens > 0) {
+      usage.cache_read_tokens = (usage.cache_read_tokens ?? 0) + usage.input_tokens;
+      usage.input_tokens = 0;
+    }
+    settleRequest({
+      requestId: ctx.requestId,
+      userId: ctx.caller.userId,
+      apiKeyId: ctx.caller.apiKeyId,
+      groupId: ctx.caller.groupId,
+      rateMultiplier: ctx.caller.rateMultiplier,
+      accountId: account.id,
+      providerId: account.owner_id,
+      payoutRate: account.owner_id ? account.payout_rate : 0,
+      model: ctx.model,
+      upstreamModel,
+      endpoint: ctx.endpoint,
+      stream: ctx.stream,
+      statusCode: 200,
+      usage,
+      usageEstimated: estimated,
+      durationMs: Date.now() - ctx.startedAt,
+      firstTokenMs,
+      clientIp: clientIp(ctx.req),
+      ccShape: ctx.ccShape,
+      mode: ctx.trace.mode,
+      nodeId: account.node_id,
+      accountSwitched: ctx.forceCacheBilling,
+    });
+  } catch (err) {
+    console.error(`[billing] settle failed for ${ctx.requestId}:`, err);
+  }
+}
+
+function upstreamWire(mode: Mode): "anthropic" | "chat" | "responses" {
+  if (mode === "passthrough-anthropic" || mode === "chat-via-anthropic") return "anthropic";
+  if (mode === "passthrough-responses") return "responses";
+  return "chat";
+}
+
+async function deliver(
+  ctx: Ctx,
+  res: Response,
+  account: AccountRow,
+  mode: Mode,
+  upstreamModel: string,
+  upstreamHost: string,
+  done: () => void,
+  ccrExecuted = false,
+): Promise<void> {
+  const contentType = res.headers.get("content-type") ?? "";
+  if (ctx.stream && contentType.includes("text/event-stream")) {
+    await deliverStream(ctx, res, account, mode, upstreamModel, upstreamHost, done, ccrExecuted);
+    return;
+  }
+  if (ctx.early) {
+    // Headers already went out as SSE but upstream answered a plain body: nothing sensible to stream.
+    done();
+    res.body?.cancel().catch(() => {});
+    console.warn(`[proxy] ${ctx.requestId} account ${account.name}: non-SSE upstream body (${contentType || "no content-type"}) on a streaming request`);
+    fail(ctx, account, 502, "upstream_error", "Upstream answered a streaming request with a non-streaming body.", "upstream_error");
+    return;
+  }
+
+  const acc = new UsageAccumulator();
+  let raw: Buffer;
+  // The client hung up while upstream was still generating: stop the generation (a worker
+  // stream's cancel kills the remote process) instead of running it to the end unheard.
+  const onAbort = () => res.body?.cancel().catch(() => {});
+  if (ctx.clientGone) onAbort();
+  else ctx.abort.signal.addEventListener("abort", onAbort, { once: true });
+  try {
+    raw = Buffer.from(await res.arrayBuffer());
+  } catch (err) {
+    done();
+    ctx.abort.signal.removeEventListener("abort", onAbort);
+    if (ctx.clientGone) {
+      console.warn(`[proxy] ${ctx.requestId} account ${account.name}: client closed before the upstream body arrived; cancelled, not billed`);
+      logFailure(ctx, account, 499, "client_closed", "Client closed the connection before the response was complete");
+      return;
+    }
+    // Tunnel closed by the node, socket reset, truncated compressed body…:
+    // the account answered 200 but we never got the message. Log a failure
+    // row (no charge), cool the account briefly, answer 502.
+    const message = (err as Error).message;
+    console.warn(`[proxy] ${ctx.requestId} account ${account.name}: body read failed: ${message}`);
+    if (account.raw_passthrough !== 1) markFailure(account.id, { kind: "transient", message: `body read: ${message}` });
+    fail(ctx, account, 502, "upstream_error", `Upstream response could not be read (${message}).`, "upstream_error");
+    return;
+  }
+  done();
+  ctx.abort.signal.removeEventListener("abort", onAbort);
+  if (ctx.clientGone) {
+    // Complete upstream answer, nobody to give it to. The account did the work, but the
+    // customer never saw it (Cloudflare 524 at 125 s on long non-stream generations, 2026-10-22).
+    console.warn(`[proxy] ${ctx.requestId} account ${account.name}: client closed before the response was sent; not billed`);
+    logFailure(ctx, account, 499, "client_closed", "Client closed the connection before the response was complete");
+    return;
+  }
+  let out: Buffer = raw;
+  try {
+    const json = JSON.parse(raw.toString("utf8")) as Json;
+    const wire = upstreamWire(mode);
+    if (wire === "anthropic") acc.addAnthropic(json.usage);
+    else if (wire === "chat") acc.addOpenaiChat(json.usage);
+    else acc.addResponses(json.usage);
+    acc.addText(collectText(json));
+    let transformed: Json = json;
+    if (mode === "chat-via-anthropic") transformed = anthropicMessageToOpenai(json, ctx.model);
+    else if (mode === "anthropic-via-chat") transformed = openaiChatToAnthropicMessage(json, ctx.model);
+    else if (upstreamModel !== ctx.model && typeof json.model === "string") transformed = { ...json, model: ctx.model };
+    if (transformed !== json) out = Buffer.from(JSON.stringify(transformed), "utf8");
+  } catch {
+    /* non-JSON body: pass through untouched */
+  }
+  assertScope(ctx.scope);
+  settleSuccess(ctx, account, upstreamModel, acc, null, ccrExecuted);
+
+  if (ctx.jsonEarly) {
+    // 200 + headers went out during the wait (heartbeat.ts): the body follows the padding.
+    endEarlyJson(ctx, out);
+    return;
+  }
+  stopNonStreamHeartbeat(ctx);
+  if (teeProofRequested(ctx.req) === "multipart") {
+    const boundary = `1dayapi-${crypto.randomBytes(12).toString("hex")}`;
+    const proof = JSON.stringify(makeTeeProof(upstreamHost, out));
+    ctx.reply
+      .status(200)
+      .header("content-type", `multipart/mixed; boundary=${boundary}`)
+      .send(
+        Buffer.concat([
+          Buffer.from(`--${boundary}\r\ncontent-type: application/json\r\n\r\n`),
+          out,
+          Buffer.from(
+            `\r\n--${boundary}\r\ncontent-type: application/json\r\nx-1dayapi-part: tee.proof\r\n\r\n${proof}\r\n--${boundary}--\r\n`,
+          ),
+        ]),
+      );
+    return;
+  }
+  ctx.reply.status(200).header("content-type", "application/json").send(out);
+}
+
+interface SseEvent {
+  raw: string;
+  event: string | null;
+  data: string;
+}
+
+function parseSseEvent(raw: string): SseEvent {
+  let event: string | null = null;
+  const data: string[] = [];
+  for (const line of raw.split(/\r?\n/)) {
+    if (line.startsWith("event:")) event = line.slice(6).trim();
+    else if (line.startsWith("data:")) data.push(line.slice(5).replace(/^ /, ""));
+  }
+  return { raw, event, data: data.join("\n") };
+}
+
+async function deliverStream(
+  ctx: Ctx,
+  res: Response,
+  account: AccountRow,
+  mode: Mode,
+  upstreamModel: string,
+  upstreamHost: string,
+  done: () => void,
+  ccrExecuted = false,
+): Promise<void> {
+  const { reply } = ctx;
+  if (!ctx.early) {
+    reply.hijack();
+    reply.raw.writeHead(200, {
+      ...CORS_HEADERS,
+      ...conversationResponseHeaders(reply),
+      "content-type": "text/event-stream; charset=utf-8",
+      "cache-control": "no-cache",
+      connection: "keep-alive",
+      "x-accel-buffering": "no",
+    });
+  }
+
+  const acc = new UsageAccumulator();
+  const forwarded: Buffer[] = [];
+  const wantProof = !!teeProofRequested(ctx.req);
+  let firstTokenMs: number | null = null;
+  let clientGone = ctx.clientGone;
+  /** Upstream signalled failure inside the 200 stream (Anthropic `error` event, OpenAI `{error}` chunk, CCR executor error). */
+  let streamError: string | null = null;
+  /** The upstream stream reached its normal terminator (message_stop / [DONE] / response.completed). */
+  let completed = false;
+  let reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
+  const onGone = () => {
+    clientGone = true;
+    // Stop reading upstream right away so the account's concurrency slot is
+    // not held by a stream nobody is listening to.
+    reader?.cancel().catch(() => {});
+  };
+  if (clientGone) onGone();
+  else ctx.abort.signal.addEventListener("abort", onGone, { once: true });
+
+  const write = (s: string) => {
+    if (!s || clientGone) return;
+    if (ctx.scope?.row.team_id && !isConversationGenerationActive(ctx.scope.row.id, ctx.scope.row.team_id, ctx.scope.row.generation)) {
+      const notice = ctx.format === "anthropic" ? `event: error\ndata: ${JSON.stringify({ type: "error", error: { type: "api_error", message: RESET_NOTICE, code: "context_reset" } })}\n\n` : `data: ${JSON.stringify({ error: { message: RESET_NOTICE, code: "context_reset" } })}\n\n`;
+      reply.raw.end(notice); clientGone = true; reader?.cancel().catch(() => {}); return;
+    }
+    if (firstTokenMs === null) {
+      firstTokenMs = Date.now() - ctx.startedAt;
+      stopEarlyKeepalive(ctx);
+    }
+    const b = Buffer.from(s, "utf8");
+    if (wantProof) forwarded.push(b);
+    reply.raw.write(b);
+  };
+
+  const clientWantsUsage = ctx.body.stream_options?.include_usage === true;
+  const toOpenai = mode === "chat-via-anthropic" ? new AnthropicToOpenaiStream(ctx.model, clientWantsUsage) : null;
+  const toAnthropic = mode === "anthropic-via-chat" ? new OpenaiToAnthropicStream(ctx.model) : null;
+  const rewriteModel = upstreamModel !== ctx.model;
+
+  const handle = (ev: SseEvent) => {
+    if (!ev.data) {
+      if (!toOpenai && !toAnthropic) write(`${ev.raw}\n\n`);
+      return;
+    }
+    if (ev.data === "[DONE]") {
+      completed = true;
+      if (mode === "passthrough-openai") write("data: [DONE]\n\n");
+      return; // converters emit their own terminators
+    }
+    let j: Json | null = null;
+    try {
+      j = JSON.parse(ev.data) as Json;
+    } catch {
+      j = null;
+    }
+    switch (mode) {
+      case "passthrough-anthropic":
+      case "chat-via-anthropic": {
+        if (j) {
+          if (j.type === "message_start") acc.addAnthropic(j.message?.usage);
+          else if (j.type === "message_delta") acc.addAnthropic(j.usage);
+          else if (j.type === "content_block_delta") acc.addText(j.delta?.text ?? j.delta?.partial_json);
+          else if (j.type === "message_stop") completed = true;
+          else if (j.type === "error" || ev.event === "error") streamError = String(j.error?.message ?? j.message ?? "upstream error");
+        }
+        if (toOpenai) {
+          if (j) for (const s of toOpenai.push(j)) write(s);
+        } else if (rewriteModel && j?.type === "message_start" && j.message) {
+          write(`event: message_start\ndata: ${JSON.stringify({ ...j, message: { ...j.message, model: ctx.model } })}\n\n`);
+        } else {
+          write(`${ev.raw}\n\n`);
+        }
+        break;
+      }
+      case "passthrough-openai":
+      case "anthropic-via-chat": {
+        if (j) {
+          if (j.usage) acc.addOpenaiChat(j.usage);
+          acc.addText(j.choices?.[0]?.delta?.content);
+          if (j.error && !(Array.isArray(j.choices) && j.choices.length)) streamError = String(j.error?.message ?? j.error ?? "upstream error");
+          else if (j.choices?.[0]?.finish_reason) completed = true;
+        }
+        if (toAnthropic) {
+          if (j) for (const s of toAnthropic.push(j)) write(s);
+          break;
+        }
+        const usageOnly = j && Array.isArray(j.choices) && j.choices.length === 0 && j.usage;
+        if (usageOnly && !clientWantsUsage) break;
+        if (j && rewriteModel) write(`data: ${JSON.stringify({ ...j, model: ctx.model })}\n\n`);
+        else write(`${ev.raw}\n\n`);
+        break;
+      }
+      case "passthrough-responses": {
+        if (j) {
+          if ((j.type === "response.completed" || j.type === "response.done") && j.response) {
+            acc.addResponses(j.response.usage);
+            completed = true;
+          }
+          if (j.type === "response.output_text.delta") acc.addText(j.delta);
+          if (j.type === "error" || j.type === "response.failed") streamError = String(j.error?.message ?? j.response?.error?.message ?? "upstream error");
+        }
+        write(`${ev.raw}\n\n`);
+        break;
+      }
+    }
+  };
+
+  let readError: string | null = null;
+  try {
+    if (!res.body) throw new Error("upstream stream has no body");
+    reader = res.body.getReader();
+    if (clientGone) await reader.cancel().catch(() => {});
+    const decoder = new TextDecoder();
+    let pending = "";
+    const boundary = /\r?\n\r?\n/;
+    for (;;) {
+      if (clientGone) {
+        await reader.cancel().catch(() => {});
+        break;
+      }
+      // Idle guard: a silently stalled upstream (dead socket, node gone
+      // without a close frame) must not hold the slot forever.
+      const r = reader;
+      const idle = setTimeout(() => r.cancel(new Error(`upstream idle for ${config.streamIdleTimeoutMs} ms`)).catch(() => {}), config.streamIdleTimeoutMs);
+      let chunk;
+      try {
+        chunk = await reader.read();
+      } finally {
+        clearTimeout(idle);
+      }
+      const { done: finished, value } = chunk;
+      if (finished) break;
+      pending += decoder.decode(value, { stream: true });
+      let m: RegExpExecArray | null;
+      while ((m = boundary.exec(pending)) !== null) {
+        const chunk = pending.slice(0, m.index);
+        pending = pending.slice(m.index + m[0].length);
+        if (chunk.trim()) handle(parseSseEvent(chunk));
+      }
+    }
+    pending += decoder.decode();
+    if (pending.trim()) handle(parseSseEvent(pending));
+    if (toOpenai) for (const s of toOpenai.end()) write(s);
+    if (toAnthropic) for (const s of toAnthropic.end()) write(s);
+    if (wantProof) {
+      const proof = makeTeeProof(upstreamHost, Buffer.concat(forwarded));
+      write(`event: tee.proof\ndata: ${JSON.stringify(proof)}\n\n`);
+    }
+  } catch (err) {
+    readError = (err as Error).message;
+    console.error(`[proxy] ${ctx.requestId} stream error:`, readError);
+  } finally {
+    done();
+    stopEarlyKeepalive(ctx);
+    ctx.abort.signal.removeEventListener("abort", onGone);
+    // A stream that failed before reaching its terminator is not a served
+    // request: no charge, a failure row, a short cooldown (unless the client
+    // simply went away — then whatever upstream reported is billed as usual).
+    const failed = !clientGone && (streamError !== null || readError !== null || (!completed && !acc.seen));
+    if (clientGone && firstTokenMs === null) {
+      // Nothing ever reached the client: not a served request (the upstream work was cancelled above).
+      console.warn(`[proxy] ${ctx.requestId} account ${account.name}: client closed before the first byte; not billed`);
+      logFailure(ctx, account, 499, "client_closed", "Client closed the connection before the first byte");
+    } else if (failed) {
+      const message = streamError ?? readError ?? "upstream stream ended without a terminator";
+      console.warn(`[proxy] ${ctx.requestId} account ${account.name}: stream failed: ${message}`);
+      if (account.raw_passthrough !== 1) markCcrFailure(ctx, account, `stream: ${message.slice(0, 300)}`); // raw relay (§4a): no cooldown
+      // Claude Code's context overflow / safety refusal is the request's fault: log it as such and hand
+      // the client Claude Code's own sentence (the auto-compact trigger) as an invalid_request_error.
+      // `mode` here is the wire mode (passthrough-anthropic for a worker stream too): the CCR flag is ccrExecuted.
+      const reqErr = ccrExecuted || isCcrMode(mode) ? classifyCcRequestError(message) : null;
+      if (reqErr) logFailure(ctx, account, 400, reqErr.code, reqErr.message);
+      else logFailure(ctx, account, 502, "upstream_stream_error", `Stream failed before its terminator: ${message.slice(0, 300)}`);
+      if (readError !== null || (!streamError && !completed) || reqErr) {
+        // Nothing upstream-shaped was forwarded for this failure: tell the client in its dialect.
+        const text = reqErr ? reqErr.message : `upstream: ${message}`;
+        const type = reqErr ? "invalid_request_error" : "api_error";
+        write(
+          ctx.format === "anthropic"
+            ? `event: error\ndata: ${JSON.stringify({ type: "error", error: { type, message: text } })}\n\n`
+            : `data: ${JSON.stringify({ error: { message: text, type, param: null, code: null } })}\n\n`,
+        );
+      }
+    } else {
+      // A stream that reached its terminator is proof the account's credentials work.
+      if (completed) authFailures.clear(account.id);
+      // Settle before ending the response so a client that sees the stream
+      // finish can immediately observe the charge. (144faa3 put the completed
+      // case in its own branch above this call: completed streams went unbilled
+      // for ~10 h on 2026-10-17 — see docs/issues-and-decisions.md.)
+      settleSuccess(ctx, account, upstreamModel, acc, firstTokenMs, ccrExecuted);
+    }
+    if (!clientGone) reply.raw.end();
+  }
+}

@@ -1,0 +1,424 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ---- Design tokens ---- */
+:root {
+  --primary: #6d28d9;
+  --primary-container: #7c3aed;
+  --primary-fixed: #ede9fe;
+  --primary-fixed-dim: #ddd6fe;
+  --on-primary: #fff;
+  --on-primary-container: #fff;
+  --on-primary-fixed: #3b0764;
+  --on-primary-fixed-variant: #5b21b6;
+  --surface-tint: #6d28d9;
+  --primary-press: #5b21b6;
+  --secondary: #5c5666;
+  --secondary-container: #e6e0f5;
+  --secondary-fixed: #ece7f7;
+  --secondary-fixed-dim: #d8cfee;
+  --on-secondary: #fff;
+  --on-secondary-container: #37324a;
+  --on-secondary-fixed: #37324a;
+  --on-secondary-fixed-variant: #524c66;
+  --tertiary: #c94f36;
+  --tertiary-container: #b9432d;
+  --tertiary-fixed: #fde4de;
+  --tertiary-fixed-dim: #f5b3a4;
+  --on-tertiary: #fff;
+  --on-tertiary-container: #fff;
+  --on-tertiary-fixed: #632315;
+  --on-tertiary-fixed-variant: #9e3c28;
+  --background: #f8f7fb;
+  --surface: #f8f7fb;
+  --surface-bright: #fff;
+  --surface-dim: #e2e0ea;
+  --surface-variant: #f0eef6;
+  --surface-container-lowest: #fff;
+  --surface-container-low: #f3f2f8;
+  --surface-container: #eceaf3;
+  --surface-container-high: #e5e2ee;
+  --surface-container-highest: #dedae9;
+  --on-background: #1b1a22;
+  --on-surface: #1b1a22;
+  --on-surface-variant: #555060;
+  --on-surface-faint: #7b7586;
+  --outline: #cbc7d6;
+  --outline-variant: #d9d5e3;
+  --inverse-surface: #221f2b;
+  --inverse-on-surface: #f5f3fa;
+  --inverse-primary: #c4b5fd;
+  --code-bg: #12101a;
+  --code-fg: #e2ddf0;
+  --success: #168553;
+  --warning: #a56800;
+  --info: #2563a7;
+  --error: #b42318;
+  --error-container: #fde2df;
+  --on-error: #fff;
+  --on-error-container: #8f1d14;
+  --shadow-sm: 0 1px 2px #1e1a2e0f, 0 1px 1px #1e1a2e0a;
+  --shadow-md: 0 12px 32px -12px #1e1a2e2e, 0 2px 8px -2px #1e1a2e14;
+  --shadow-lg: 0 32px 64px -24px #1e1a2e47;
+  --font-display: "Space Grotesk", "Manrope", "PingFang SC", "Hiragino Sans GB",
+    "Microsoft YaHei", "Noto Sans CJK SC", "Noto Sans SC", sans-serif;
+  --font-body: "Inter", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei",
+    "Noto Sans CJK SC", "Noto Sans SC", sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "PingFang SC", "Microsoft YaHei",
+    "Noto Sans CJK SC", monospace;
+  --space-2xs: 4px;
+  --space-xs: 8px;
+  --space-sm: 12px;
+  --space-md: 16px;
+  --space-lg: 24px;
+  --space-xl: 32px;
+  --space-2xl: 48px;
+  --space-3xl: 64px;
+  --radius-xs: 0.375rem;
+  --radius-sm: 0.5rem;
+  --radius-md: 0.625rem;
+  --radius-lg: 0.875rem;
+  --radius-xl: 1.125rem;
+  --radius-2xl: 1.5rem;
+  --radius-pill: 9999px;
+  --max-content-width: 1440px;
+  --primary-soft: color-mix(in oklab, var(--primary) 9%, var(--background));
+  --accent-line: color-mix(in oklab, var(--primary) 22%, var(--outline));
+  --success-container: color-mix(in oklab, var(--success) 12%, var(--background));
+  --warning-container: color-mix(in oklab, var(--warning) 14%, var(--background));
+  --info-container: color-mix(in oklab, var(--info) 12%, var(--background));
+}
+
+:root[data-theme="dark"] {
+  --primary: #a78bfa;
+  --primary-container: #c4b5fd;
+  --primary-press: #9f7afa;
+  --on-primary: #2e1065;
+  --on-primary-container: #2e1065;
+  --surface-tint: #a78bfa;
+  --primary-fixed: #2e1065;
+  --primary-fixed-dim: #4c1d95;
+  --on-primary-fixed: #ddd6fe;
+  --on-primary-fixed-variant: #c4b5fd;
+  --secondary: #aaa5b5;
+  --secondary-container: #37324a;
+  --secondary-fixed: #2b2638;
+  --secondary-fixed-dim: #443d5c;
+  --on-secondary-fixed: #e4dff0;
+  --on-secondary-fixed-variant: #b3acc4;
+  --on-secondary-container: #e4dff0;
+  --tertiary: #ff8b73;
+  --tertiary-container: #d96750;
+  --tertiary-fixed: #43261f;
+  --tertiary-fixed-dim: #633126;
+  --on-tertiary: #3d1209;
+  --on-tertiary-container: #2c0b05;
+  --on-tertiary-fixed: #ffc9bd;
+  --on-tertiary-fixed-variant: #ff9e89;
+  --background: #0d0b12;
+  --surface: #0d0b12;
+  --surface-bright: #241f31;
+  --surface-dim: #0a0810;
+  --surface-variant: #171321;
+  --surface-container-lowest: #171321;
+  --surface-container-low: #131020;
+  --surface-container: #1d1829;
+  --surface-container-high: #241f31;
+  --surface-container-highest: #2f2840;
+  --on-background: #f6f4fb;
+  --on-surface: #f6f4fb;
+  --on-surface-variant: #aaa5b5;
+  --on-surface-faint: #7d7790;
+  --outline: #3d3650;
+  --outline-variant: #2c2640;
+  --inverse-surface: #e8e4f3;
+  --inverse-on-surface: #221f2b;
+  --inverse-primary: #6d28d9;
+  --code-bg: #0a0810;
+  --code-fg: #e2ddf0;
+  --success: #4fd18a;
+  --warning: #f0b44c;
+  --info: #73b4ee;
+  --error: #ff7b72;
+  --error-container: #3f211f;
+  --on-error: #3c0805;
+  --on-error-container: #ffb4ad;
+  --shadow-sm: 0 1px 2px oklch(0% 0 0 / 0.4);
+  --shadow-md: 0 16px 40px -16px oklch(0% 0 0 / 0.6), 0 2px 8px -2px oklch(0% 0 0 / 0.4);
+  --shadow-lg: 0 40px 80px -28px oklch(0% 0 0 / 0.7);
+  --primary-soft: color-mix(in oklab, var(--primary) 16%, var(--background));
+  --accent-line: color-mix(in oklab, var(--primary) 30%, var(--outline));
+  --success-container: color-mix(in oklab, var(--success) 18%, var(--background));
+  --warning-container: color-mix(in oklab, var(--warning) 18%, var(--background));
+  --info-container: color-mix(in oklab, var(--info) 16%, var(--background));
+}
+
+@layer base {
+  html {
+    @apply antialiased;
+  }
+  body {
+    background: var(--background);
+    color: var(--on-surface);
+    font-family: var(--font-body);
+  }
+  ::selection {
+    background: var(--primary-fixed);
+  }
+}
+
+@layer components {
+  .container-x {
+    @apply mx-auto w-full max-w-content px-4 sm:px-6 lg:px-8;
+  }
+
+  /* Buttons — verbatim from the original bundle */
+  .wk-btn {
+    white-space: nowrap;
+    letter-spacing: -0.01em;
+    border-radius: var(--radius-sm);
+    user-select: none;
+    justify-content: center;
+    align-items: center;
+    gap: 8px;
+    font-weight: 600;
+    transition:
+      transform 0.12s,
+      background-color 0.16s,
+      box-shadow 0.16s,
+      border-color 0.16s,
+      color 0.16s,
+      opacity 0.16s;
+    display: inline-flex;
+  }
+  .wk-btn:hover {
+    transform: translateY(-1px);
+  }
+  .wk-btn:active {
+    transform: translateY(1px) scale(0.99);
+  }
+  .wk-btn-lg {
+    height: 52px;
+    padding: 0 28px;
+    font-size: 16px;
+  }
+  .wk-btn-md {
+    height: 44px;
+    padding: 0 20px;
+    font-size: 14.5px;
+  }
+  .wk-btn-sm {
+    height: 36px;
+    padding: 0 14px;
+    font-size: 13.5px;
+  }
+  .wk-btn-primary {
+    background: var(--primary);
+    color: var(--on-primary);
+  }
+  .wk-btn-primary:hover {
+    background: var(--primary-press);
+    box-shadow: 0 8px 24px -8px color-mix(in oklab, var(--primary) 60%, transparent);
+  }
+  .wk-btn-ghost {
+    color: var(--on-surface);
+    border: 1px solid var(--outline);
+    background: 0 0;
+  }
+  .wk-btn-ghost:hover {
+    background: var(--surface-variant);
+    border-color: var(--on-surface-faint);
+  }
+  .wk-btn-soft {
+    background: var(--primary-soft);
+    color: color-mix(in oklab, var(--primary) 78%, var(--on-surface));
+  }
+  .wk-btn-soft:hover {
+    background: color-mix(in oklab, var(--primary) 16%, var(--background));
+  }
+
+  .wk-grid-bg {
+    background-image:
+      linear-gradient(to right, var(--outline-variant) 1px, transparent 1px),
+      linear-gradient(to bottom, var(--outline-variant) 1px, transparent 1px);
+    background-size: 64px 64px;
+    -webkit-mask-image: radial-gradient(80% 70% at 50% 0, #000 30%, #0000 75%);
+    mask-image: radial-gradient(80% 70% at 50% 0, #000 30%, #0000 75%);
+  }
+
+  /* Section kicker: dot + mono uppercase label */
+  .kicker {
+    @apply inline-flex items-center gap-2 font-mono text-[11px] font-semibold uppercase tracking-[0.14em] text-on-surface-faint;
+  }
+  .kicker-dot {
+    height: 6px;
+    width: 6px;
+    border-radius: 9999px;
+    background: var(--primary);
+    box-shadow: 0 0 0 4px var(--primary-soft);
+  }
+
+  /* Dense data table — verbatim metrics from the original bundle */
+  .wk-table {
+    border-collapse: collapse;
+    width: 100%;
+  }
+  .wk-table th {
+    font-family: var(--font-body);
+    color: var(--on-surface-faint);
+    white-space: nowrap;
+    background: var(--surface-variant);
+    text-align: center;
+    padding: 16px 18px;
+    font-size: 14px;
+    font-weight: 500;
+  }
+  .wk-table td {
+    border-top: 1px solid var(--outline-variant);
+    color: var(--on-surface);
+    white-space: nowrap;
+    text-align: center;
+    font-variant-numeric: tabular-nums;
+    padding: 18px;
+    font-size: 15px;
+  }
+  .wk-table th.ta-l,
+  .wk-table td.ta-l {
+    text-align: left;
+  }
+  .wk-table th.ta-r,
+  .wk-table td.ta-r {
+    text-align: right;
+  }
+  .wk-table tbody tr {
+    transition: background-color 0.13s;
+  }
+  .wk-table tbody tr:hover {
+    background: var(--surface-variant);
+  }
+  .wk-table tbody tr:nth-child(2n) {
+    background: color-mix(in oklab, var(--surface-container-low) 32%, transparent);
+  }
+  .wk-table tbody tr:nth-child(2n):hover {
+    background: var(--surface-variant);
+  }
+
+  .card {
+    background: var(--surface-container-lowest);
+    border: 1px solid var(--outline-variant);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-sm);
+  }
+
+  .input {
+    width: 100%;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--outline);
+    background: var(--surface-container-lowest);
+    padding: 8px 12px;
+    font-size: 14px;
+    color: var(--on-surface);
+  }
+  .input::placeholder {
+    color: var(--on-surface-faint);
+  }
+  .input:focus {
+    outline: none;
+    border-color: var(--primary);
+    box-shadow: 0 0 0 3px var(--primary-soft);
+  }
+  .label {
+    display: block;
+    margin-bottom: 6px;
+    font-size: 14px;
+    font-weight: 500;
+    color: var(--on-surface-variant);
+  }
+
+  /* Green savings pill used in pricing tables */
+  .pill-save {
+    display: inline-flex;
+    align-items: center;
+    border-radius: var(--radius-pill);
+    padding: 4px 12px;
+    font-family: var(--font-mono);
+    font-size: 12px;
+    font-weight: 700;
+    background: var(--success-container);
+    color: var(--success);
+  }
+
+  .badge-hot {
+    border-radius: var(--radius-xs);
+    background: var(--primary-soft);
+    padding: 3px 10px;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    color: var(--primary);
+  }
+
+  .section-title {
+    font-family: var(--font-display);
+    font-weight: 700;
+    letter-spacing: -0.03em;
+    color: var(--on-surface);
+    font-size: 32px;
+    line-height: 1.05;
+  }
+  @media (min-width: 640px) {
+    .section-title {
+      font-size: 40px;
+    }
+  }
+}
+
+@keyframes wkLivePulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+.wk-live-dot {
+  animation: 1.8s ease-in-out infinite wkLivePulse;
+}
+
+/* Console tables: keep the trailing actions column visible while the rest scrolls. */
+.console-table th:last-child,
+.console-table td:last-child {
+  position: sticky;
+  right: 0;
+  z-index: 1;
+  box-shadow: -10px 0 12px -12px rgb(0 0 0 / 0.35);
+}
+.console-table th:last-child {
+  background: var(--surface-variant);
+}
+.console-table td:last-child {
+  background: var(--surface-container-lowest);
+}
+.console-table tbody tr:hover td:last-child {
+  background: var(--surface-variant);
+}
+
+/* Expandable log tables: detail row sits flush under its parent, no sticky last column. */
+.console-table-expandable th:last-child,
+.console-table-expandable td:last-child {
+  position: static;
+  box-shadow: none;
+}
+.console-table tbody tr.is-expanded,
+.console-table tbody tr.is-expanded:hover {
+  background: var(--primary-soft);
+}
+.console-table tbody tr.console-table-detail,
+.console-table tbody tr.console-table-detail:hover {
+  background: color-mix(in oklab, var(--surface-container-low) 55%, transparent);
+}
+.console-table tbody tr.console-table-detail > td {
+  border-top: 0;
+}

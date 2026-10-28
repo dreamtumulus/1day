@@ -1,0 +1,90 @@
+#!/bin/bash
+# 1dayAPI 服务器本地巡检：输出近 N 分钟（默认 15）的运行状况，供人或监控 bot 读取。
+# 用法: /opt/1dayapi/ops/bin/health [minutes]      只读，不改任何状态。
+MIN="${1:-15}"
+case "$MIN" in ''|*[!0-9]*) MIN=15 ;; esac
+[ "$MIN" -gt 1440 ] && MIN=1440
+export MIN
+echo "== $(date '+%F %T %Z')  window: last ${MIN} min =="
+gw=inactive; for u in 1dayapi-gateway@8400 1dayapi-gateway@8402 1dayapi-gateway; do systemctl is-active --quiet "$u" && gw="active($u)"; done
+echo "services: gateway=$gw console=$(systemctl is-active 1dayapi-console) nginx=$(systemctl is-active nginx) resolved=$(systemctl is-active systemd-resolved)"
+echo "load: $(cut -d' ' -f1-3 /proc/loadavg)  mem avail: $(awk '/MemAvailable/{printf "%.1f GiB", $2/1048576}' /proc/meminfo)  disk /: $(df -h / | awk 'NR==2{print $5}')"
+for w in 217.216.47.136:w2 62.146.171.208:w1; do ip=${w%%:*}; n=${w##*:}
+  echo "$n: $(ssh -n -o BatchMode=yes -o ConnectTimeout=8 root@$ip 'echo "node=$(systemctl is-active 1dayapi-node) claude_procs=$(pgrep -c -f /opt/claude/claude || true) load1/5/15=$(cut -d" " -f1-3 /proc/loadavg | tr " " "/") cpus=$(nproc) mem_used=$(free -g | awk "/Mem:/{printf \"%d/%dG\", \$3, \$2}") disk=$(df -h / | awk "NR==2{print \$5}") uptime=$(awk "{printf \"%.1fd\", \$1/86400}" /proc/uptime) bundle=$(sha256sum /root/.1dayapi-node/node-bundle.js | cut -c1-8)"' 2>&1)"
+done
+echo "-- console node events (${MIN}m):"; journalctl -u 1dayapi-console --since "-${MIN} min" --no-pager 2>/dev/null | grep -iE "missed a ping|no accepting node|link lost|back after|reconciled|reported device identities|node .*offline" | cut -c1-150 | tail -6
+echo "-- console tunnel/open 4xx (${MIN}m): $(journalctl -u 1dayapi-console --since "-${MIN} min" --no-pager 2>/dev/null | grep -c 'tunnel/open.*statusCode":4\|"statusCode":4[0-9][0-9].*tunnel/open')"
+echo "-- gateway warn/error lines (${MIN}m): $(journalctl -u "1dayapi-gateway*" --since "-${MIN} min" --no-pager 2>/dev/null | grep -cE '"level":(40|50)')  nginx 5xx in last 5000 lines: $(tail -n 5000 /var/log/nginx/access.log | grep -c ' 50[0-9] ')"
+echo "-- cc-shape verdicts (${MIN}m): $(journalctl -u "1dayapi-gateway*" --since "-${MIN} min" --no-pager 2>/dev/null | grep -F "[cc-shape]" | grep -oE " (genuine|suspect|not_cc) " | sort | uniq -c | tr -s " " | tr "\n" ";")"
+journalctl -u "1dayapi-gateway*" --since "-${MIN} min" --no-pager 2>/dev/null | grep -F "[cc-shape]" | grep -F " suspect " | grep -oE "missing=[a-z_,]*" | sort | uniq -c | sort -rn | head -3 | sed "s/^/   suspect /"
+echo "-- gateway recent warnings:"; journalctl -u "1dayapi-gateway*" --since "-${MIN} min" --no-pager 2>/dev/null | grep -E '\[proxy\].*(network error|stream failed|cooling|-> HTTP [45])|"level":(40|50)' | sed -E 's/^.{0,40}node\[[0-9]+\]: //' | cut -c1-170 | tail -6
+echo "-- contabo status (https://contabo-status.com, entries updated in the last 14 days):"
+curl -s --max-time 8 https://contabo-status.com/rss 2>/dev/null | python3 -c '
+import re, sys, html, datetime
+raw = sys.stdin.read()
+now = datetime.datetime.now(datetime.timezone.utc)
+shown = 0
+for e in re.findall(r"<entry>(.*?)</entry>", raw, re.S):
+    t = re.search(r"<title>(.*?)</title>", e, re.S); u = re.search(r"<updated>(.*?)</updated>", e)
+    c = re.search(r"<(?:content|summary)[^>]*>(.*?)</(?:content|summary)>", e, re.S)
+    title = html.unescape(t.group(1)).strip() if t else "?"
+    upd = u.group(1).strip() if u else ""
+    try:
+        age = (now - datetime.datetime.fromisoformat(upd)).days
+    except Exception:
+        age = 0
+    if age > 14: continue
+    body = html.unescape(re.sub(r"<[^>]+>", " ", c.group(1))) if c else ""
+    body = re.sub(r"\s+", " ", body).strip()
+    state = "RESOLVED" if re.search(r"resolved|back to normal|completed", body[-300:], re.I) else "OPEN"
+    print(f"   [{state}] {upd[:16]} {title[:90]}")
+    shown += 1
+    if shown >= 4: break
+if shown == 0: print("   (no entries in the last 14 days)")
+' || echo "   (status page unreachable)"
+cd /opt/1dayapi && node - 2>/dev/null <<'JS'
+const { DatabaseSync } = require("node:sqlite");
+const db = new DatabaseSync("data/1dayapi.db", { readOnly: true });
+const min = Number(process.env.MIN || 15);
+const since = new Date(Date.now() - min*60e3).toISOString().slice(0,19)+"Z";
+const tot = db.prepare("SELECT COUNT(*) n, SUM(status_code<>200) bad, SUM(status_code=200) ok FROM usage_logs WHERE created_at>=?").get(since);
+console.log(`-- usage_logs: ${tot.n} req, ${tot.bad||0} non-200 (${tot.n? ((tot.bad||0)*100/tot.n).toFixed(1):0}%)`);
+for (const r of db.prepare("SELECT status_code s, error_code e, mode m, COUNT(*) n, substr(MIN(error_message),1,90) msg FROM usage_logs WHERE created_at>=? AND status_code<>200 GROUP BY 1,2,3 ORDER BY n DESC LIMIT 8").all(since)) console.log(`   ${r.s} ${r.e} [${r.m}] x${r.n}  ${r.msg||""}`);
+const lat = db.prepare("SELECT mode m, COUNT(*) n, ROUND(AVG(duration_ms)) avg, MAX(duration_ms) mx, SUM(stream) st FROM usage_logs WHERE created_at>=? AND status_code=200 GROUP BY 1").all(since);
+for (const r of lat) console.log(`   ok [${r.m}] x${r.n} avg ${r.avg}ms max ${r.mx}ms stream ${r.st}`);
+const acc = db.prepare("SELECT COUNT(*) n, SUM(status='active' OR status='approved') act, SUM(rate_limited_until>strftime('%Y-%m-%dT%H:%M:%SZ','now')) cooling, SUM(overload_until>strftime('%Y-%m-%dT%H:%M:%SZ','now')) overload, SUM(window_exhausted_until>strftime('%Y-%m-%dT%H:%M:%SZ','now')) exhausted, SUM(temp_unschedulable_until>strftime('%Y-%m-%dT%H:%M:%SZ','now')) unsched FROM accounts").get();
+console.log(`-- accounts: ${acc.n} total, ${acc.act} active, cooling ${acc.cooling||0}, overload ${acc.overload||0}, window_exhausted ${acc.exhausted||0}, temp_unschedulable ${acc.unsched||0}`);
+const px = db.prepare("SELECT substr(node_id,6,8) node, SUM(status='live') live, SUM(status<>'live') other FROM node_proxies GROUP BY 1").all();
+console.log(`-- proxies: ${px.map(r => `${r.node} live ${r.live}/${r.live + r.other}`).join(", ")}`);
+
+// ---- traffic: volume trend, consumers, tokens ----
+const h24 = new Date(Date.now() - 24*3600e3).toISOString().slice(0,19)+"Z";
+const perHour = db.prepare("SELECT substr(created_at,12,2) h, COUNT(*) n, SUM(status_code<>200) bad FROM usage_logs WHERE created_at>=? GROUP BY h ORDER BY MIN(created_at)").all(h24);
+console.log(`-- traffic per hour (UTC, last 24h, total${perHour.some(r=>r.bad)?"(failed)":""}): ` + perHour.map(r => `${r.h}Z:${r.n}${r.bad?`(${r.bad})`:""}`).join(" "));
+const h1 = new Date(Date.now() - 3600e3).toISOString().slice(0,19)+"Z";
+const t1 = db.prepare("SELECT COUNT(*) n, SUM(status_code<>200) bad FROM usage_logs WHERE created_at>=?").get(h1);
+const t24 = db.prepare("SELECT COUNT(*) n, SUM(status_code<>200) bad FROM usage_logs WHERE created_at>=?").get(h24);
+console.log(`-- traffic totals: last 1h ${t1.n} req (${t1.bad||0} failed), last 24h ${t24.n} req (${t24.bad||0} failed)`);
+const keys = db.prepare("SELECT (SELECT name FROM users WHERE id=l.user_id) u, substr(l.api_key_id,1,8) k, COUNT(*) n, SUM(status_code<>200) bad, SUM(mode LIKE 'passthrough%') direct FROM usage_logs l WHERE created_at>=? GROUP BY l.api_key_id ORDER BY n DESC LIMIT 6").all(since);
+console.log(`-- top consumers (window): ` + (keys.map(r => `${r.u}/${r.k}:${r.n}${r.bad?`(${r.bad} failed)`:""}${r.direct?` direct ${r.direct}`:""}`).join(", ") || "none"));
+const tok = db.prepare("SELECT SUM(input_tokens) i, SUM(cache_read_tokens) cr, SUM(cache_write_tokens) cw, SUM(output_tokens) o, ROUND(SUM(total_cost),2) cost FROM usage_logs WHERE created_at>=? AND status_code=200").get(since);
+console.log(`-- tokens (window): input ${tok.i||0}, cache_read ${tok.cr||0}, cache_write ${tok.cw||0}, output ${tok.o||0}, billed $${tok.cost||0}`);
+
+// ---- accounts: who is cooling and why ----
+const nowIso = new Date().toISOString().slice(0,19)+"Z";
+const cooled = db.prepare(`SELECT name, substr(node_id,6,8) node,
+  CASE WHEN rate_limited_until>? THEN 'rate_limited:'||rate_limited_until WHEN overload_until>? THEN 'overload:'||overload_until WHEN window_exhausted_until>? THEN 'window_exhausted:'||window_exhausted_until WHEN temp_unschedulable_until>? THEN 'temp_unschedulable:'||temp_unschedulable_until END state,
+  substr(COALESCE(window_reason, error_message, ''),1,70) why FROM accounts WHERE status='active' AND (rate_limited_until>? OR overload_until>? OR window_exhausted_until>? OR temp_unschedulable_until>?) ORDER BY 3 LIMIT 15`).all(nowIso,nowIso,nowIso,nowIso,nowIso,nowIso,nowIso,nowIso);
+console.log(`-- cooling detail (${cooled.length} shown): ` + (cooled.length ? "" : "none"));
+for (const r of cooled) console.log(`   ${r.name} @${r.node} ${r.state} | ${r.why}`);
+const byStatus = db.prepare("SELECT status, COUNT(*) n FROM accounts GROUP BY status").all();
+const byNode = db.prepare("SELECT substr(node_id,6,8) node, COUNT(*) n FROM accounts WHERE status='active' GROUP BY 1").all();
+console.log(`-- accounts by status: ${byStatus.map(r=>`${r.status} ${r.n}`).join(", ")}; active per node: ${byNode.map(r=>`${r.node} ${r.n}`).join(", ")}`);
+
+// ---- nodes: what the platform knows from heartbeats ----
+for (const r of db.prepare("SELECT substr(node_id,6,8) node, online, accepting_sessions acc, in_flight, last_heartbeat_at hb, node_version v, deploy_meta FROM nodes").all()) {
+  let cw = {}; try { cw = JSON.parse(r.deploy_meta || "{}").ccWorker || {}; } catch {}
+  const age = r.hb ? Math.round((Date.now() - Date.parse(r.hb))/1000) : null;
+  console.log(`-- node ${r.node}: online=${r.online} accepting=${r.acc} in_flight=${r.in_flight} worker active/queued/max=${cw.active??"?"}/${cw.queued??"?"}/${cw.maxConcurrency??"?"} claude=${cw.claudeVersion??"?"} heartbeat ${age===null?"never":age+"s ago"}`);
+}
+JS
