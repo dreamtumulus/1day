@@ -560,6 +560,22 @@ export const onboardJob = (scope: OnboardScope, jobId: string) =>
 export const onboardCancel = (scope: OnboardScope, jobId: string) =>
   api.post<OnboardJob>(`/api/${scope}/accounts/onboard/${jobId}/cancel`, {});
 
+/** Saved organizations for the onboarding form (admin only, docs/onboarding.md §3 常用组织). */
+export interface OnboardOrg {
+  id: string;
+  orgUuid: string;
+  name: string;
+  note: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+export const onboardOrgs = () => api.get<OnboardOrg[]>("/api/admin/onboard/orgs");
+export const onboardOrgCreate = (body: { name: string; orgUuid: string; note?: string }) =>
+  api.post<OnboardOrg>("/api/admin/onboard/orgs", body);
+export const onboardOrgUpdate = (id: string, body: { name?: string; orgUuid?: string; note?: string | null }) =>
+  api.patch<OnboardOrg>(`/api/admin/onboard/orgs/${id}`, body);
+export const onboardOrgDelete = (id: string) => api.del(`/api/admin/onboard/orgs/${id}`);
+
 export const nodeProxies = (scope: OnboardScope, nodeId: string, freeOnly = false) =>
   api.get<ProxyPickerItem[]>(`/api/${scope}/nodes/${nodeId}/proxies`, freeOnly ? { free: 1 } : undefined);
 

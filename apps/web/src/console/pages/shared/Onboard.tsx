@@ -7,10 +7,15 @@ import {
   nodeProxies,
   onboardJob,
   onboardCancel,
+  onboardOrgCreate,
+  onboardOrgDelete,
+  onboardOrgUpdate,
+  onboardOrgs,
   onboardStart,
   type Group,
   type NodeRow,
   type OnboardJob,
+  type OnboardOrg,
   type OnboardScope,
   type ProxyPickerItem,
 } from "../../api";
@@ -21,9 +26,11 @@ import {
   Badge,
   Button,
   Card,
+  ConfirmButton,
   CopyButton,
   Field,
   Input,
+  Modal,
   PageHeader,
   Segmented,
   Select,
@@ -32,6 +39,7 @@ import {
   errMessage,
   useAsync,
   useToast,
+  type Tone,
 } from "../../ui";
 
 // Account onboarding ("上号") for both consoles (docs/onboarding.md §2/§4/§7).
@@ -39,10 +47,67 @@ import {
 // nodes only, review_status=pending); only the API prefix and the group
 // picker differ. Claude subscriptions only — other platforms are hidden
 // site-wide for now.
+//
+// Admins additionally get (§3 常用组织 / §7):
+//  - a saved-organization picker (record name + organization UUID once; pick,
+//    edit or delete it later instead of pasting the UUID every time);
+//  - a batch mode for the sessionKey method: paste many keys, one organization,
+//    each line is format-checked and de-duplicated client-side, then the keys
+//    are submitted one by one with a random 5–7 s pause (configurable).
 
 type Method = "session_key" | "auth_url";
+type SkMode = "single" | "batch";
 
 const POLL_MS = 1500;
+
+/** Same shape the server enforces (routes/onboarding.ts): sk-ant-sid01-<base64url>. */
+const SESSION_KEY_RE = /^sk-ant-sid\d{2}-[A-Za-z0-9_-]{40,}$/;
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const ORG_MANUAL = "manual";
+
+function maskKey(sk: string): string {
+  return sk.length > 24 ? `${sk.slice(0, 13)}…${sk.slice(-6)}` : sk;
+}
+
+interface ParsedLine {
+  line: number;
+  key: string;
+  kind: "valid" | "invalid" | "dup";
+}
+
+/** Split pasted text into candidate keys; mark malformed lines and repeats. */
+function parseBatch(text: string): ParsedLine[] {
+  const out: ParsedLine[] = [];
+  const seen = new Set<string>();
+  text.split(/\r?\n/).forEach((raw, i) => {
+    for (const piece of raw.split(/[\s,;]+/)) {
+      const key = piece.trim().replace(/^["']+|["']+$/g, "");
+      if (!key) continue;
+      let kind: ParsedLine["kind"] = SESSION_KEY_RE.test(key) ? "valid" : "invalid";
+      if (kind === "valid" && seen.has(key)) kind = "dup";
+      if (kind === "valid") seen.add(key);
+      out.push({ line: i + 1, key, kind });
+    }
+  });
+  return out;
+}
+
+type BatchStatus = "queued" | "working" | "done" | "failed" | "skipped";
+interface BatchItem {
+  idx: number;
+  key: string;
+  status: BatchStatus;
+  job?: OnboardJob;
+  error?: string;
+}
+interface BatchState {
+  items: BatchItem[];
+  running: boolean;
+  stopped: boolean;
+  finished: boolean;
+  /** Epoch ms when the next key will be submitted (countdown display). */
+  nextAt: number | null;
+}
 
 export function OnboardPage({ scope }: { scope: OnboardScope }) {
   const { t } = useCT();
@@ -57,9 +122,16 @@ export function OnboardPage({ scope }: { scope: OnboardScope }) {
     [isAdmin],
   );
   const recentJobs = useAsync(() => api.get<OnboardJob[]>(`/api/${scope}/accounts/onboard`), [scope]);
+  const orgs = useAsync(() => (canSeeTeam ? onboardOrgs() : Promise.resolve([] as OnboardOrg[])), [canSeeTeam]);
 
   const [method, setMethod] = useState<Method>("session_key");
+  const [skMode, setSkMode] = useState<SkMode>("single");
   const [sessionKey, setSessionKey] = useState("");
+  const [batchText, setBatchText] = useState("");
+  const [intervalMin, setIntervalMin] = useState("5");
+  const [intervalMax, setIntervalMax] = useState("7");
+  // Organization: "" = not specified, ORG_MANUAL = type it in, otherwise a saved org id.
+  const [orgChoice, setOrgChoice] = useState("");
   const [orgUuid, setOrgUuid] = useState("");
   const [teamName, setTeamName] = useState("");
   const [nodeId, setNodeId] = useState("");
@@ -76,6 +148,17 @@ export function OnboardPage({ scope }: { scope: OnboardScope }) {
   const [busy, setBusy] = useState(false);
   const [job, setJob] = useState<OnboardJob | null>(null);
   const [err, setErr] = useState<string | null>(null);
+
+  // Saved-organization manager (modal).
+  const [orgModal, setOrgModal] = useState(false);
+  const [orgForm, setOrgForm] = useState<{ id?: string; name: string; orgUuid: string; note: string } | null>(null);
+  const [orgErr, setOrgErr] = useState<string | null>(null);
+  const [orgBusy, setOrgBusy] = useState(false);
+
+  // Batch run.
+  const [batch, setBatch] = useState<BatchState | null>(null);
+  const stopRef = useRef(false);
+  const [, setTick] = useState(0);
 
   const onlineNodes = useMemo(() => (nodes.data ?? []).filter((n) => n.online), [nodes.data]);
   const nodeOptions = useMemo(
@@ -124,12 +207,108 @@ export function OnboardPage({ scope }: { scope: OnboardScope }) {
     };
   }, [scope, job?.jobId, job?.status]);
 
+  // Batch: poll every in-flight job and tick the countdown.
+  const batchWorking = (batch?.items ?? []).filter((it) => it.status === "working").map((it) => it.job?.jobId).join(",");
+  useEffect(() => {
+    if (!batch || (!batchWorking && !batch.running)) return;
+    const id = setInterval(() => {
+      setTick((n) => n + 1);
+      const ids = batchWorking ? batchWorking.split(",") : [];
+      for (const jobId of ids) {
+        onboardJob(scope, jobId)
+          .then((j) => {
+            if (j.status === "working") return;
+            setBatch((b) =>
+              b
+                ? {
+                    ...b,
+                    items: b.items.map((it) =>
+                      it.job?.jobId === jobId
+                        ? { ...it, job: j, status: j.status === "done" ? "done" : "failed", error: j.error }
+                        : it,
+                    ),
+                  }
+                : b,
+            );
+          })
+          .catch(() => {});
+      }
+    }, POLL_MS);
+    return () => clearInterval(id);
+  }, [scope, batch?.running, batchWorking]);
+
+  // ---------- organization ----------
+
+  const selectedOrg = useMemo(
+    () => (orgChoice && orgChoice !== ORG_MANUAL ? (orgs.data ?? []).find((o) => o.id === orgChoice) ?? null : null),
+    [orgChoice, orgs.data],
+  );
+
+  const effOrgUuid = canSeeTeam ? (selectedOrg ? selectedOrg.orgUuid : orgChoice === ORG_MANUAL ? orgUuid.trim() : "") : "";
+  const effTeamName = canSeeTeam ? (selectedOrg ? selectedOrg.name : orgChoice === ORG_MANUAL ? teamName.trim() : "") : "";
+  const orgUuidBad = orgChoice === ORG_MANUAL && !!orgUuid.trim() && !UUID_RE.test(orgUuid.trim());
+
+  const orgOptions = useMemo(
+    () => [
+      { value: "", label: t("onboard.orgNone") },
+      ...(orgs.data ?? []).map((o) => ({ value: o.id, label: `${o.name} · ${o.orgUuid.slice(0, 8)}…` })),
+      { value: ORG_MANUAL, label: t("onboard.orgManual") },
+    ],
+    [orgs.data, t],
+  );
+
+  function openOrgForm(o?: OnboardOrg, prefill?: { name: string; orgUuid: string }) {
+    setOrgErr(null);
+    setOrgForm(
+      o
+        ? { id: o.id, name: o.name, orgUuid: o.orgUuid, note: o.note ?? "" }
+        : { name: prefill?.name ?? "", orgUuid: prefill?.orgUuid ?? "", note: "" },
+    );
+    setOrgModal(true);
+  }
+
+  async function saveOrg() {
+    if (!orgForm) return;
+    const nm = orgForm.name.trim();
+    const uu = orgForm.orgUuid.trim();
+    if (!nm) {
+      setOrgErr(t("common.name"));
+      return;
+    }
+    if (!UUID_RE.test(uu)) {
+      setOrgErr(t("onboard.errOrgUuidFormat"));
+      return;
+    }
+    setOrgBusy(true);
+    setOrgErr(null);
+    try {
+      const saved = orgForm.id
+        ? await onboardOrgUpdate(orgForm.id, { name: nm, orgUuid: uu, note: orgForm.note.trim() || null })
+        : await onboardOrgCreate({ name: nm, orgUuid: uu, ...(orgForm.note.trim() ? { note: orgForm.note.trim() } : {}) });
+      toast.success(t("onboard.orgSaved"));
+      setOrgForm(null);
+      await orgs.reload();
+      setOrgChoice(saved.id);
+    } catch (e) {
+      setOrgErr(errMessage(e));
+    } finally {
+      setOrgBusy(false);
+    }
+  }
+
+  async function deleteOrg(id: string) {
+    await onboardOrgDelete(id);
+    toast.success(t("onboard.orgDeleted"));
+    if (orgChoice === id) setOrgChoice("");
+    await orgs.reload();
+  }
+
+  // ---------- single job ----------
+
   function reset() {
     setJob(null);
     setErr(null);
     setSessionKey("");
-    setOrgUuid("");
-    setTeamName("");
     setCallbackUrl("");
   }
 
@@ -143,10 +322,13 @@ export function OnboardPage({ scope }: { scope: OnboardScope }) {
     if (name.trim()) body.name = name.trim();
     if (note.trim()) body.note = note.trim();
     if (isAdmin && groupId) body.groupId = groupId;
-    if (canSeeTeam && teamName.trim()) body.teamName = teamName.trim();
-    if (canSeeTeam && orgUuid.trim()) body.orgUuid = orgUuid.trim();
+    if (effTeamName) body.teamName = effTeamName;
+    if (effOrgUuid) body.orgUuid = effOrgUuid;
     return body;
   }
+
+  const singleKey = sessionKey.trim().replace(/^["']+|["']+$/g, "");
+  const singleKeyBad = !!singleKey && !SESSION_KEY_RE.test(singleKey);
 
   async function cancel() {
     if (!job) return;
@@ -164,22 +346,23 @@ export function OnboardPage({ scope }: { scope: OnboardScope }) {
       setErr(t("onboard.errNode"));
       return;
     }
+    if (orgUuidBad) {
+      setErr(t("onboard.errOrgUuidFormat"));
+      return;
+    }
     setErr(null);
     setBusy(true);
     try {
       if (method === "session_key") {
-        if (!sessionKey.trim()) {
+        if (!singleKey) {
           setErr(t("onboard.errSessionKey"));
           return;
         }
-        setJob(
-          await onboardStart(scope, {
-            method,
-            sessionKey: sessionKey.trim(),
-            ...(canSeeTeam && orgUuid.trim() ? { orgUuid: orgUuid.trim() } : {}),
-            ...commonParams(),
-          }),
-        );
+        if (singleKeyBad) {
+          setErr(t("onboard.errSessionKeyFormat"));
+          return;
+        }
+        setJob(await onboardStart(scope, { method, sessionKey: singleKey, ...commonParams() }));
       } else {
         // Step 1: platform generates the authorize URL; user completes consent
         // in their own browser, then pastes the callback URL back (step 2).
@@ -207,6 +390,81 @@ export function OnboardPage({ scope }: { scope: OnboardScope }) {
     }
   }
 
+  // ---------- batch ----------
+
+  const parsed = useMemo(() => parseBatch(batchText), [batchText]);
+  const parsedValid = parsed.filter((p) => p.kind === "valid");
+  const parsedInvalid = parsed.filter((p) => p.kind === "invalid").length;
+  const parsedDup = parsed.filter((p) => p.kind === "dup").length;
+  const intervalBad = (() => {
+    const a = Number(intervalMin);
+    const b = Number(intervalMax);
+    return !(Number.isFinite(a) && Number.isFinite(b) && a >= 0 && b >= a && b <= 600);
+  })();
+
+  function sleep(ms: number) {
+    return new Promise<void>((r) => setTimeout(r, ms));
+  }
+
+  async function startBatch() {
+    if (!nodeId) {
+      setErr(t("onboard.errNode"));
+      return;
+    }
+    if (orgUuidBad) {
+      setErr(t("onboard.errOrgUuidFormat"));
+      return;
+    }
+    if (!parsedValid.length || intervalBad) return;
+    setErr(null);
+    const params = commonParams();
+    const lo = Math.max(0, Number(intervalMin)) * 1000;
+    const hi = Math.max(lo, Number(intervalMax) * 1000);
+    const items: BatchItem[] = parsedValid.map((p, i) => ({ idx: i + 1, key: p.key, status: "queued" }));
+    stopRef.current = false;
+    setBatch({ items, running: true, stopped: false, finished: false, nextAt: null });
+    for (let i = 0; i < items.length; i++) {
+      if (stopRef.current) {
+        setBatch((b) =>
+          b ? { ...b, items: b.items.map((it) => (it.status === "queued" ? { ...it, status: "skipped" } : it)), stopped: true } : b,
+        );
+        break;
+      }
+      const it = items[i];
+      try {
+        const j = await onboardStart(scope, { method: "session_key", sessionKey: it.key, ...params });
+        setBatch((b) =>
+          b
+            ? {
+                ...b,
+                items: b.items.map((x) =>
+                  x.idx === it.idx ? { ...x, job: j, status: j.status === "working" ? "working" : j.status === "done" ? "done" : "failed", error: j.error } : x,
+                ),
+              }
+            : b,
+        );
+      } catch (e) {
+        const msg = errMessage(e);
+        setBatch((b) => (b ? { ...b, items: b.items.map((x) => (x.idx === it.idx ? { ...x, status: "failed", error: msg } : x)) } : b));
+      }
+      if (i < items.length - 1 && !stopRef.current) {
+        const wait = lo + Math.random() * (hi - lo);
+        setBatch((b) => (b ? { ...b, nextAt: Date.now() + wait } : b));
+        await sleep(wait);
+        setBatch((b) => (b ? { ...b, nextAt: null } : b));
+      }
+    }
+    setBatch((b) => (b ? { ...b, running: false, nextAt: null } : b));
+  }
+
+  const batchCounts = useMemo(() => {
+    const c = { done: 0, failed: 0, working: 0, queued: 0, skipped: 0 };
+    for (const it of batch?.items ?? []) c[it.status] += 1;
+    return c;
+  }, [batch?.items]);
+  const batchFinished = !!batch && !batch.running && batchCounts.working === 0;
+  const batchNextIn = batch?.nextAt ? Math.max(0, Math.ceil((batch.nextAt - Date.now()) / 1000)) : null;
+
   const proxyOptions = useMemo(() => {
     const opts = [{ value: "auto", label: t("onboard.proxyAuto") }];
     for (const p of proxies ?? []) {
@@ -221,11 +479,114 @@ export function OnboardPage({ scope }: { scope: OnboardScope }) {
 
   const accountsPath = isAdmin ? "/console/admin/accounts" : "/console/accounts";
 
+  const batchTone = (s: BatchStatus): Tone => (s === "done" ? "success" : s === "failed" ? "error" : s === "working" ? "info" : "neutral");
+  const batchLabel = (s: BatchStatus) =>
+    s === "done" ? t("onboard.done") : s === "failed" ? t("onboard.failed") : s === "working" ? t("onboard.working") : s === "skipped" ? t("onboard.batchSkipped") : t("onboard.batchQueued");
+
+  const orgField = canSeeTeam && (
+    <div className="space-y-3">
+      <Field label={`${t("onboard.org")} (${t("common.optional")})`} hint={t("onboard.orgUuidPick")}>
+        <div className="flex items-start gap-2">
+          <Select className="min-w-0 flex-1" value={orgChoice} onChange={(e) => setOrgChoice(e.target.value)} options={orgOptions} />
+          <Button size="md" onClick={() => { setOrgForm(null); setOrgModal(true); }}>
+            {t("onboard.orgManage")}
+          </Button>
+        </div>
+      </Field>
+      {selectedOrg && (
+        <div className="flex flex-wrap items-center gap-2 text-[12.5px] text-on-surface-variant">
+          <span className="font-mono">{selectedOrg.orgUuid}</span>
+          <CopyButton text={selectedOrg.orgUuid} />
+          <Button onClick={() => openOrgForm(selectedOrg)}>{t("common.edit")}</Button>
+        </div>
+      )}
+      {orgChoice === ORG_MANUAL && (
+        <div className="grid gap-4 sm:grid-cols-2">
+          <Field label={`${t("team.name")} (${t("common.optional")})`} hint={t("team.verifiedHint")}>
+            <Input value={teamName} maxLength={120} onChange={(e) => setTeamName(e.target.value)} />
+          </Field>
+          <Field label={t("onboard.orgUuid")} hint={t("onboard.orgUuidHint")} error={orgUuidBad ? t("onboard.errOrgUuidFormat") : undefined}>
+            <Input
+              value={orgUuid}
+              maxLength={64}
+              autoComplete="off"
+              placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+              onChange={(e) => setOrgUuid(e.target.value)}
+            />
+          </Field>
+          <div className="sm:col-span-2">
+            <Button disabled={!orgUuid.trim() || orgUuidBad} onClick={() => openOrgForm(undefined, { name: teamName.trim(), orgUuid: orgUuid.trim() })}>
+              {t("onboard.orgSave")}
+            </Button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+
   return (
     <div>
       <PageHeader title={t("onboard.title")} desc={t("onboard.desc")} />
       {scope === "admin" && <AccountTabs />}
       <div className="max-w-3xl space-y-6">
+        {/* batch progress */}
+        {batch && (
+          <Card title={t("onboard.batchTitle")} bodyClassName="space-y-3 p-5">
+            <div className="flex flex-wrap items-center gap-3 text-[13px] text-on-surface-variant">
+              {batch.running && <Spinner />}
+              <span>
+                {t("onboard.batchProgress", {
+                  done: batchCounts.done,
+                  failed: batchCounts.failed,
+                  working: batchCounts.working,
+                  queued: batchCounts.queued,
+                })}
+              </span>
+              {batch.running && batchNextIn !== null && <Badge tone="info">{t("onboard.batchNext", { s: batchNextIn })}</Badge>}
+              {batch.stopped && <Badge tone="warning">{t("onboard.batchStopped")}</Badge>}
+              {batchFinished && !batch.stopped && <Badge tone="success">{t("onboard.batchFinished")}</Badge>}
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full text-[13px]">
+                <tbody>
+                  {batch.items.map((it) => (
+                    <tr key={it.idx} className="border-t" style={{ borderColor: "var(--outline-variant)" }}>
+                      <td className="py-1.5 pr-3 text-on-surface-faint">{it.idx}</td>
+                      <td className="py-1.5 pr-3 font-mono text-[12.5px]">{maskKey(it.key)}</td>
+                      <td className="py-1.5 pr-3">
+                        <Badge tone={batchTone(it.status)}>{batchLabel(it.status)}</Badge>
+                      </td>
+                      <td className="min-w-0 break-all py-1.5 font-mono text-[12px]">
+                        {it.status === "done" ? (
+                          <span className="text-success">{it.job?.accountEmail ?? it.job?.accountName ?? it.job?.accountId ?? ""}{it.job?.reused ? ` · ${t("onboard.reusedTitle")}` : ""}</span>
+                        ) : it.status === "failed" ? (
+                          <span className="text-error">{it.error ?? it.job?.error ?? "—"}</span>
+                        ) : null}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <div className="flex justify-end gap-2">
+              {batch.running && !batch.stopped && (
+                <Button onClick={() => { stopRef.current = true; setBatch((b) => (b ? { ...b, stopped: true } : b)); }}>
+                  {t("onboard.batchStop")}
+                </Button>
+              )}
+              {batchFinished && (
+                <>
+                  <Link to={accountsPath} className="wk-btn wk-btn-sm wk-btn-primary">
+                    {t("onboard.viewAccounts")}
+                    <ArrowRightIcon width={14} height={14} />
+                  </Link>
+                  <Button onClick={() => { setBatch(null); setBatchText(""); void recentJobs.reload(); }}>{t("onboard.batchNewBatch")}</Button>
+                </>
+              )}
+            </div>
+          </Card>
+        )}
+
         {/* terminal states */}
         {job?.status === "done" && (
           <Card bodyClassName="p-5">
@@ -321,8 +682,8 @@ export function OnboardPage({ scope }: { scope: OnboardScope }) {
           </Card>
         )}
 
-        {/* form (hidden once a job is in flight) */}
-        {!job && (
+        {/* form (hidden once a job or a batch is in flight) */}
+        {!job && !batch && (
           <>
           {(recentJobs.data ?? []).some((j) => j.status === "pending_callback" || j.status === "working") && <Card title="进行中的授权" bodyClassName="space-y-2 p-5">
             {(recentJobs.data ?? []).filter((j) => j.status === "pending_callback" || j.status === "working").map((j) => <div key={j.jobId} className="flex items-center justify-between gap-3">
@@ -334,41 +695,82 @@ export function OnboardPage({ scope }: { scope: OnboardScope }) {
             {() => (
               <>
                 <Card title={t("onboard.method")} bodyClassName="space-y-4 p-5">
-                  <Segmented<Method>
-                    value={method}
-                    onChange={setMethod}
-                    options={[
-                      { value: "session_key", label: t("onboard.methodSessionKey") },
-                      { value: "auth_url", label: t("onboard.methodAuthUrl") },
-                    ]}
-                  />
-                  {method === "session_key" ? (
+                  <div className="flex flex-wrap items-center gap-3">
+                    <Segmented<Method>
+                      value={method}
+                      onChange={setMethod}
+                      options={[
+                        { value: "session_key", label: t("onboard.methodSessionKey") },
+                        { value: "auth_url", label: t("onboard.methodAuthUrl") },
+                      ]}
+                    />
+                    {method === "session_key" && (
+                      <Segmented<SkMode>
+                        value={skMode}
+                        onChange={setSkMode}
+                        options={[
+                          { value: "single", label: t("onboard.single") },
+                          { value: "batch", label: t("onboard.batch") },
+                        ]}
+                      />
+                    )}
+                  </div>
+                  {method === "session_key" && skMode === "single" && (
+                    <Field label="sessionKey" hint={t("onboard.sessionKeyHint")} error={singleKeyBad ? t("onboard.errSessionKeyFormat") : undefined}>
+                      <Textarea
+                        value={sessionKey}
+                        onChange={(e) => setSessionKey(e.target.value)}
+                        rows={3}
+                        autoComplete="off"
+                        placeholder="sk-ant-sid01-…"
+                      />
+                    </Field>
+                  )}
+                  {method === "session_key" && skMode === "batch" && (
                     <>
-                      <Field label="sessionKey" hint={t("onboard.sessionKeyHint")}>
+                      <Field label={t("onboard.batchKeys")} hint={t("onboard.batchKeysHint")}>
                         <Textarea
-                          value={sessionKey}
-                          onChange={(e) => setSessionKey(e.target.value)}
-                          rows={3}
+                          value={batchText}
+                          onChange={(e) => setBatchText(e.target.value)}
+                          rows={8}
                           autoComplete="off"
-                          placeholder="sk-ant-sid01-…"
+                          placeholder={"sk-ant-sid01-…\nsk-ant-sid01-…"}
                         />
                       </Field>
+                      {parsed.length > 0 && (
+                        <div className="space-y-1.5">
+                          <div className="flex flex-wrap items-center gap-2 text-[13px]">
+                            <Badge tone={parsedValid.length ? "success" : "neutral"}>
+                              {t("onboard.batchSummary", { valid: parsedValid.length, invalid: parsedInvalid, dup: parsedDup })}
+                            </Badge>
+                          </div>
+                          {parsed.filter((p) => p.kind !== "valid").length > 0 && (
+                            <ul className="space-y-0.5 text-[12.5px]">
+                              {parsed
+                                .filter((p) => p.kind !== "valid")
+                                .map((p, i) => (
+                                  <li key={i} className={p.kind === "invalid" ? "text-error" : "text-on-surface-variant"}>
+                                    {t("onboard.batchLine", { n: p.line })} · {p.kind === "invalid" ? t("onboard.invalidLine") : t("onboard.duplicateLine")} ·{" "}
+                                    <span className="font-mono">{maskKey(p.key)}</span>
+                                  </li>
+                                ))}
+                            </ul>
+                          )}
+                        </div>
+                      )}
+                      <Field label={t("onboard.batchInterval")} hint={t("onboard.batchIntervalHint")} error={intervalBad ? "5 – 7" : undefined}>
+                        <div className="flex items-center gap-2">
+                          <Input type="number" min={0} max={600} className="w-24" value={intervalMin} onChange={(e) => setIntervalMin(e.target.value)} />
+                          <span className="text-on-surface-faint">–</span>
+                          <Input type="number" min={0} max={600} className="w-24" value={intervalMax} onChange={(e) => setIntervalMax(e.target.value)} />
+                        </div>
+                      </Field>
                     </>
-                  ) : (
+                  )}
+                  {method === "auth_url" && (
                     <p className="text-[13px] leading-relaxed text-on-surface-variant">{t("onboard.authUrlIntro")}</p>
                   )}
-                      {canSeeTeam && <Field label={`${t("team.name")} (${t("common.optional")})`} hint={t("team.verifiedHint")}>
-                        <Input value={teamName} maxLength={120} onChange={(e) => setTeamName(e.target.value)} />
-                      </Field>}
-                      {canSeeTeam && <Field label={`${t("onboard.orgUuid")} (${t("common.optional")})`} hint={t("onboard.orgUuidHint")}>
-                        <Input
-                          value={orgUuid}
-                          maxLength={64}
-                          autoComplete="off"
-                          placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
-                          onChange={(e) => setOrgUuid(e.target.value)}
-                        />
-                      </Field>}
+                  {orgField}
                 </Card>
 
                 <Card title={t("onboard.params")} bodyClassName="space-y-4 p-5">
@@ -393,7 +795,7 @@ export function OnboardPage({ scope }: { scope: OnboardScope }) {
                         value={proxyId}
                         onChange={(e) => setProxyId(e.target.value)}
                         options={proxyOptions}
-                        disabled={!nodeId}
+                        disabled={!nodeId || (method === "session_key" && skMode === "batch")}
                       />
                     </Field>
                     <Field label={t("onboard.concurrency")} hint={t("onboard.concurrencyHint")}>
@@ -424,15 +826,26 @@ export function OnboardPage({ scope }: { scope: OnboardScope }) {
                   {err && <p className="text-[13px] text-error">{err}</p>}
                   <div className="flex items-center justify-between gap-3">
                     <Badge tone="info">Claude</Badge>
-                    <Button
-                      variant="primary"
-                      loading={busy}
-                      disabled={!nodeId || (method === "session_key" && !sessionKey.trim())}
-                      onClick={() => void submit()}
-                    >
-                      <PlugIcon width={15} height={15} />
-                      {method === "session_key" ? t("onboard.submit") : t("onboard.generateLink")}
-                    </Button>
+                    {method === "session_key" && skMode === "batch" ? (
+                      <Button
+                        variant="primary"
+                        disabled={!nodeId || !parsedValid.length || intervalBad || orgUuidBad}
+                        onClick={() => void startBatch()}
+                      >
+                        <PlugIcon width={15} height={15} />
+                        {t("onboard.batchStart", { n: parsedValid.length })}
+                      </Button>
+                    ) : (
+                      <Button
+                        variant="primary"
+                        loading={busy}
+                        disabled={!nodeId || orgUuidBad || (method === "session_key" && (!singleKey || singleKeyBad))}
+                        onClick={() => void submit()}
+                      >
+                        <PlugIcon width={15} height={15} />
+                        {method === "session_key" ? t("onboard.submit") : t("onboard.generateLink")}
+                      </Button>
+                    )}
                   </div>
                 </Card>
               </>
@@ -441,6 +854,78 @@ export function OnboardPage({ scope }: { scope: OnboardScope }) {
           </>
         )}
       </div>
+
+      {/* saved organizations manager */}
+      {canSeeTeam && (
+        <Modal
+          open={orgModal}
+          title={orgForm ? (orgForm.id ? t("onboard.orgEditTitle") : t("onboard.orgAdd")) : t("onboard.orgManage")}
+          onClose={() => { setOrgModal(false); setOrgForm(null); setOrgErr(null); }}
+          size="md"
+          footer={
+            orgForm ? (
+              <div className="flex justify-end gap-2">
+                <Button onClick={() => { setOrgForm(null); setOrgErr(null); }}>{t("common.cancel")}</Button>
+                <Button variant="primary" loading={orgBusy} onClick={() => void saveOrg()}>{t("common.save")}</Button>
+              </div>
+            ) : (
+              <div className="flex justify-between gap-2">
+                <Button variant="primary" onClick={() => openOrgForm()}>{t("onboard.orgAdd")}</Button>
+                <Button onClick={() => setOrgModal(false)}>{t("common.close")}</Button>
+              </div>
+            )
+          }
+        >
+          {orgForm ? (
+            <div className="space-y-4">
+              <Field label={t("common.name")} hint={t("onboard.orgNameHint")}>
+                <Input value={orgForm.name} maxLength={120} autoFocus onChange={(e) => setOrgForm({ ...orgForm, name: e.target.value })} />
+              </Field>
+              <Field
+                label={t("onboard.orgUuid")}
+                hint={t("onboard.orgUuidHint")}
+                error={orgForm.orgUuid.trim() && !UUID_RE.test(orgForm.orgUuid.trim()) ? t("onboard.errOrgUuidFormat") : undefined}
+              >
+                <Input
+                  value={orgForm.orgUuid}
+                  maxLength={64}
+                  autoComplete="off"
+                  placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+                  onChange={(e) => setOrgForm({ ...orgForm, orgUuid: e.target.value })}
+                />
+              </Field>
+              <Field label={`${t("onboard.note")} (${t("common.optional")})`}>
+                <Input value={orgForm.note} maxLength={500} onChange={(e) => setOrgForm({ ...orgForm, note: e.target.value })} />
+              </Field>
+              {orgErr && <p className="text-[13px] text-error">{orgErr}</p>}
+            </div>
+          ) : (orgs.data ?? []).length === 0 ? (
+            <p className="text-[13px] text-on-surface-variant">{t("onboard.orgEmpty")}</p>
+          ) : (
+            <ul className="divide-y" style={{ borderColor: "var(--outline-variant)" }}>
+              {(orgs.data ?? []).map((o) => (
+                <li key={o.id} className="flex items-start justify-between gap-3 py-2.5">
+                  <div className="min-w-0">
+                    <div className="truncate text-[13.5px] font-medium">{o.name}</div>
+                    <div className="flex flex-wrap items-center gap-1.5 font-mono text-[12px] text-on-surface-variant">
+                      <span className="break-all">{o.orgUuid}</span>
+                      <CopyButton text={o.orgUuid} />
+                    </div>
+                    {o.note && <div className="mt-0.5 text-[12.5px] text-on-surface-faint">{o.note}</div>}
+                  </div>
+                  <div className="flex shrink-0 items-center gap-1">
+                    <Button onClick={() => { setOrgChoice(o.id); setOrgModal(false); }}>{t("common.confirm")}</Button>
+                    <Button onClick={() => openOrgForm(o)}>{t("common.edit")}</Button>
+                    <ConfirmButton variant="danger" message={`${t("common.delete")} ${o.name}?`} onConfirm={() => deleteOrg(o.id)}>
+                      {t("common.delete")}
+                    </ConfirmButton>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )}
+        </Modal>
+      )}
     </div>
   );
 }

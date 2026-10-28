@@ -133,6 +133,14 @@ Chrome Extension client 上会被拒绝为“scope 未注册”。
 | `name` / `note` | — | 自动 | 备注 |
 | `groupId` | 管理员可选 | default | 号商上号忽略此参数：挂该号商的 `users.onboard_group_id`（未设则默认分组，2026-10-26） |
 
+**sessionKey 形态校验（2026-10-28）**：服务端在建任务、预留代理之前先检查 `sessionKey` 形如 `sk-ant-sid01-<base64url>`
+（正则 `^sk-ant-sid\d{2}-[A-Za-z0-9_-]{40,}$`），不符合直接 400 `session_key_format`，不占代理、不出网（失败任务会封存出口，§12，
+所以拿粘错的片段去试一次的代价是一条代理）。`ONBOARD_MOCK=1` 下不校验（测试夹具用短字符串）。前端单条与批量模式同一正则先行检查。
+
+**常用组织（管理员，2026-10-28）**：`orgUuid` / `teamName` 可以从「常用组织」列表选择，而不是每次粘贴。列表是管理员的通讯录
+（表 `onboard_orgs`，迁移 23：`id, org_uuid UNIQUE, name, note, created_by, created_at, updated_at`），只影响表单填充；
+组织归属仍由服务端按 §12 验证。它与 `upstream_teams` / `proxy_team_claims` 无关，删除一条常用组织不影响任何账号或代理。
+
 ## 4. API
 
 号商前缀换成 `/api/provider`（号商只能选自己的节点与代理）。
@@ -161,6 +169,19 @@ GET  /api/admin/nodes/:id/proxies?free=1
 `cloudflare_challenge`（claude.ai 对该代理 IP 返回 Cloudflare 人机验证页，SK 根本未被评估——换代理重试）、
 `session_stale_relogin`（登录新鲜度不足，需重新登录再取 SK，不等于 SK 无效）、`authorize_failed`（organizations/authorize 其他错误，含上游摘要）、
 `token_exchange_failed`、`validate_failed`（仅 auth_url 路径：token 可用但 validate 不返回组织）。
+
+
+常用组织（仅管理员，`requireAdmin`）：
+
+```
+GET    /api/admin/onboard/orgs            → {data:[{id, orgUuid, name, note, createdAt, updatedAt}]}（按名称排序）
+POST   /api/admin/onboard/orgs            body {name, orgUuid, note?} → 201 {data:{…}}
+PATCH  /api/admin/onboard/orgs/:id        body {name?, orgUuid?, note?|null} → {data:{…}}
+DELETE /api/admin/onboard/orgs/:id        → {data:{ok:true}}
+```
+
+错误码：`invalid_request`（缺 name / orgUuid 非 UUID）、`org_exists`（同一 UUID 已保存，含改到别的行已有的 UUID）、404 `organization`。
+`orgUuid` 落库统一小写。ops / 号商访问一律 403。
 
 ## 5. 数据模型（迁移 5 与 21）
 
@@ -221,6 +242,15 @@ GET  /api/admin/nodes/:id/proxies?free=1
 - 代理选择器：`GET .../proxies?free=1` 下拉，展示探活、已绑定与预留占用。组织字段与历史只向管理员展示，非管理员错误不返回组织身份。
 - **全站 Claude-only**：公开站点模型页/价格页、控制台分组模型选择器只显示 `platform=anthropic` 的模型；
   其余平台前端隐藏（注册表与网关行为不变，方便日后恢复）。
+
+**2026-10-28 常用组织与批量上号**（`console/pages/shared/Onboard.tsx`，管理员）：
+
+- 组织一栏是下拉：「不指定」/ 已保存的常用组织 / 「手动输入…」。选常用组织时自动带出 `orgUuid` 与 `teamName`；手动输入时可一键
+  「保存为常用组织」。「管理常用组织」弹窗支持新增、编辑、删除（删除有二次确认），UUID 实时格式检查。
+- sessionKey 方式新增「单条 / 批量」切换。批量：一次粘贴多条 key（按行、逗号、空白切分，去掉首尾引号），前端按与服务端相同的正则逐条
+  标记「格式错误 / 重复」并只提交有效且去重后的条目；共用同一组织与参数（代理固定 `auto`）；相邻两条之间随机等待 5–7 秒
+  （区间可改，0–600 秒）；每条 key 一个独立任务，进度表逐行显示排队 / 进行中 / 成功（邮箱）/ 失败（错误码）；
+  「停止」只停止后续提交，已提交的任务照常跑完。批量编排在浏览器侧，关闭页面即停止提交，已创建的任务不受影响。
 
 ## 8. （已废弃）授权 bot 服务化
 

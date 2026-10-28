@@ -1,6 +1,6 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
-import { all, one, tx, type AccountRow } from "@1dayapi/core";
-import { bad, body, notFound, num, oneOf, query, str, uuid } from "../http.js";
+import { all, newId, nowIso, one, run, tx, type AccountRow } from "@1dayapi/core";
+import { bad, body, notFound, num, oneOf, query, str, uuid, type Body } from "../http.js";
 import { listProxiesForPicker, resolveTeamProxy, ProxyInputError } from "../node/proxies.js";
 import { requireAdmin, requireOps, requireProvider } from "../session.js";
 import {
@@ -28,6 +28,23 @@ interface NodeRow {
   provider_id: string;
   role: string | null;
   online: number;
+}
+
+/**
+ * sessionKey shape check (docs/onboarding.md §3): `sk-ant-sid01-<base64url>`. Rejecting a
+ * pasted fragment, a key with stray quotes/spaces, or a whole cookie header here saves a
+ * proxy reservation and an upstream round trip (a failed job quarantines its exit, §12).
+ * ONBOARD_MOCK=1 (tests) exchanges nothing upstream and keeps accepting fixture strings.
+ */
+const SESSION_KEY_RE = /^sk-ant-sid\d{2}-[A-Za-z0-9_-]{40,}$/;
+export function sessionKeyFormatOk(sk: string): boolean {
+  return SESSION_KEY_RE.test(sk);
+}
+function assertSessionKeyFormat(sk: string): void {
+  if (process.env.ONBOARD_MOCK === "1") return;
+  if (!sessionKeyFormatOk(sk)) {
+    bad("session_key_format", "sessionKey must look like sk-ant-sid01-… (one key, letters/digits/'-'/'_' only, no spaces or quotes)");
+  }
 }
 
 function loadNodeForScope(nodeId: string, scope: OnboardScope, requesterId: string): NodeRow {
@@ -107,6 +124,8 @@ async function onboard(req: FastifyRequest, scope: OnboardScope) {
   const requesterId = req.user!.id;
 
   if (method === "auth_url" && typeof b.jobId === "string" && b.jobId) return continueCallback(req, scope, b.jobId);
+  // Shape check first: a malformed key must not cost a node lookup, a proxy reservation or an exit.
+  if (method === "session_key") assertSessionKeyFormat(str(b, "sessionKey", { required: true, max: 8000 })!);
 
   const nodeId = str(b, "nodeId", { required: true, max: 120 })!;
   const node = loadNodeForScope(nodeId, scope, requesterId);
@@ -116,6 +135,7 @@ async function onboard(req: FastifyRequest, scope: OnboardScope) {
 
   if (method === "session_key") {
     const sessionKey = str(b, "sessionKey", { required: true, max: 8000 })!;
+    assertSessionKeyFormat(sessionKey);
     const orgUuid = uuid(b, "orgUuid");
     // Pick + reserve in one transaction: two concurrent jobs must never leave
     // with the same proxy (the loser would only find out after a real consent).
@@ -160,6 +180,7 @@ async function reauth(req: FastifyRequest) {
 
   if (method === "session_key") {
     const sessionKey = str(b, "sessionKey", { required: true, max: 8000 })!;
+    assertSessionKeyFormat(sessionKey);
     const orgUuid = uuid(b, "orgUuid");
     const jobId = tx(() => startSessionKeyJob("admin", requesterId, nodeId, a.bound_proxy_id!, sessionKey, params, orgUuid));
     return { data: { jobId, status: "working" } };
@@ -178,7 +199,63 @@ async function jobStatus(req: FastifyRequest, scope: OnboardScope) {
   return { data: jobOut(job,req.user?.role==='admin') };
 }
 
+// ---------- saved organizations (docs/onboarding.md §3 常用组织) ----------
+// Admin-only address book for the onboarding form: a name + organization UUID the
+// operator records once and then picks from a list. It is convenience data only —
+// independent of upstream_teams / proxy claims, which the server still verifies.
+interface OrgRow {
+  id: string;
+  org_uuid: string;
+  name: string;
+  note: string | null;
+  created_at: string;
+  updated_at: string;
+}
+const orgOut = (r: OrgRow) => ({ id: r.id, orgUuid: r.org_uuid, name: r.name, note: r.note, createdAt: r.created_at, updatedAt: r.updated_at });
+function loadOrg(id: string): OrgRow {
+  const r = one<OrgRow>("SELECT * FROM onboard_orgs WHERE id = ?", id);
+  if (!r) notFound("organization");
+  return r;
+}
+function writeOrg(b: Body, existing: OrgRow | null, userId: string): OrgRow {
+  const name = str(b, "name", { required: !existing, max: 120 }) ?? existing!.name;
+  const orgUuid = uuid(b, "orgUuid") ?? existing?.org_uuid;
+  if (!orgUuid) bad("invalid_request", "orgUuid is required");
+  const note = "note" in b ? (str(b, "note", { max: 500 }) ?? null) : (existing?.note ?? null);
+  const dup = one<{ id: string }>("SELECT id FROM onboard_orgs WHERE org_uuid = ? AND id <> ?", orgUuid, existing?.id ?? "");
+  if (dup) bad("org_exists", "This organization UUID is already saved");
+  const now = nowIso();
+  if (existing) {
+    run("UPDATE onboard_orgs SET name = ?, org_uuid = ?, note = ?, updated_at = ? WHERE id = ?", name, orgUuid, note, now, existing.id);
+    return loadOrg(existing.id);
+  }
+  const id = newId();
+  run(
+    "INSERT INTO onboard_orgs (id, org_uuid, name, note, created_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+    id, orgUuid, name, note, userId, now, now,
+  );
+  return loadOrg(id);
+}
+
 export function registerOnboardingRoutes(app: FastifyInstance): void {
+  // Saved organizations for the form (admin only: names and UUIDs are admin-visible, §7).
+  const preAdminOnly = { preHandler: requireAdmin };
+  app.get("/api/admin/onboard/orgs", preAdminOnly, async () => ({
+    data: all<OrgRow>("SELECT * FROM onboard_orgs ORDER BY name COLLATE NOCASE, created_at").map(orgOut),
+  }));
+  app.post("/api/admin/onboard/orgs", preAdminOnly, async (req, reply) =>
+    reply.status(201).send({ data: orgOut(writeOrg(body(req), null, req.user!.id)) }));
+  app.patch("/api/admin/onboard/orgs/:id", preAdminOnly, async (req) => {
+    const { id } = req.params as { id: string };
+    return { data: orgOut(writeOrg(body(req), loadOrg(id), req.user!.id)) };
+  });
+  app.delete("/api/admin/onboard/orgs/:id", preAdminOnly, async (req) => {
+    const { id } = req.params as { id: string };
+    loadOrg(id);
+    run("DELETE FROM onboard_orgs WHERE id = ?", id);
+    return { data: { ok: true } };
+  });
+
   // Admin endpoints here are shared with the ops role (docs/auth.md §2).
   const preAdmin = { preHandler: requireOps };
   const preProvider = { preHandler: requireProvider };

@@ -308,6 +308,7 @@ const MIGRATIONS: Array<{ version: number; up: (d: DatabaseSync, log: Log) => vo
   { version: 20, up: migration20 },
   { version: 21, up: migration21 },
   { version: 22, up: migration22 },
+  { version: 23, up: migration23 },
 ];
 
 // 上号员令牌（独立鉴权的上号站点 /onboard）：admin 签发，绑定目标节点；
@@ -755,4 +756,22 @@ function migration22(d: DatabaseSync, log: Log): void {
     CREATE INDEX IF NOT EXISTS idx_gateway_account_hits ON gateway_account_hits(account_id,hit_at);
   `);
   log("migration 22: additive audit repair leases, onboarding expiry and immutable billing snapshots");
+}
+
+// Migration 23 (2026-10-28): onboard_orgs — the admin's saved organizations for the
+// onboarding form (name + organization UUID, docs/onboarding.md §3 常用组织). Pure
+// convenience data: it does not touch upstream_teams, claims or any legacy row.
+function migration23(d: DatabaseSync, log: Log): void {
+  d.exec(`
+    CREATE TABLE IF NOT EXISTS onboard_orgs (
+      id TEXT PRIMARY KEY,
+      org_uuid TEXT NOT NULL UNIQUE,
+      name TEXT NOT NULL,
+      note TEXT,
+      created_by TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+  `);
+  log("migration 23: onboard_orgs (saved organizations for the onboarding form)");
 }
