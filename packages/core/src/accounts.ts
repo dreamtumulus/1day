@@ -354,6 +354,9 @@ export function restAfterReset(baseIso: string, window: string | null | undefine
   return new Date(base + Math.round(rest * 1000)).toISOString().replace(/\.\d{3}Z$/, "Z");
 }
 
+/** Process-local overload streak per account (gateway instance): drives the escalating cooldown. */
+const overloadStreak = new Map<string, { n: number; at: number }>();
+
 /** §7.3 cooldown bookkeeping. */
 export function markFailure(id: string, f: FailureKind): void {
   const now = nowIso();
@@ -363,9 +366,15 @@ export function markFailure(id: string, f: FailureKind): void {
       run("UPDATE accounts SET rate_limited_until = ?, updated_at = ? WHERE id = ?", isoIn(sec * 1000), now, id);
       return;
     }
-    case "overloaded":
-      run("UPDATE accounts SET overload_until = ?, updated_at = ? WHERE id = ?", isoIn(60_000), now, id);
+    case "overloaded": {
+      // Escalate while the overloads keep coming (60 s, 2 min, 4 min … 10 min); a quiet 15 minutes resets the streak.
+      const prev = overloadStreak.get(id);
+      const streak = prev && Date.now() - prev.at < 15 * 60_000 ? prev.n + 1 : 1;
+      overloadStreak.set(id, { n: streak, at: Date.now() });
+      const ms = Math.min(60_000 * 2 ** (streak - 1), 10 * 60_000);
+      run("UPDATE accounts SET overload_until = ?, updated_at = ? WHERE id = ?", isoIn(ms), now, id);
       return;
+    }
     case "payment":
       run(
         "UPDATE accounts SET temp_unschedulable_until = ?, error_message = 'upstream 402 payment required', updated_at = ? WHERE id = ?",

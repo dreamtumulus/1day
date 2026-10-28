@@ -1,6 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { all, boundProxyDown, getSettings, getSetting, one, publicModels, publicPricing, parseThresholdPercent, windowAllows, type AccountRow } from "@1dayapi/core";
-import { isTrustedExecutionNode } from "../node/trust.js";
+import { poolBase, poolVerdict, type PoolRow, type PoolStateName } from "../pool-state.js";
 import { body, sendError, str } from "../http.js";
 import {
   SESSION_COOKIE,
@@ -84,30 +84,6 @@ export function registerPublicRoutes(app: FastifyInstance): void {
 
 // ---------- 公开账号池快照（首页实时面板，脱敏） ----------
 
-interface PoolRow {
-  id: string;
-  team_id:string|null;
-  bound_proxy_id:string|null;
-  route:"direct"|"node";
-  overload_until:string|null;
-  temp_unschedulable_until:string|null;
-  window_used:number|null;
-  window_reset_at:string|null;
-  window_5h_reset_at:string|null;
-  window_7d_reset_at:string|null;
-  concurrency:number;
-  executor:AccountRow["executor"];
-  name: string;
-  account_email: string | null;
-  owner_id: string | null;
-  status: string;
-  node_id: string | null;
-  window_5h_used: number | null;
-  window_7d_used: number | null;
-  rate_limited_until: string | null;
-  window_exhausted_until: string | null;
-  last_used_at: string | null;
-}
 
 /** pr***@***.us —— 前缀与域名主体都掩码，只保留首字母与 TLD。 */
 function maskEmail(email: string): string {
@@ -125,38 +101,22 @@ function maskName(name: string): string {
 
 const POOL_WHERE = "type = 'oauth' AND platform = 'anthropic' AND review_status = 'approved' AND status <> 'disabled'";
 
-function poolState(r: PoolRow, now: string, nodeOnline: Map<string, boolean>): "online" | "cooling" | "error" | "offline" | "unmanaged" | "unavailable" | "busy" {
-  if(!r.team_id)return "unmanaged";
-  if(r.status!=="active")return "error";
-  if(!r.node_id || !nodeOnline.get(r.node_id) || !isTrustedExecutionNode(r.node_id))return "offline";
-  if(r.route!=="node" || !r.bound_proxy_id || boundProxyDown(r) ||
-    !one("SELECT 1 FROM upstream_teams WHERE id=? AND status='active'",r.team_id) ||
-    !one("SELECT 1 FROM account_groups ag JOIN groups g ON g.id=ag.group_id WHERE ag.account_id=? AND g.status='active'",r.id))return "unavailable";
-  if((r.rate_limited_until && r.rate_limited_until>now) || (r.window_exhausted_until && r.window_exhausted_until>now) ||
-    (r.overload_until && r.overload_until>now) || (r.temp_unschedulable_until && r.temp_unschedulable_until>now) ||
-    !windowAllows(r,now,parseThresholdPercent(getSetting("anthropic_window_threshold_percent"))))return "cooling";
-  if(r.concurrency>0 && (one<{n:number}>("SELECT COUNT(*) n FROM gateway_account_leases WHERE account_id=? AND expires_at>?",r.id,Date.now())?.n??0)>=r.concurrency)return "busy";
-  return "online";
+function poolState(r: PoolRow, now: string, nodeOnline: Map<string, boolean>): PoolStateName {
+  return poolVerdict(r, now, nodeOnline).state;
 }
 
-function poolItem(r: PoolRow, state: ReturnType<typeof poolState>) {
+function poolItem(r: PoolRow, verdict: ReturnType<typeof poolVerdict>) {
   return {
     label: r.account_email ? maskEmail(r.account_email) : maskName(r.name),
     side: r.owner_id === null ? ("platform" as const) : ("provider" as const),
-    state,
+    state: verdict.state,
+    reason: verdict.reason,
     window5h: r.window_5h_used,
     window7d: r.window_7d_used,
     lastUsedAt: r.last_used_at,
   };
 }
 
-function poolBase() {
-  const now = new Date().toISOString().slice(0, 19) + "Z";
-  const nodeOnline = new Map(
-    all<{ node_id: string; online: number;accepting_sessions:number }>("SELECT node_id, online,accepting_sessions FROM nodes").map((n) => [n.node_id, n.online === 1 && n.accepting_sessions===1]),
-  );
-  return { now, nodeOnline };
-}
 
 /** 汇总（首页方块）：总数 + 各状态计数 + 24h 请求。 */
 let snapshotCache:{expires:number;value:unknown}|undefined;
@@ -212,7 +172,7 @@ function poolAccounts(side: "platform" | "provider" | undefined, page: number, p
     items: rows.map((r) => {
       const u = usage30d.get(r.id);
       return {
-        ...poolItem(r, poolState(r, now, nodeOnline)),
+        ...poolItem(r, poolVerdict(r, now, nodeOnline)),
         requests30d: u?.n ?? 0,
         cost30d: u ? Math.round(u.cost * 10000) / 10000 : 0,
       };

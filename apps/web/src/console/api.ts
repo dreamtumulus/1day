@@ -440,6 +440,9 @@ export interface AdminAccount extends ProviderAccount {
   groups: Array<{ groupId: string; name: string; priority: number }>;
   rateLimitedUntil: string | null;
   overloadUntil: string | null;
+  /** Admin view: scheduler verdict + first failing gate (apps/console/src/pool-state.ts). */
+  poolState?: "online" | "cooling" | "error" | "offline" | "unmanaged" | "unavailable" | "busy";
+  poolReason?: string | null;
   tempUnschedulableUntil: string | null;
   /** CCR subscription window (null until the first probe). 0..1. */
   windowUsed: number | null;

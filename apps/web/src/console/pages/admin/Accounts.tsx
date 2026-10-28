@@ -557,6 +557,15 @@ export function AdminAccounts() {
       if (isFuture(c.until)) items.push({ tone: "info", label: t("admin.accounts.coolModel", { scope: scope.replace(/^model:/, "") }), until: c.until!, sub: c.reason });
     }
     if (items.length === 0) {
+      // No cooldown, yet the scheduler may still skip it: say which gate (dead proxy, quarantine,
+      // node offline, legacy row …) instead of "no cooldown" (2026-10-28).
+      if (a.poolState && a.poolState !== "online" && a.poolReason && a.status === "active" && a.reviewStatus === "approved") {
+        return (
+          <span className="font-mono text-[11px] text-error" title={a.poolState}>
+            {a.poolState} · {a.poolReason}
+          </span>
+        );
+      }
       return (
         <span className="text-[11.5px] text-on-surface-faint" title={a.windowReason ?? undefined}>
           {a.status === "active" && a.reviewStatus === "approved" ? t("admin.accounts.coolNone") : "—"}

@@ -188,6 +188,10 @@ export interface ProxyStatusReport {
   live: boolean | null;
   latencyMs: number | null;
   exitIp?: string | null;
+  /** ISO time the exit was last measured; null = never (2026-10-28). */
+  exitMeasuredAt?: string | null;
+  /** ISO time of the last liveness probe; null = unprobed since the pool was (re)loaded. */
+  probedAt?: string | null;
 }
 
 // --- cc_worker: on-node real Claude Code worker (docs/ccr-supply.md §8.1) ---

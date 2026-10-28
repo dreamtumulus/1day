@@ -57,14 +57,16 @@ export async function retryArchiveCleanup():Promise<void> {
   // Bound parallel work; a disconnected node must not delay every other cleanup.
   for(let offset=0;offset<jobs.length;offset+=4)await Promise.allSettled(jobs.slice(offset,offset+4).map(runOnce));
 }
-export function startArchiveCleanup():()=>void {
-  let running=false;
+export function startArchiveCleanup():()=>Promise<void> {
+  let inflight:Promise<void>|null=null;
+  let stopped=false;
   const tick=()=>{
-    if(running)return;
-    running=true;
-    void retryArchiveCleanup().catch(()=>console.error("[archive] durable cleanup tick failed")).finally(()=>{running=false;});
+    if(inflight||stopped)return;
+    inflight=retryArchiveCleanup().catch(()=>console.error("[archive] durable cleanup tick failed")).finally(()=>{inflight=null;});
   };
   const start=setTimeout(tick,1000);start.unref();
   const timer=setInterval(tick,15_000);timer.unref();
-  return ()=>{clearTimeout(start);clearInterval(timer);};
+  // Stop = no new ticks AND wait for the one in flight: a tick finishing after app.close()
+  // touched a closed database (test teardown flake, 2026-10-28).
+  return async()=>{stopped=true;clearTimeout(start);clearInterval(timer);if(inflight)await inflight;};
 }

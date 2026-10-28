@@ -94,6 +94,14 @@ ops/bin/gateway-switch            # 控制面与节点就绪后切换网关（�
 `affinity: N session / M device bindings, K worker turn memories carried over`；在此之前每次切换都会把全部活跃对话和设备重新发牌、
 worker 会话全部 fresh 重放（gateway.md §3、worker-sessions.md 进度 2026-10-22）。
 
+**发布完成的定义（2026-10-28 起）**：`ops/bin/release-verify` 通过才算完成——网关 `/health`、一条真实 claude-sonnet-5-5 请求 200、
+公开池 online 账号数不低于发布前、节点心跳新鲜、探针一轮全绿。发布记录附它的输出。只有本地模拟测试通过的发布不算完成
+（10-27 / 10-28 两次发布测试全过，上线后平台 36 小时无法服务，无人知晓）。
+
+**告警（2026-10-28 起）**：`/root/monitor/func.py` 末尾挂了 `ops/monitor/func-alert-hook.py`，连续 2 轮失败经 `ops/monitor/alert.py`
+推送（Telegram 或 webhook，配置 `/root/monitor/alert.conf`）；worker-01 上 `1dayapi-extprobe.timer` 每 2 分钟从外部打
+`/health` 和 `/v1/models`，主服务器整机故障时由它报警。`python3 /root/monitor/alert.py test` 验证通道。
+
 发布后验证：
 
 ```bash
@@ -151,6 +159,8 @@ curl -s -o /dev/null -w '%{http_code}\n' https://1dayapi.com/login   # 期望 20
 | 关闭号商隧道 | 停用 `route=node` 的账户或禁用号商 / 移除节点（v3 起无 `PROVIDER_TUNNEL_ENABLED`） |
 | 查看前端错误 | `data/client-errors.log`（目前前端未上报） |
 | 证书续期 | certbot timer 自动；手动 `certbot renew --dry-run` 检查 |
+| 发布后验证 | `ops/bin/release-verify`（真实请求 + 探针 + 池 online 数）；不通过不算发布完成 |
+| 告警通道 | `/root/monitor/alert.conf`；`python3 /root/monitor/alert.py test` |
 | 新增 worker 节点 | 见下方检查清单 |
 
 **新增 worker 节点检查清单**（每一步都有机器可验的产出，别跳）：

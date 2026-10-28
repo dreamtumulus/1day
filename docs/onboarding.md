@@ -141,6 +141,12 @@ Chrome Extension client 上会被拒绝为“scope 未注册”。
 （表 `onboard_orgs`，迁移 23：`id, org_uuid UNIQUE, name, note, created_by, created_at, updated_at`），只影响表单填充；
 组织归属仍由服务端按 §12 验证。它与 `upstream_teams` / `proxy_team_claims` 无关，删除一条常用组织不影响任何账号或代理。
 
+**旧代理回填的实际决定（2026-10-28）**：隔离发布把全部 525 条已有代理标为 `isolation_version=0`，而新分配逻辑只认版本 1，
+上线后没有一条代理可分配（所有上号 400 `proxy_pool_empty`）。当日 09:31 UTC 按用户决定把 **未绑定且 live** 的 471 条旧代理直接标为
+版本 1（备份 `data/backups/1dayapi.db.pre-proxy-backfill-20261028T083109Z.bak`），节点下一次心跳补齐出口 IP 后即可分配。
+未回填的：WORK-CCR 节点的 50 条（隔离供给，不参与上号）和 4 条已绑定旧账号的代理（随旧账号一起留在旧路径）。
+上文「现有行不回填」自此只对这两类成立。
+
 ## 4. API
 
 号商前缀换成 `/api/provider`（号商只能选自己的节点与代理）。

@@ -1,3 +1,4 @@
+import { poolBase, poolVerdict, type PoolRow } from "./pool-state.js";
 import {
   all,
   coolingUntil,
@@ -199,6 +200,18 @@ export function providerAccountShape(
   };
 }
 
+
+/** Admin view: the scheduler's verdict for a subscription account and the first failing gate. */
+function poolReasonFields(a: AccountRow) {
+  try {
+    const { now, nodeOnline } = poolBase();
+    const v = poolVerdict(a as unknown as PoolRow, now, nodeOnline);
+    return { poolState: v.state, poolReason: v.reason };
+  } catch {
+    return {};
+  }
+}
+
 export function adminAccountShape(
   a: AccountRow & { owner_name?: string | null },
   groups: Array<{ groupId: string; name: string; priority: number }>,
@@ -208,6 +221,7 @@ export function adminAccountShape(
   const usage = extra?.usage ?? EMPTY_USAGE;
   return {
     ...providerAccountShape(a, stats ?? { requests: usage.d30.requests, cost: usage.d30.costUsd, earning: 0 }),
+    ...(extra?.showTeam && a.type==="oauth" && a.platform==="anthropic" ? poolReasonFields(a) : {}),
     ...(extra?.showTeam?{teamId:a.team_id,teamName:a.team_id?one<{name:string|null}>("SELECT name FROM upstream_teams WHERE id=?",a.team_id)?.name??null:null,errorMessage:a.error_message}:{}),
     ownerId: a.owner_id,
     ownerName: a.owner_name ?? null,

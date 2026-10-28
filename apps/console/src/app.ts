@@ -47,7 +47,7 @@ export async function buildApp(): Promise<FastifyInstance> {
   const swept = sweepStaleJobs();
   const stopOnboardingMaintenance = startOnboardingMaintenance();
   const stopArchiveCleanup = startArchiveCleanup();
-  app.addHook("onClose", async () => { stopOnboardingMaintenance(); stopArchiveCleanup(); });
+  app.addHook("onClose", async () => { stopOnboardingMaintenance(); await stopArchiveCleanup(); });
   if (swept) app.log.warn(`onboarding: ${swept} stale job(s) marked failed at boot`);
   startWindowPoller(app.log);
   startCacheRefundScheduler(app.log);

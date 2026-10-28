@@ -5,6 +5,10 @@ import type { ProxyStatusReport } from "./protocol.js";
 import { Socks5Bridge, isSocks5Url } from "./socks5-bridge.js";
 
 export const PROXY_HEALTHCHECK_INTERVAL_MS = 5 * 60_000;
+/** A measured exit is trusted this long before the probe asks the lookup service again. */
+export const EXIT_REMEASURE_MS = Number(process.env.PROXY_EXIT_REMEASURE_MS) > 0 ? Number(process.env.PROXY_EXIT_REMEASURE_MS) : 6 * 60 * 60_000;
+/** Exit lookup sources, in order; each returns the caller's public IP (JSON {ip} or plain text). */
+const EXIT_LOOKUP_SOURCES = ["https://api.ipify.org?format=json", "https://checkip.amazonaws.com", "https://api64.ipify.org?format=json"];
 const HEALTHCHECK_TIMEOUT_MS = 10_000;
 const HEALTHCHECK_URL = "https://api.anthropic.com/v1/models";
 /** Probes in flight at once: proxy vendors throttle connection bursts, which would read as false "dead". */
@@ -66,6 +70,8 @@ interface ProxyHealth {
   /** Consecutive proxy-layer failures; reset by any success. live=false only at >= deadAfter. */
   failStreak: number;
   exitIp?: string | null;
+  /** When exitIp was last measured (ms epoch); the heartbeat reports it as exitMeasuredAt. */
+  exitMeasuredAt?: number | null;
 }
 
 export interface ProxyPoolOptions {
@@ -312,6 +318,8 @@ export class ProxyPool {
       live: h.live,
       latencyMs: h.latencyMs,
       exitIp: h.exitIp ?? null,
+      exitMeasuredAt: h.exitMeasuredAt ? new Date(h.exitMeasuredAt).toISOString() : null,
+      probedAt: h.lastCheckAt ? new Date(h.lastCheckAt).toISOString() : null,
       error: h.lastError,
     }));
     const assignments: Record<string, string> = {};
@@ -398,6 +406,24 @@ export class ProxyPool {
     }
   }
 
+  /** Public IP as seen from `proxy`: first source that answers with a valid address wins. */
+  private async measureExit(proxy: string): Promise<string | null> {
+    for (const src of EXIT_LOOKUP_SOURCES) {
+      try {
+        const res = await bunFetch(src, { proxy, signal: AbortSignal.timeout(HEALTHCHECK_TIMEOUT_MS) });
+        const body = (await res.text()).trim();
+        let ip = body;
+        if (body.startsWith("{")) {
+          try { ip = String((JSON.parse(body) as { ip?: unknown }).ip ?? ""); } catch { ip = ""; }
+        }
+        if (isIP(ip)) return ip;
+      } catch {
+        /* next source */
+      }
+    }
+    return null;
+  }
+
   private async probe(target: string, url: string, h: ProxyHealth): Promise<void> {
     const t0 = Date.now();
     try {
@@ -410,12 +436,17 @@ export class ProxyPool {
       await res.body?.cancel().catch(() => undefined); // never leave 400 probe bodies dangling
       // Exit identity is capacity metadata, independent of the Anthropic liveness verdict.
       // Never infer an IP from the proxy host (residential/sticky providers can differ).
-      if (!this.opts.checkUrl) {
-        try {
-          const ipRes = await bunFetch("https://api.ipify.org?format=json", { proxy, signal: AbortSignal.timeout(HEALTHCHECK_TIMEOUT_MS) });
-          const ip = (await ipRes.json() as { ip?: unknown }).ip;
-          h.exitIp = typeof ip === "string" && isIP(ip) ? ip : null;
-        } catch { h.exitIp = null; }
+      // Measured at most once per EXIT_REMEASURE_MS per proxy (a known exit is kept, not
+      // re-asked on every pass: 190 proxies × every pass was a lookup-service hammer), with a
+      // second lookup source when the first fails; a failed lookup keeps the last known exit.
+      if (!this.opts.checkUrl && (!h.exitIp || !h.exitMeasuredAt || Date.now() - h.exitMeasuredAt >= EXIT_REMEASURE_MS)) {
+        const ip = await this.measureExit(proxy);
+        if (ip) {
+          h.exitIp = ip;
+          h.exitMeasuredAt = Date.now();
+        } else if (!h.exitIp) {
+          h.exitIp = null;
+        }
       }
       if (h.live === false || h.failStreak > 0) this.log(`proxy ${proxyId(url)} back: probe ok after ${h.failStreak} failure(s)`);
       h.live = true;

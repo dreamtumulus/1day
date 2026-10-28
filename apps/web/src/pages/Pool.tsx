@@ -7,6 +7,8 @@ interface PoolAccount {
   label: string;
   side: "platform" | "provider";
   state: "online" | "cooling" | "error" | "offline" | "unmanaged" | "unavailable" | "busy";
+  /** First failing scheduler gate (stable code), null when online. */
+  reason?: string | null;
   window5h: number | null;
   window7d: number | null;
   lastUsedAt: string | null;
@@ -152,10 +154,14 @@ export function Pool() {
                     <span
                       className="inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 font-mono text-[11px] font-bold leading-none"
                       style={{ color: STATE_STYLE[a.state].color, background: STATE_STYLE[a.state].bg }}
+                      title={a.reason ?? undefined}
                     >
                       <span className="h-[6px] w-[6px] rounded-full" style={{ background: STATE_STYLE[a.state].color }} />
                       {stateLabel(a.state)}
                     </span>
+                    {a.reason && a.state !== "online" && (
+                      <div className="mt-0.5 font-mono text-[10.5px] text-on-surface-faint">{a.reason}</div>
+                    )}
                   </td>
                   <td className="ta-r font-mono tabular-nums">{pct(a.window5h)}</td>
                   <td className="ta-r font-mono tabular-nums">{pct(a.window7d)}</td>

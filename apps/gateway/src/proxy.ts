@@ -980,7 +980,15 @@ async function proxyRequest(req: FastifyRequest, reply: FastifyReply, format: Cl
 
         if (raw) {
           // Raw passthrough (§4a): every upstream status and body goes back verbatim — 429 and 5xx included —
-          // with no account marking and no failover; the relay's own scheduling is the only one that applies.
+          // with no failover; the relay's own scheduling is the only one that applies. Since 2026-10-28 a
+          // 503/529 still cools the relay account (escalating 1–10 min, core markFailure) so that, when
+          // another candidate exists for the model, the next request goes there instead of hitting a
+          // relay that answered "no capacity" 915 times in 24 h; with no alternative the account stays
+          // selectable and the status is passed through as before.
+          if ((status === 503 || status === 529) && listCandidates(caller.groupId, model).some((a) => a.id !== account.id)) {
+            markFailure(account.id, { kind: "overloaded" });
+            console.warn(`[proxy] ${ctx.requestId} relay ${account.name} answered ${status}; cooled, other candidates remain`);
+          }
           passUpstreamError(ctx, account, wireModeFor(mode), status, text, res.headers.get("retry-after"));
           return;
         }

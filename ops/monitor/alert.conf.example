@@ -1,0 +1,5 @@
+# Copy to alert.conf (chmod 0600) on the main server (/root/monitor) and on worker-01 (/root/monitor).
+# Any one channel is enough; both may be set.
+TELEGRAM_BOT_TOKEN=
+TELEGRAM_CHAT_ID=
+WEBHOOK_URL=

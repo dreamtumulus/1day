@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+# Post-release business verification (docs/operations.md §4): a release is done only when this passes.
+#   ops/bin/release-verify            # on the main server, as root
+# Checks: gateway health; one real claude-sonnet-5-5 request with the monitor's consumer key returns 200;
+# the public pool has at least one online account (or the count did not drop vs. the saved baseline);
+# nodes are online; one monitor run is green. Exit non-zero on any failure.
+set -uo pipefail
+KEY=$(cat /root/monitor/apikey.txt 2>/dev/null || true)
+fail=0
+say() { printf '%s\n' "$*"; }
+chk() { if "$@"; then say "  ok"; else say "  FAIL"; fail=1; fi; }
+
+say "1. gateway /health"
+chk curl -fsS -m 10 https://api.1dayapi.com/health >/dev/null
+
+say "2. real request (claude-sonnet-5-5, max_tokens 16)"
+if [ -n "$KEY" ]; then
+  code=$(curl -s -m 120 -o /tmp/release-verify.json -w '%{http_code}' -X POST https://api.1dayapi.com/v1/messages \
+    -H "authorization: Bearer $KEY" -H 'content-type: application/json' -H 'anthropic-version: 2023-06-01' \
+    -d '{"model":"claude-sonnet-5-5","max_tokens":16,"messages":[{"role":"user","content":"Reply with the single word OK."}]}')
+  say "  HTTP $code $(head -c 160 /tmp/release-verify.json)"
+  [ "$code" = "200" ] || fail=1
+else
+  say "  SKIP (no /root/monitor/apikey.txt)"; fail=1
+fi
+
+say "3. public pool online accounts"
+pool=$(curl -fsS -m 10 http://127.0.0.1:8401/api/pool || echo '{}')
+online=$(printf '%s' "$pool" | python3 -c 'import json,sys; d=json.load(sys.stdin).get("data",{}).get("totals",{}); print(d.get("online",0))' 2>/dev/null || echo 0)
+base_file=/opt/1dayapi/data/release-verify-baseline
+base=$(cat "$base_file" 2>/dev/null || echo 0)
+say "  online=$online baseline=$base"
+if [ "$online" -ge 1 ] && [ "$online" -ge "$base" ]; then say "  ok"; else say "  FAIL"; fail=1; fi
+[ "$online" -gt "$base" ] && echo "$online" > "$base_file"
+
+say "4. nodes online"
+nodes=$(curl -fsS -m 10 http://127.0.0.1:8401/api/pool >/dev/null && node --no-warnings -e "import('node:sqlite').then(({DatabaseSync})=>{const db=new DatabaseSync('/opt/1dayapi/data/1dayapi.db',{readOnly:true});const r=db.prepare(\"select count(*) n from nodes where online=1 and last_heartbeat_at>=strftime('%Y-%m-%dT%H:%M:%SZ','now','-2 minutes')\").get();console.log(r.n)})")
+say "  fresh heartbeats: $nodes"
+[ "${nodes:-0}" -ge 2 ] || fail=1
+
+say "5. monitor run"
+if out=$(cd /root/monitor && timeout 300 python3 func.py 2>&1 | head -1); then
+  say "  $out"
+  printf '%s' "$out" | grep -q 'false' && { say "  FAIL (a probe failed)"; fail=1; }
+else
+  say "  FAIL (monitor did not run)"; fail=1
+fi
+
+if [ "$fail" = 0 ]; then say "RELEASE VERIFIED"; else say "RELEASE NOT VERIFIED"; fi
+exit $fail

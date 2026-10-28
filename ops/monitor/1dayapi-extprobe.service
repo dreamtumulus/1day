@@ -1,0 +1,8 @@
+[Unit]
+Description=1dayAPI external availability probe (health + models through the public edge)
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/root/monitor
+ExecStart=/usr/bin/python3 /root/monitor/extprobe.py
