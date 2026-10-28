@@ -20,7 +20,8 @@ def _conf():
             line = line.strip()
             if line and not line.startswith("#") and "=" in line:
                 k, v = line.split("=", 1)
-                out[k.strip()] = v.strip()
+                if v.strip():
+                    out[k.strip()] = v.strip()
     except FileNotFoundError:
         pass
     return out
@@ -80,7 +81,8 @@ def evaluate(failed, source, detail=""):
     now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     if failed:
         st["failures"] = st.get("failures", 0) + 1
-        st.setdefault("since", now)
+        if not st.get("since"):
+            st["since"] = now
         if st["failures"] >= THRESHOLD and not st.get("open"):
             text = f"[1dayAPI][{source}] 平台探测连续 {st['failures']} 次失败（自 {st['since']}）：{', '.join(failed)}\n{detail}".strip()
             if send(text, False, source):

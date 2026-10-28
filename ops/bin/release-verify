@@ -39,11 +39,12 @@ say "  fresh heartbeats: $nodes"
 [ "${nodes:-0}" -ge 2 ] || fail=1
 
 say "5. monitor run"
-if out=$(cd /root/monitor && timeout 300 python3 func.py 2>&1 | head -1); then
+if (cd /root/monitor && timeout 300 python3 func.py > /tmp/release-verify-monitor.log 2>&1); then
+  out=$(grep -m1 '^20' /tmp/release-verify-monitor.log)
   say "  $out"
   printf '%s' "$out" | grep -q 'false' && { say "  FAIL (a probe failed)"; fail=1; }
 else
-  say "  FAIL (monitor did not run)"; fail=1
+  say "  FAIL (monitor did not run: $(tail -1 /tmp/release-verify-monitor.log))"; fail=1
 fi
 
 if [ "$fail" = 0 ]; then say "RELEASE VERIFIED"; else say "RELEASE NOT VERIFIED"; fi
