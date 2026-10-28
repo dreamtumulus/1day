@@ -194,7 +194,7 @@ export function removeNodeProxies(nodeId: string, proxyIds: string[], actorId: s
 }
 
 /**
- * ONE-OFF maintenance helper (2026-10-28, ops/maintenance/2026-10-28-rebind-revoked-proxies.mjs),
+ * ONE-OFF maintenance helper (2026-10-28, apps/console/scripts/rebind-revoked-proxies-2026-10-28.mjs),
  * deliberately NOT exposed as an API or UI: one account = one proxy for life is the rule
  * (docs/onboarding.md §1 原则 1); the user allowed exactly one rebinding when a provider
  * revoked 202 proxies. Move an account to another proxy on its node. Isolated (team) accounts get a proxy the scheduler would accept —
