@@ -207,6 +207,9 @@ export function rebindAccountProxy(accountId: string, actorId: string | null, op
   const a = one<{ id: string; node_id: string | null; route: string; team_id: string | null; bound_proxy_id: string | null; status: string }>(
     "SELECT id, node_id, route, team_id, bound_proxy_id, status FROM accounts WHERE id = ?", accountId);
   if (!a) throw new ProxyInputError("account_not_found");
+  // A direct-route account pinned to a node proxy (WORK-CCR supply) has no node_id of its own:
+  // stay on the node that hosts its current proxy.
+  if (!a.node_id && a.bound_proxy_id) a.node_id = one<{ node_id: string }>("SELECT node_id FROM node_proxies WHERE id = ?", a.bound_proxy_id)?.node_id ?? null;
   if (!a.node_id) throw new ProxyInputError("account_has_no_node");
   const exclude = new Set([...(opts.excludeProxyIds ?? []), ...(a.bound_proxy_id ? [a.bound_proxy_id] : [])]);
   let next: IsolatedProxy;
