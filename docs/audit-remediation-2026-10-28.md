@@ -23,7 +23,7 @@
 
 | 编号 | 修复后的行为 | 代码与验证依据 |
 |---|---|---|
-| L1 | 无 team 的旧账号不参加自动 usage 探测或 token 保活；`isolation_version=0` 的旧上号任务不被超时清理改写。 | `console/src/ccr/window-poll.ts`、`onboard/reservations.ts`；`audit-fixes.test.mjs` 对旧账号和旧任务逐字段比较。 |
+| L1 | 无 team 的旧账号不参加自动 usage 探测或 token 保活；`isolation_version=0` 的旧上号任务不被超时清理改写；旧代理、设备身份与代理映射也不接受心跳回写。 | `console/src/ccr/window-poll.ts`、`onboard/reservations.ts`；`audit-fixes.test.mjs`、`team-tunnel.test.mjs` 对旧账号、任务、代理及映射逐字段比较。 |
 | P1 | 所有新增/导入/节点上传共用节点容量检查；在同一写事务中计算节点已绑定账号及有效新增预约。禁用/失效账号仍占物理账号名额；固定账号重授权不重复占位，并拒绝同账号重叠重授权。 | `console/src/node/capacity.ts`、`onboard/jobs.ts`、admin/provider/node 路由；`audit-fixes.test.mjs` 覆盖预约与导入竞争、provider 顺序导入、取消后释放。节点账号容量、IP 最多三号、worker 并发是独立限制。 |
 | L2 | 公开池不再把旧未管理账号标成 online；分别显示 `unmanaged`、`unavailable`、`offline`、`cooling`、`busy`。online 检查组织、固定代理、组资格、节点可信/接单状态及窗口；并发忙碌来自共享租约。 | `console/src/routes/public.ts`；`audit-fixes.test.mjs`、公开池前端类型/标签构建验证。 |
 | L3 | 新上号任务保存绝对 expires_at；auth_url 等待 30 分钟、交换执行 3 分钟。15 秒独立清理，不依赖 token 刷新和巡检；分配、回调和提交也检查期限。未知身份但已出站的资源按原隔离规则封存。 | `console/src/onboard/reservations.ts`、`jobs.ts`、`node/proxies.ts`；`audit-fixes.test.mjs` 和原有过期作业测试。旧 v1 任务可按原时间字段推算期限，迁移不回填。 |

@@ -562,12 +562,15 @@ function recordProxyHealth(nodeId: string, msg: Record<string, unknown>): void {
     const now = nowIso();
     const entries = Object.entries(msg.assignments as Record<string, unknown>).filter(
       (e): e is [string, string] => typeof e[1] === "string" && !!e[0] && !!e[1],
-    );
-    // The node reports its full assignment map; rows it no longer reports are stale.
+    ).filter(([accountId, proxyId]) => isTrustedExecutionNode(nodeId) && !!one(
+      "SELECT 1 FROM accounts WHERE id=? AND node_id=? AND team_id IS NOT NULL AND bound_proxy_id=?", accountId, nodeId, proxyId,
+    ));
+    // Heartbeats maintain only the new managed namespace. Legacy mappings are history.
     run(
-      `DELETE FROM node_proxy_assignments WHERE node_id = ?${
+      `DELETE FROM node_proxy_assignments WHERE node_id = ? AND account_id IN (SELECT id FROM accounts WHERE team_id IS NOT NULL AND node_id=?)${
         entries.length ? ` AND account_id NOT IN (${entries.map(() => "?").join(",")})` : ""
       }`,
+      nodeId,
       nodeId,
       ...entries.map(([a]) => a),
     );
@@ -575,7 +578,8 @@ function recordProxyHealth(nodeId: string, msg: Record<string, unknown>): void {
       run(
         `INSERT INTO node_proxy_assignments (node_id, account_id, proxy_id, updated_at)
          VALUES (?, ?, ?, ?)
-         ON CONFLICT(node_id, account_id) DO UPDATE SET proxy_id = excluded.proxy_id, updated_at = excluded.updated_at`,
+         ON CONFLICT(node_id, account_id) DO UPDATE SET proxy_id = excluded.proxy_id, updated_at = excluded.updated_at
+         WHERE node_proxy_assignments.proxy_id <> excluded.proxy_id`,
         nodeId,
         accountId,
         proxyId,

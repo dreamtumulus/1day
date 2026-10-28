@@ -69,6 +69,21 @@ try {
   const policy = frames.filter((m) => m.type === "proxies.set").at(-1);
   assert.equal(policy.proxyTeams[pA], A);
   assert.deepEqual(policy.proxyAccounts[pA].sort(), ["a1", "a2", "a3"]);
+  // Legacy proxy/account/mapping rows are read-only even when a node repeats
+  // old assignments and identity telemetry during a new release.
+  const legacyId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+  run("INSERT INTO accounts(id,name,platform,type,protocol,credential_enc,route,node_id) VALUES (?,'legacy','anthropic','oauth','anthropic',?,'node','team-node')", legacyId, core.encryptJson({accessToken:"fixture-legacy"}));
+  run("INSERT INTO node_proxies(id,node_id,url_enc,status) VALUES ('legacy-proxy','team-node',?,'unknown')", core.encryptString("http://127.0.0.1:9099"));
+  run("INSERT INTO node_proxy_assignments(node_id,account_id,proxy_id,updated_at) VALUES ('team-node',?,'legacy-proxy','2000-01-01T00:00:00Z')",legacyId);
+  const legacyAccount = core.one("SELECT * FROM accounts WHERE id=?",legacyId);
+  const legacyProxy = core.one("SELECT * FROM node_proxies WHERE id='legacy-proxy'");
+  const legacyMapping = core.one("SELECT * FROM node_proxy_assignments WHERE account_id=?",legacyId);
+  ws.send(JSON.stringify({type:"provider.heartbeat",acceptingSessions:true,proxies:[{id:"legacy-proxy",live:true}],assignments:{[legacyId]:pB,a1:pA},ccIdentities:{[legacyId]:{deviceId:"f".repeat(64),accountUuid:legacyId}}}));
+  await new Promise((r)=>setTimeout(r,30));
+  assert.deepEqual(core.one("SELECT * FROM accounts WHERE id=?",legacyId),legacyAccount);
+  assert.deepEqual(core.one("SELECT * FROM node_proxies WHERE id='legacy-proxy'"),legacyProxy);
+  assert.deepEqual(core.one("SELECT * FROM node_proxy_assignments WHERE account_id=?",legacyId),legacyMapping);
+  assert.equal(core.one("SELECT proxy_id FROM node_proxy_assignments WHERE account_id='a1'").proxy_id,pA);
   assert.equal(await registry.openTunnel("a1", "cc_worker", undefined, 443, pB, worker, undefined, iso), null, "foreign proxy override refused");
   assert.equal(await registry.openTunnel("a1", "cc_worker", undefined, 443, pA, worker), null, "missing conversation context refused");
   assert.equal(await registry.openTunnel("b1", "cc_worker", undefined, 443, pB, worker, undefined, iso), null, "account team checked from DB");
