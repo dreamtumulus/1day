@@ -528,6 +528,7 @@ export function isNodeOnline(nodeId: string): boolean {
 function recordProxyHealth(nodeId: string, msg: Record<string, unknown>): void {
   if (Array.isArray(msg.proxies)) {
     const now = nowIso();
+    let pushNeeded = false;
     for (const p of msg.proxies) {
       if (!p || typeof p !== "object") continue;
       const id = (p as Record<string, unknown>).id;
@@ -553,10 +554,24 @@ function recordProxyHealth(nodeId: string, msg: Record<string, unknown>): void {
       const isolated = one<{ exit_ip: string | null }>("SELECT exit_ip FROM node_proxies WHERE node_id=? AND id=? AND isolation_version=1", nodeId, id);
       if (isolated && live === true) {
         const ip = (p as Record<string, unknown>).exitIp;
-        const accepted = recordNodeProxyExit(nodeId, id, typeof ip === "string" ? ip : "");
-        if (!accepted || isolated.exit_ip !== ip) pushProxies(nodeId, []);
+        if (typeof ip !== "string" || !ip) {
+          // The node reports the proxy alive without an exit measurement: its pool copy was
+          // just replaced (fresh health, probe pass not finished) or a served request called
+          // markAlive. A proxy whose exit was already verified keeps that identity until the
+          // next measured heartbeat (a changed or conflicting IP is still handled below);
+          // treating it as "identity unavailable" marked every bound proxy dead and pushed
+          // the pool again, which reset the node's probe and restarted the loop (2026-10-28).
+          // An exit that was never measured is still refused: it cannot carry a team.
+          if (!isolated.exit_ip && !recordNodeProxyExit(nodeId, id, "")) pushNeeded = true;
+          continue;
+        }
+        const accepted = recordNodeProxyExit(nodeId, id, ip);
+        if (!accepted || isolated.exit_ip !== ip) pushNeeded = true;
       }
     }
+    // One pool push per heartbeat at most: pushing inside the loop (once per changed proxy)
+    // replaced the node's pool a dozen times per heartbeat.
+    if (pushNeeded) pushProxies(nodeId, []);
   }
   if (msg.assignments && typeof msg.assignments === "object" && !Array.isArray(msg.assignments)) {
     const now = nowIso();

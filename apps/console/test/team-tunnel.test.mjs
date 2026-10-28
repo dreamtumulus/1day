@@ -84,6 +84,30 @@ try {
   assert.deepEqual(core.one("SELECT * FROM node_proxies WHERE id='legacy-proxy'"),legacyProxy);
   assert.deepEqual(core.one("SELECT * FROM node_proxy_assignments WHERE account_id=?",legacyId),legacyMapping);
   assert.equal(core.one("SELECT proxy_id FROM node_proxy_assignments WHERE account_id='a1'").proxy_id,pA);
+  // 2026-10-28: a heartbeat that reports a proxy alive without an exit measurement (fresh pool copy
+  // after a push, or markAlive on a served request) must keep an already verified exit and must
+  // not push the pool; never-measured exits are still refused, and one heartbeat costs one push.
+  {
+    const pushes = () => frames.filter((m) => m.type === "proxies.set").length;
+    const before = pushes();
+    const rowA = core.one("SELECT status,exit_ip,resource_key FROM node_proxies WHERE id=?", pA);
+    assert.equal(rowA.status, "live");
+    ws.send(JSON.stringify({ type: "provider.heartbeat", acceptingSessions: true, proxies: [{ id: pA, live: true, exitIp: null }, { id: pB, live: true }], assignments: { a1: pA } }));
+    await new Promise((r) => setTimeout(r, 200));
+    assert.deepEqual(core.one("SELECT status,exit_ip,resource_key FROM node_proxies WHERE id=?", pA), rowA, "verified exit kept, proxy stays live");
+    assert.equal(core.one("SELECT status FROM node_proxies WHERE id=?", pB).status, "live");
+    assert.equal(pushes(), before, "no pool push for an unmeasured but known exit");
+    run("INSERT INTO node_proxies(id,node_id,url_enc,status,isolation_version) VALUES ('fresh-1','team-node',?,'unknown',1),('fresh-2','team-node',?,'unknown',1)",
+      core.encryptString("http://u:p@198.51.100.20:8000"), core.encryptString("http://u:p@198.51.100.21:8000"));
+    ws.send(JSON.stringify({ type: "provider.heartbeat", acceptingSessions: true, proxies: [{ id: "fresh-1", live: true }, { id: "fresh-2", live: true }], assignments: { a1: pA } }));
+    await waitFor(() => pushes() > before);
+    await new Promise((r) => setTimeout(r, 200));
+    assert.equal(pushes(), before + 1, "one push per heartbeat");
+    assert.equal(core.one("SELECT last_error FROM node_proxies WHERE id='fresh-1'").last_error, "exit identity unavailable");
+    assert.equal(core.one("SELECT status FROM node_proxies WHERE id='fresh-2'").status, "dead");
+    run("DELETE FROM node_proxies WHERE id IN ('fresh-1','fresh-2')");
+    console.log("team-tunnel: heartbeat without exit measurement OK");
+  }
   assert.equal(await registry.openTunnel("a1", "cc_worker", undefined, 443, pB, worker, undefined, iso), null, "foreign proxy override refused");
   assert.equal(await registry.openTunnel("a1", "cc_worker", undefined, 443, pA, worker), null, "missing conversation context refused");
   assert.equal(await registry.openTunnel("b1", "cc_worker", undefined, 443, pB, worker, undefined, iso), null, "account team checked from DB");
