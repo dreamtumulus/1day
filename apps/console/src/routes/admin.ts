@@ -4,7 +4,7 @@ import {
   CC_SHAPE_POLICIES,
   SETTING_KEYS,
   CC_ANTHROPIC_VERSION,
-  CC_BETAS,
+  ccCanonicalBetas,
   CC_BILLING_BLOCK,
   CC_IDENTITY_BLOCK,
   accountBaseUrl,
@@ -256,7 +256,7 @@ async function testAccount(a: AccountRow, model: string | undefined) {
       Object.assign(headers, anthropicFingerprintHeaders({}));
       headers.authorization = `Bearer ${secret}`;
       headers["anthropic-version"] = CC_ANTHROPIC_VERSION;
-      headers["anthropic-beta"] = [...CC_BETAS, "oauth-2025-04-20"].join(",");
+      headers["anthropic-beta"] = ccCanonicalBetas(true).join(",");
       payload = {
         model: testModel,
         max_tokens: 8,

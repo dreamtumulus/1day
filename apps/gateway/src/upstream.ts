@@ -1,6 +1,6 @@
 import {
   CC_ANTHROPIC_VERSION,
-  CC_BETAS,
+  ccCanonicalBetas,
   accountBaseUrl,
   anthropicFingerprintHeaders,
   ensureDeviceId,
@@ -179,7 +179,7 @@ export function buildUpstreamRequest(
       for (const b of clientBeta.split(",")) if (b.trim()) betas.add(b.trim());
     }
     // 客户端非 Claude Code 时注入 canonical beta 集（docs/claude-code-compat.md §6）
-    if (betas.size === 0) for (const b of CC_BETAS) betas.add(b);
+    if (betas.size === 0) for (const b of ccCanonicalBetas(account.type === "oauth")) betas.add(b);
     if (account.type === "oauth") {
       betas.add("oauth-2025-04-20");
       headers.authorization = `Bearer ${secret}`;

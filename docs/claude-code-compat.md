@@ -133,14 +133,14 @@ X-Stainless-Retry-Count: 0
 X-Stainless-Runtime: node
 X-Stainless-Runtime-Version: v26.12.1
 X-Stainless-Timeout: 600
-anthropic-beta: claude-code-20250219,interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13,context-management-2025-06-27,extended-cache-ttl-2025-04-11
+anthropic-beta: claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,context-management-2025-06-27,thinking-token-count-2026-05-13
 anthropic-dangerous-direct-browser-access: true
 anthropic-version: 2023-06-01
 x-app: cli
 Accept: application/json
 ```
 
-OAuth 账户仍追加 `oauth-2025-04-20` 到 beta 尾部（既有行为保留）。
+`oauth-2025-04-20` 只在 OAuth 账户上出现，位置在 `claude-code-20250219` 之后（真实客户端的顺序，`ccCanonicalBetas()`）；API key 账户没有这一项。客户端自带 beta 时原样透传，OAuth 账户缺它则追加。
 
 ## 7. 已知差异（未对齐项）
 
@@ -216,8 +216,28 @@ CC 发版频繁（周级）。升级常量时：
 | OAuth scope / 凭据文件 / token 端点 | 同 | 同（`user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload`、`.credentials.json`、`platform.claude.com/v1/oauth/token`） |
 | stream-json 事件 | `system/init,status,api_retry`、`assistant`、`result` | 同形 |
 
-常量改动：`CC_VERSION`、`CC_RUNTIME_VERSION`、新增 `CC_BUILD_SUFFIX`、`CC_BETAS`（去掉 2.1.312 不再发送的
-`prompt-caching-scope-2026-01-05`，加入其对无工具请求也发送的 `extended-cache-ttl-2025-04-11`；`per-turn-control / effort /
-thinking-display-updates` 会改变非 CC 客户端看到的响应形态，故不纳入 canonical 注入集，与 2.1.300 时的取舍一致）。
-`normalizeCcSoftware` 把客户端版本钉到节点版本时，连构建标志一起改成节点的；钉到其他版本时保留客户端的标志。
-节点部署脚本 `CLAUDE_VERSION=2.1.312`，设置项 `direct_cc_version_pin` 同步改为 2.1.312，探针 `func.py` 的 UA 与计费头同步。
+**交互模式（entrypoint cli）主对话请求**（伪终端采样，两版各 sonnet-5-5 / opus-5-5 一次，工具 25 / 13 个，`thinking.adaptive display=updates`）：
+
+| 项 | 2.1.300 | 2.1.312 |
+|---|---|---|
+| 计费头 | `cc_version=2.1.300.f23; cc_entrypoint=cli;` | `cc_version=2.1.312.6b4; cc_entrypoint=cli;` |
+| `anthropic-beta` | claude-code, oauth, interleaved-thinking, thinking-token-count, context-management, **prompt-caching-scope**, per-turn-control, mid-conversation-tool-changes, effort, dangerous-tool-use, thinking-display-updates, afk-mode, extended-cache-ttl | claude-code, oauth, interleaved-thinking, context-management, per-turn-control, mid-conversation-tool-changes, thinking-token-count, **advanced-tool-use**, effort, dangerous-tool-use, thinking-display-updates, afk-mode, extended-cache-ttl |
+
+同一会话里 Claude Code 还会发两类辅助请求：无 system 的小请求（beta 只有 claude-code/oauth/interleaved-thinking/redact-thinking/context-management）
+和标题生成（structured-outputs，计费头后缀不同：2.1.300 为 `.0e6`，2.1.312 为 `.058`）。**构建标志不是版本常量而是按请求类型变化**，
+平台模拟的是主对话请求，故取 `.6b4`（sdk-cli 与 cli 主请求一致）。
+
+`prompt-caching-scope-2026-01-05`：2.1.312 的 12 次采样（sdk-cli 4 种条件 × 1、交互 2 模型 × 主请求 2 次 + 辅助请求）全部不发送；
+2.1.300 的对应采样全部发送。字符串仍在两版的 beta 注册表里，不再加入请求头的条件在压缩代码的其他分块，未继续反编译；
+远程功能开关能否重新打开它无法从二进制排除（两版采样环境相同）。
+
+**常量改动**：`CC_VERSION` 2.1.312、`CC_RUNTIME_VERSION` v26.12.1、新增 `CC_BUILD_SUFFIX` "6b4"、`CC_BETAS` 取 2.1.312 主请求里
+**与工具 / 功能无关的核心项**并按其顺序排列：`claude-code-20250219, [oauth-2025-04-20], interleaved-thinking-2025-05-14,
+context-management-2025-06-27, thinking-token-count-2026-05-13`（与 2.1.300 时代的取舍一致：per-turn-control / mid-conversation-tool-changes /
+advanced-tool-use / effort / dangerous-tool-use / thinking-display-updates / afk-mode / extended-cache-ttl 都跟着工具或功能走，非 CC 客户端的
+请求体里没有对应字段，不注入）。`normalizeCcSoftware` 把客户端版本钉到节点版本时连构建标志一起改成节点的；钉到其他版本时保留客户端的标志。
+节点部署脚本 `CLAUDE_VERSION=2.1.312`，探针 `func.py` 的 UA 与计费头同步。
+
+**采样工具**（本次补进仓库，`ops/cc-capture/`）：`capsrv.mjs` 本地采样服务、`capture-sdk.sh`（-p 模式，worker 参数）、
+`capture-interactive.py`（伪终端交互模式，预置 onboarding 跳过首启向导）；两版二进制用 `bun add -g @anthropic-ai/claude-code@<ver>`
+装到独立 HOME 下取得（`…/node_modules/@anthropic-ai/claude-code-linux-x64/claude`）。

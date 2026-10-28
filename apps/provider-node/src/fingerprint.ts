@@ -13,10 +13,18 @@ export const CC_ANTHROPIC_VERSION = "2023-06-01";
 export const CC_BETAS = [
   "claude-code-20250219",
   "interleaved-thinking-2025-05-14",
-  "thinking-token-count-2026-05-13",
   "context-management-2025-06-27",
-  "extended-cache-ttl-2025-04-11",
+  "thinking-token-count-2026-05-13",
 ];
+/**
+ * Canonical anthropic-beta list in the order a 2.1.312 client sends it: `oauth-2025-04-20` sits
+ * right after `claude-code-20250219` on OAuth accounts (12 captures, docs/claude-code-compat.md §11),
+ * not at the tail.
+ */
+export function ccCanonicalBetas(oauth: boolean): string[] {
+  const [first, ...rest] = CC_BETAS;
+  return oauth ? [first, "oauth-2025-04-20", ...rest] : [first, ...rest];
+}
 
 /** Machine headers of the native Claude Code build on a node (claude-cli 2.1.303 ELF, Linux x64, 2026-10-19). */
 export const NODE_MACHINE_HEADERS: Readonly<Record<string, string>> = Object.freeze({

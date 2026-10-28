@@ -14,10 +14,18 @@ export const CC_ANTHROPIC_VERSION = "2023-06-01";
 export const CC_BETAS = [
   "claude-code-20250219",
   "interleaved-thinking-2025-05-14",
-  "thinking-token-count-2026-05-13",
   "context-management-2025-06-27",
-  "extended-cache-ttl-2025-04-11",
+  "thinking-token-count-2026-05-13",
 ];
+/**
+ * Canonical anthropic-beta list in the order a 2.1.312 client sends it: `oauth-2025-04-20` sits
+ * right after `claude-code-20250219` on OAuth accounts (12 captures, docs/claude-code-compat.md §11),
+ * not at the tail.
+ */
+export function ccCanonicalBetas(oauth: boolean): string[] {
+  const [first, ...rest] = CC_BETAS;
+  return oauth ? [first, "oauth-2025-04-20", ...rest] : [first, ...rest];
+}
 
 /**
  * 辅助端点指纹（docs/claude-code-compat.md §8）：CC 对 /api/oauth/* 与 OAuth
