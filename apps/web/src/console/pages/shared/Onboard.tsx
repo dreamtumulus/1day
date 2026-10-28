@@ -11,6 +11,7 @@ import {
   onboardOrgDelete,
   onboardOrgUpdate,
   onboardOrgs,
+  onboardPrecheck,
   onboardStart,
   type Group,
   type NodeRow,
@@ -64,6 +65,21 @@ const POLL_MS = 1500;
 const SESSION_KEY_RE = /^sk-ant-sid\d{2}-[A-Za-z0-9_-]{40,}$/;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const ORG_MANUAL = "manual";
+
+/** Operator-facing hint for a failed job's error text (docs/onboarding.md §7). */
+function errorHintKey(err: string | null | undefined): string | null {
+  if (!err) return null;
+  if (/session_key_format/.test(err)) return "onboard.hint.format";
+  if (/session_key_invalid/.test(err)) return /HTTP 403/.test(err) ? "onboard.hint.sk403" : "onboard.hint.skInvalid";
+  if (/session_stale_relogin/.test(err)) return "onboard.hint.stale";
+  if (/cloudflare_challenge/.test(err)) return "onboard.hint.cloudflare";
+  if (/account_exists/.test(err)) return "onboard.hint.exists";
+  if (/team_mismatch|organization_mismatch|team_identity_invalid/.test(err)) return "onboard.hint.teamMismatch";
+  if (/node_offline|no_proxy_available/.test(err) && !/proxy_pool_empty/.test(err)) return "onboard.hint.nodeOffline";
+  if (/proxy_pool_empty|No compatible verified proxy/.test(err)) return "onboard.hint.noProxy";
+  if (/job_expired|callback_expired/.test(err)) return "onboard.hint.expired";
+  return null;
+}
 
 function maskKey(sk: string): string {
   return sk.length > 24 ? `${sk.slice(0, 13)}…${sk.slice(-6)}` : sk;
@@ -330,6 +346,24 @@ export function OnboardPage({ scope }: { scope: OnboardScope }) {
   const singleKey = sessionKey.trim().replace(/^["']+|["']+$/g, "");
   const singleKeyBad = !!singleKey && !SESSION_KEY_RE.test(singleKey);
 
+  // Duplicate detection before submitting (precheck reads the account uuid embedded in the
+  // key; no upstream call): a key already in the pool would only burn a reservation.
+  const [singleExisting, setSingleExisting] = useState<{ email: string | null; status: string } | null>(null);
+  useEffect(() => {
+    setSingleExisting(null);
+    if (!singleKey || singleKeyBad) return;
+    let alive = true;
+    const timer = setTimeout(() => {
+      onboardPrecheck(scope, [singleKey])
+        .then((r) => alive && setSingleExisting(r[0]?.existing ? { email: r[0].existing.email, status: r[0].existing.status } : null))
+        .catch(() => {});
+    }, 500);
+    return () => {
+      alive = false;
+      clearTimeout(timer);
+    };
+  }, [scope, singleKey, singleKeyBad]);
+
   async function cancel() {
     if (!job) return;
     setBusy(true);
@@ -421,9 +455,23 @@ export function OnboardPage({ scope }: { scope: OnboardScope }) {
     const lo = Math.max(0, Number(intervalMin)) * 1000;
     const hi = Math.max(lo, Number(intervalMax) * 1000);
     const items: BatchItem[] = parsedValid.map((p, i) => ({ idx: i + 1, key: p.key, status: "queued" }));
+    // Pre-flight: keys whose account is already in the pool are skipped, not submitted.
+    try {
+      const pre = await onboardPrecheck(scope, items.map((it) => it.key));
+      for (const r of pre) {
+        const it = items[r.index];
+        if (it && r.existing) {
+          it.status = "skipped";
+          it.error = t("onboard.batchExists", { email: r.existing.email ?? r.existing.id.slice(0, 8) });
+        }
+      }
+    } catch {
+      toast.error(t("onboard.precheckFailed"));
+    }
     stopRef.current = false;
     setBatch({ items, running: true, stopped: false, finished: false, nextAt: null });
     for (let i = 0; i < items.length; i++) {
+      if (items[i].status === "skipped") continue;
       if (stopRef.current) {
         setBatch((b) =>
           b ? { ...b, items: b.items.map((it) => (it.status === "queued" ? { ...it, status: "skipped" } : it)), stopped: true } : b,
@@ -560,7 +608,14 @@ export function OnboardPage({ scope }: { scope: OnboardScope }) {
                         {it.status === "done" ? (
                           <span className="text-success">{it.job?.accountEmail ?? it.job?.accountName ?? it.job?.accountId ?? ""}{it.job?.reused ? ` · ${t("onboard.reusedTitle")}` : ""}</span>
                         ) : it.status === "failed" ? (
-                          <span className="text-error">{it.error ?? it.job?.error ?? "—"}</span>
+                          <>
+                            <span className="text-error">{it.error ?? it.job?.error ?? "—"}</span>
+                            {errorHintKey(it.error ?? it.job?.error) && (
+                              <span className="mt-0.5 block font-sans text-[12px] text-on-surface-variant">{t(errorHintKey(it.error ?? it.job?.error)!)}</span>
+                            )}
+                          </>
+                        ) : it.status === "skipped" && it.error ? (
+                          <span className="text-on-surface-variant">{it.error}</span>
                         ) : null}
                       </td>
                     </tr>
@@ -621,6 +676,12 @@ export function OnboardPage({ scope }: { scope: OnboardScope }) {
           <Card bodyClassName="p-5">
             <div className="font-semibold text-error">{t("onboard.failed")}</div>
             <p className="mt-1 break-all font-mono text-[12.5px] text-error">{job.error || "—"}</p>
+            {errorHintKey(job.error) && (
+              <p className="mt-2 rounded-md p-3 text-[13px] leading-relaxed" style={{ background: "var(--surface-variant)" }}>
+                <span className="font-medium">{t("onboard.hintTitle")}：</span>
+                {t(errorHintKey(job.error)!)}
+              </p>
+            )}
             <div className="mt-3">
               <Button onClick={reset}>
                 <RefreshIcon width={14} height={14} />
@@ -716,7 +777,11 @@ export function OnboardPage({ scope }: { scope: OnboardScope }) {
                     )}
                   </div>
                   {method === "session_key" && skMode === "single" && (
-                    <Field label="sessionKey" hint={t("onboard.sessionKeyHint")} error={singleKeyBad ? t("onboard.errSessionKeyFormat") : undefined}>
+                    <Field
+                      label="sessionKey"
+                      hint={t("onboard.sessionKeyHint")}
+                      error={singleKeyBad ? t("onboard.errSessionKeyFormat") : singleExisting ? t("onboard.preExists", { email: singleExisting.email ?? "?", status: singleExisting.status }) : undefined}
+                    >
                       <Textarea
                         value={sessionKey}
                         onChange={(e) => setSessionKey(e.target.value)}

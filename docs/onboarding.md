@@ -189,6 +189,28 @@ DELETE /api/admin/onboard/orgs/:id        → {data:{ok:true}}
 错误码：`invalid_request`（缺 name / orgUuid 非 UUID）、`org_exists`（同一 UUID 已保存，含改到别的行已有的 UUID）、404 `organization`。
 `orgUuid` 落库统一小写。ops / 号商访问一律 403。
 
+
+上号预检（管理员与号商各自前缀；号商只看到自己名下的账号）：
+
+```
+POST /api/admin/accounts/onboard/precheck     body {sessionKeys: string[]}（1–200 条）
+POST /api/provider/accounts/onboard/precheck
+  → {data:[{index, formatOk, accountUuid|null, existing:{id,email,status,teamId}|null}]}
+```
+
+只做两件事：按 §3 的正则检查形态；从 key 第 13–35 位解出 account uuid（§2.1）查 `accounts.account_uuid`。
+不访问上游、不写库、不记日志。前端批量模式提交前先调它，已存在的 key 标「已存在，跳过」不再提交；单条模式在输入框下提示。
+
+解封代理（仅管理员）：
+
+```
+POST /api/admin/nodes/:id/proxies/:proxyId/unquarantine → {data:{ok:true, pushed}}
+```
+
+删除 `proxy_quarantine` 里该代理自身键 `proxy:<id>` 和它的出口资源键，代理行置 `unknown`、清 `last_error`（下一次心跳重新核验出口），
+写 `proxy_team_events` 事件 `unquarantined`（含操作者），并向节点重新下发代理池。404 `proxy` / `node`；400 `proxy_not_quarantined`。
+`GET /nodes/:id/proxies` 与选择器视图都带 `quarantined` / `quarantineReason`。
+
 ## 5. 数据模型（迁移 5 与 21）
 
 - `accounts` 新增：`rpm_limit INTEGER NOT NULL DEFAULT 0`、`bound_proxy_id TEXT REFERENCES node_proxies(id)`。
@@ -412,3 +434,21 @@ wss://bridge.claudeusercontent.com/chrome/{accountUuid}
 控制台可从最近任务恢复未完成 auth_url，或取消它后重新开始。管理员的 SK 和 auth_url 表单都支持输入已知组织 UUID，后台仍验证实际组织；已知组织可使用同组织第二/第三槽。上号员批量提交和活动任务期间锁定节点选择，界面目标与实际提交保持一致。
 
 完整修复对照和测试边界见 [审计修复记录](audit-remediation-2026-10-28.md)。
+
+### 12.1 失败即封存的边界（2026-10-28）
+
+上号任务失败时，只有**上游对已出网的出口给出的判决**才污染该出口并封存（`proxy_quarantine` 写入代理键与出口键）：
+`session_key_invalid`、`session_stale_relogin`、`authorize_failed`、`token_exchange_failed`、`validate_failed`、
+`team_mismatch`、`cloudflare_challenge`、`organization_mismatch`、`oauth_verification_failed`。封存仍要求出口尚未被本组织认领
+（或 `team_mismatch`），与此前一致。
+
+平台侧失败（`node_offline`、`job_expired`、`job_cancelled`、`callback_expired`、`callback_invalid`、`account_exists`、`proxy_*` 等）不封存：
+出网前失败的直接释放；已出网且表单指定了组织的，把该出口**认领给这个组织**（`proxy_team_claims`，事件 `exit_kept_for_team`），
+本组织的其他账号可以继续用它，其他组织永远拿不到——出过网的出口不会再变回「干净」；已出网但组织未知（自动识别途中失败）的
+仍按未知出网封存。2026-10-28 的心跳时序问题曾把 4 条代理因 `node_offline` 永久封存，这是本条的由来。
+`slot_released` 事件的 reason 记录错误码以及「exit quarantined / exit kept for the specified organization / released before egress」三种结论之一。
+
+封存记录本身只增不删（迁移 21 触发器）；解封写 `proxy_quarantine_lifts`（迁移 25），有 lift 的封存视为不生效，再次封存会删掉 lift。
+所有封存判断统一走 core 的 `quarantineActive()`。
+
+封存可由管理员在节点代理池弹窗「解封」（§4 接口），解封是一次有记录的操作决定，不改变历史事件。

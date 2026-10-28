@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { useAuth } from "../../../lib/auth";
-import { api, type AdminUser, type DeployOutcome, type Group, type NodeProxy, type NodeRow, type Paged, type TeamEvent } from "../../api";
+import { api, nodeProxyUnquarantine, type AdminUser, type DeployOutcome, type Group, type NodeProxy, type NodeRow, type Paged, type TeamEvent } from "../../api";
 import { useCT } from "../../i18n";
 
 /** Nodes · Node monitor share one sidebar entry; this strip links the two. */
@@ -580,6 +580,11 @@ function ProxyPoolModal({ node, onClose }: { node: NodeRow; onClose: () => void 
                           {t("admin.nodes.proxyCooling", { until: fmtDateTime(p.cooldownUntil) })}
                         </span>
                       )}
+                      {p.quarantined && (
+                        <span className="rounded px-1.5 py-0.5 text-[11px]" style={{ background: "var(--error-container)", color: "var(--error)" }} title={t("admin.nodes.proxyQuarantineHint", { reason: p.quarantineReason ?? "" })}>
+                          {t("admin.nodes.proxyQuarantined")}
+                        </span>
+                      )}
                     </span>
                   ),
                 },
@@ -603,6 +608,28 @@ function ProxyPoolModal({ node, onClose }: { node: NodeRow; onClose: () => void 
                   render: (p) => <span title={fmtDateTime(p.lastCheckAt)}>{p.lastCheckAt ? rel(p.lastCheckAt) : t("common.never")}</span>,
                 },
                 ...(me?.role === "admin" ? [{ key: "history", header: t("team.history"), render: (p: NodeProxy) => <Button onClick={() => setHistoryProxy(p)}>{t("team.history")}</Button> }] : []),
+                ...(me?.role === "admin"
+                  ? [{
+                      key: "quarantine",
+                      header: t("admin.nodes.proxyQuarantined"),
+                      render: (p: NodeProxy) =>
+                        p.quarantined ? (
+                          <ConfirmButton
+                            variant="danger"
+                            message={t("admin.nodes.unquarantineConfirm")}
+                            onConfirm={async () => {
+                              await nodeProxyUnquarantine(node.nodeId, p.id);
+                              toast.success(t("admin.nodes.unquarantined"));
+                              pool.reload();
+                            }}
+                          >
+                            {t("admin.nodes.unquarantine")}
+                          </ConfirmButton>
+                        ) : (
+                          "—"
+                        ),
+                    }]
+                  : []),
               ]}
             />
           )}

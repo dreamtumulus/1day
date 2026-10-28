@@ -1,5 +1,5 @@
 import { isIP } from "node:net";
-import { all, claimProxyResource, decryptString, encryptString, ensureUpstreamTeam, getSetting, isoIn, normalizeTeamId, nowIso, one, recordProxyTeamEvent, run, tx } from "@1dayapi/core";
+import { all, claimProxyResource, decryptString, encryptString, ensureUpstreamTeam, getSetting, isoIn, liftQuarantine, normalizeTeamId, nowIso, one, quarantineActive, quarantineResource, recordProxyTeamEvent, run, tx } from "@1dayapi/core";
 import { expireJobReservations, liveReservationSql } from "../onboard/reservations.js";
 import { proxyIdFromUrl } from "./registry.js";
 
@@ -188,13 +188,13 @@ export function recordNodeProxyExit(nodeId:string,proxyId:string,ip:string):bool
   // Heartbeats repeat the same observation. Do not take a writer lock merely
   // to rewrite an unchanged identity; claims/quarantine remain checked live.
   if(observed && observedKey && observed.resource_key===observedKey && observed.exit_ip===observedKey.slice(3) &&
-    !one("SELECT 1 FROM proxy_quarantine WHERE resource_key IN (?,?)",observedKey,`proxy:${proxyId}`) &&
+    !quarantineActive(observedKey,`proxy:${proxyId}`) &&
     (!observed.team_id || one("SELECT 1 FROM proxy_team_claims WHERE resource_key=? AND team_id=?",observedKey,observed.team_id)) &&
     proxyOccupancy(observedKey).total<=3)return true;
   return tx(()=>{
     const p=one<IsolatedProxy>("SELECT * FROM node_proxies WHERE id=? AND node_id=? AND isolation_version=1",proxyId,nodeId);
     if(!p)return false;
-    if(one("SELECT 1 FROM proxy_quarantine WHERE resource_key=?",`proxy:${p.id}`)){
+    if(quarantineActive(`proxy:${p.id}`)){
       run("UPDATE node_proxies SET status='dead',last_error='exit resource quarantined' WHERE id=?",proxyId);return false;
     }
     const key=canonicalProxyResourceKey(ip);
@@ -202,16 +202,16 @@ export function recordNodeProxyExit(nodeId:string,proxyId:string,ip:string):bool
     const owner=one<{team_id:string}>("SELECT team_id FROM proxy_team_claims WHERE resource_key=?",key);
     const reservedByOther=!!p.team_id && one(`SELECT 1 FROM onboarding_jobs WHERE proxy_resource_key=?
       AND ${liveReservationSql('onboarding_jobs')} AND (team_id IS NULL OR team_id<>?)`,key,p.team_id);
-    const conflict=!!p.team_id && (!!owner && owner.team_id!==p.team_id || !!reservedByOther || !!one("SELECT 1 FROM proxy_quarantine WHERE resource_key=?",key));
+    const conflict=!!p.team_id && (!!owner && owner.team_id!==p.team_id || !!reservedByOther || !!quarantineActive(key));
     if(conflict){
-      run("INSERT OR IGNORE INTO proxy_quarantine(resource_key,reason) VALUES (?,?)",`proxy:${p.id}`,"observed exit organization conflict");
+      quarantineResource(`proxy:${p.id}`,"observed exit organization conflict");
       recordProxyTeamEvent({resourceKey:key,proxyId:p.id,nodeId,teamId:p.team_id,event:"exit_conflict",reason:"observed IP belongs to another organization"});
       run("UPDATE node_proxies SET status='dead',last_error='exit identity conflict' WHERE id=?",proxyId);return false;
     }
     if(p.team_id)claimProxyResource(key,p.team_id);
     run("UPDATE node_proxies SET exit_ip=?,resource_key=? WHERE id=?",key.slice(3),key,proxyId);
     if(proxyOccupancy(key).total>3){
-      run("INSERT OR IGNORE INTO proxy_quarantine(resource_key,reason) VALUES (?,?)",`proxy:${p.id}`,"exit capacity exceeded after observation");
+      quarantineResource(`proxy:${p.id}`,"exit capacity exceeded after observation");
       run("UPDATE node_proxies SET status='dead',last_error='exit capacity exceeded' WHERE id=?",proxyId);return false;
     }
     if(p.resource_key!==key)recordProxyTeamEvent({resourceKey:key,proxyId:p.id,nodeId,teamId:p.team_id,event:"exit_observed",reason:p.resource_key?"provider exit changed":"first measured exit"});
@@ -234,7 +234,7 @@ function teamCompatible(p: IsolatedProxy, teamId: string | null): boolean {
   if (p.isolation_version !== 1 || p.status !== "live" || !p.exit_ip || !p.resource_key ||
       canonicalProxyResourceKey(p.exit_ip) !== p.resource_key || (p.cooldown_until && p.cooldown_until > nowIso())) return false;
   for (const key of [p.resource_key, `proxy:${p.id}`]) {
-    if (one("SELECT 1 FROM proxy_quarantine WHERE resource_key=?", key)) return false;
+    if (quarantineActive(key)) return false;
     const claim = one<{ team_id: string }>("SELECT team_id FROM proxy_team_claims WHERE resource_key=?", key);
     if (claim && claim.team_id !== teamId) return false;
     if (!teamId && claim) return false;
@@ -298,7 +298,7 @@ export function quarantineJobProxy(jobId: string, reason: string): void {
     "SELECT proxy_id,node_id,team_id,proxy_resource_key,egress_started_at FROM onboarding_jobs WHERE id=? AND isolation_version=1", jobId);
   if (!j?.proxy_id || !j.egress_started_at || !j.proxy_resource_key) return;
   for (const key of [j.proxy_resource_key, `proxy:${j.proxy_id}`])
-    run("INSERT OR IGNORE INTO proxy_quarantine(resource_key,reason) VALUES (?,?)", key, reason.slice(0,200));
+    quarantineResource(key, reason);
   recordProxyTeamEvent({resourceKey:j.proxy_resource_key,proxyId:j.proxy_id,nodeId:j.node_id,teamId:j.team_id,jobId,event:"quarantined"});
 }
 
@@ -378,6 +378,34 @@ export function maskProxyUrl(url: string): string {
   }
 }
 
+/** Quarantine state of a proxy: its own key or its measured exit resource (docs/onboarding.md §12.1). */
+export function proxyQuarantine(proxyId: string, resourceKey: string | null): { quarantined: boolean; reason: string | null } {
+  const row = quarantineActive(`proxy:${proxyId}`, resourceKey ?? `proxy:${proxyId}`);
+  return { quarantined: !!row, reason: row?.reason ?? null };
+}
+
+/**
+ * Operator decision to lift a quarantine (admin only): records a lift for the proxy's own
+ * key and its exit resource (the verdict rows stay, migration 21 keeps them append-only),
+ * puts the row back to `unknown` so the next heartbeat re-verifies the exit, and keeps the
+ * decision in the event history. Returns false when nothing was active.
+ */
+export function unquarantineProxy(nodeId: string, proxyId: string, actorId: string | null): boolean {
+  const p = one<{ id: string; resource_key: string | null; team_id: string | null }>(
+    "SELECT id, resource_key, team_id FROM node_proxies WHERE id=? AND node_id=?", proxyId, nodeId,
+  );
+  if (!p) throw new ProxyInputError("proxy_not_found");
+  const keys = [`proxy:${p.id}`, ...(p.resource_key ? [p.resource_key] : [])];
+  return tx(() => {
+    const cleared = liftQuarantine(keys, actorId, "operator lifted the quarantine");
+    if (!cleared) return false;
+    run("UPDATE node_proxies SET status='unknown', last_error=NULL WHERE id=?", p.id);
+    recordProxyTeamEvent({ resourceKey: p.resource_key ?? `proxy:${p.id}`, proxyId: p.id, nodeId, teamId: p.team_id, actorId,
+      event: "unquarantined", reason: "operator lifted the quarantine; exit re-verified on the next heartbeat" });
+    return true;
+  });
+}
+
 export function listNodeProxies(nodeId: string) {
   const rows = all<{
     id: string;
@@ -407,6 +435,8 @@ export function listNodeProxies(nodeId: string) {
     }
     return {
       id: r.id,
+      quarantined: proxyQuarantine(r.id, r.resource_key).quarantined,
+      quarantineReason: proxyQuarantine(r.id, r.resource_key).reason,
       url: masked,
       label: r.label,
       status: r.status,
@@ -449,7 +479,7 @@ export function nodeProxyConfig(nodeId: string): {
   for (const p of all<IsolatedProxy>("SELECT * FROM node_proxies WHERE node_id=? AND isolation_version=1",nodeId)) {
     proxyTeams[p.id]=p.team_id??`unassigned:${p.id}`;
     proxyAccounts[p.id]=[];
-    if(!p.resource_key || one("SELECT 1 FROM proxy_quarantine WHERE resource_key IN (?,?)",p.resource_key,`proxy:${p.id}`))continue;
+    if(!p.resource_key || quarantineActive(p.resource_key,`proxy:${p.id}`))continue;
     const jobs = all<{id:string;team_id:string|null}>(`SELECT id,team_id FROM onboarding_jobs WHERE proxy_id=?
       AND proxy_resource_key=? AND ${liveReservationSql('onboarding_jobs')}`,p.id,p.resource_key);
     const team = p.team_id ?? jobs[0]?.team_id ?? (jobs[0] ? `pending:${jobs[0].id}` : null);
@@ -474,12 +504,13 @@ export function listProxiesForPicker(nodeId: string, freeOnly: boolean) {
       const slots=p.resource_key ? proxyOccupancy(p.resource_key) : {bound:0,reserved:0,total:0};
       let host:string|null=null;let port:number|null=null;
       try { const u=new URL(decryptString(p.url_enc));host=u.hostname;port=u.port?Number(u.port):null; } catch {}
-      return {id:p.id,label:p.label,host,port,status:p.status,bound:slots.bound>0,
+      const q=proxyQuarantine(p.id,p.resource_key);
+      return {id:p.id,label:p.label,host,port,status:p.status,bound:slots.bound>0,quarantined:q.quarantined,quarantineReason:q.reason,
         boundAccounts:slots.bound,reservedAccounts:slots.reserved,
         normalSlots:Math.max(0,2-slots.total),overflowSlots:Math.max(0,3-slots.total),
         exitIp:p.exit_ip,resourceKey:p.resource_key,
         usable:p.isolation_version===1 && p.status==='live' && !!p.resource_key &&
-          !one("SELECT 1 FROM proxy_quarantine WHERE resource_key IN (?,?)",p.resource_key,`proxy:${p.id}`) &&
+          !quarantineActive(p.resource_key,`proxy:${p.id}`) &&
           (!p.cooldown_until || p.cooldown_until<=nowIso()) && slots.total<3};
     }).filter((p)=>!freeOnly || p.usable).map(({usable,...p})=>p);
 }

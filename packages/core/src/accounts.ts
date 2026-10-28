@@ -7,7 +7,7 @@ import { effectiveBaseUrl, type Executor, type Protocol } from "./platforms.js";
 import { getSetting } from "./settings.js";
 import { isoIn, nowIso } from "./time.js";
 import { modelScope, parseThresholdPercent, windowAllows, windowExhausted, windowReason, type WindowSnapshot } from "./window.js";
-import { normalizeTeamId } from "./teams.js";
+import { normalizeTeamId, quarantineActive } from "./teams.js";
 
 export interface ModelCooldown {
   until?: string | null;
@@ -518,6 +518,6 @@ export function boundProxyDown(a: Pick<AccountRow, "bound_proxy_id"> & { team_id
   if (!team) return false; // Legacy gate remains unchanged; candidate selection isolates OAuth separately.
   if (row.team_id !== team || row.isolation_version !== 1 || !row.resource_key) return true;
   if(a.node_id!==undefined && a.node_id!==row.node_id)return true;
-  if (one("SELECT 1 FROM proxy_quarantine WHERE resource_key IN (?,?)", row.resource_key, `proxy:${a.bound_proxy_id}`)) return true;
+  if (quarantineActive(row.resource_key, `proxy:${a.bound_proxy_id}`)) return true;
   return !one("SELECT 1 FROM proxy_team_claims WHERE resource_key=? AND team_id=?", row.resource_key, team);
 }

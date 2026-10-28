@@ -17,6 +17,7 @@ import {
   type OnboardScope,
 } from "../onboard/jobs.js";
 import { decryptJson } from "@1dayapi/core";
+import { accountUuidFromSessionKey } from "../onboard/direct-oauth.js";
 
 // Account onboarding API (docs/onboarding.md §4). Registered for both scopes:
 // admins onboard into the platform pool (approved immediately, optional
@@ -238,6 +239,40 @@ function writeOrg(b: Body, existing: OrgRow | null, userId: string): OrgRow {
 }
 
 export function registerOnboardingRoutes(app: FastifyInstance): void {
+  // Pre-flight for pasted keys (docs/onboarding.md §4): shape check + duplicate detection from
+  // the account uuid embedded in the key. No upstream call, no write, nothing logged — a
+  // duplicate found here costs nothing, while the same key submitted costs a reservation.
+  for (const scope of ["admin", "provider"] as const) {
+    app.post(`/api/${scope}/accounts/onboard/precheck`, scope === "admin" ? { preHandler: requireAdmin } : { preHandler: requireProvider }, async (req) => {
+      const b = body(req);
+      const keys = Array.isArray(b.sessionKeys) ? (b.sessionKeys as unknown[]) : null;
+      if (!keys || keys.length === 0 || keys.length > 200 || !keys.every((k) => typeof k === "string")) {
+        bad("invalid_request", "sessionKeys must be an array of 1–200 strings");
+      }
+      const ownerClause = scope === "provider" ? " AND owner_id = ?" : "";
+      const ownerArgs = scope === "provider" ? [req.user!.id] : [];
+      return {
+        data: (keys as string[]).map((raw, index) => {
+          const sk = raw.trim().replace(/^["']+|["']+$/g, "");
+          const formatOk = sessionKeyFormatOk(sk);
+          const accountUuid = formatOk ? (accountUuidFromSessionKey(sk) ?? null) : null;
+          const existing = accountUuid
+            ? one<{ id: string; account_email: string | null; status: string; team_id: string | null }>(
+                `SELECT id, account_email, status, team_id FROM accounts WHERE account_uuid = ?${ownerClause} ORDER BY created_at DESC LIMIT 1`,
+                accountUuid, ...ownerArgs,
+              )
+            : undefined;
+          return {
+            index,
+            formatOk,
+            accountUuid,
+            existing: existing ? { id: existing.id, email: existing.account_email, status: existing.status, teamId: existing.team_id } : null,
+          };
+        }),
+      };
+    });
+  }
+
   // Saved organizations for the form (admin only: names and UUIDs are admin-visible, §7).
   const preAdminOnly = { preHandler: requireAdmin };
   app.get("/api/admin/onboard/orgs", preAdminOnly, async () => ({

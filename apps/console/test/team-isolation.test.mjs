@@ -216,7 +216,10 @@ test("expired authorization cannot revive a job or recycle a touched unverified 
   assert.equal(core.one("SELECT status FROM onboarding_jobs WHERE id=?",r.data.jobId).status,"failed");
   assert.equal(core.one("SELECT COUNT(*) n FROM accounts WHERE node_id='expired'").n,0);
   assert.equal(proxyOccupancy("ip:192.0.2.70").total,0);
-  assert.ok(core.one("SELECT 1 FROM proxy_quarantine WHERE resource_key=?",`proxy:${p}`));
+  // 2026-10-28 (docs/onboarding.md §12.1): expiry is a platform-side failure; with the organization
+  // specified the touched exit is claimed for A instead of quarantined, so B still cannot recycle it.
+  assert.equal(core.one("SELECT 1 FROM proxy_quarantine WHERE resource_key=?",`proxy:${p}`),undefined);
+  assert.equal(core.one("SELECT team_id FROM proxy_team_claims WHERE resource_key='ip:192.0.2.70'").team_id,A);
   assert.throws(()=>resolveTeamProxy("expired",B));
   assert.deepEqual(nodeProxyConfig("expired").proxyAccounts[p],[]);
   assert.match(nodeProxyConfig("expired").proxyTeams[p],/^unassigned:/);

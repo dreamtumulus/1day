@@ -1,4 +1,4 @@
-import { all, nowIso, one, recordProxyTeamEvent, run } from "@1dayapi/core";
+import { all, claimProxyResource, ensureUpstreamTeam, nowIso, one, quarantineResource, recordProxyTeamEvent, run } from "@1dayapi/core";
 
 export const PENDING_CALLBACK_TTL_MS = 30 * 60_000;
 export const WORKING_JOB_TTL_MS = 3 * 60_000;
@@ -14,18 +14,60 @@ export function reservationDeadline(status: "working" | "pending_callback"): str
   return new Date(Date.now() + (status === "working" ? WORKING_JOB_TTL_MS : PENDING_CALLBACK_TTL_MS)).toISOString().slice(0, 19) + "Z";
 }
 
+/**
+ * Failure classes (docs/onboarding.md §12.1). Only an upstream verdict on an exit that
+ * actually went out can taint it: the upstream saw the exit with a credential it rejected,
+ * or the organization it answered with differs from the reservation. Platform-side
+ * failures (node offline, reservation expired, operator cancel, duplicate account, bad
+ * callback, proxy bookkeeping) say nothing about the exit and only release the slot —
+ * quarantining them burned four proxies on 2026-10-28 for a heartbeat race.
+ */
+const EXIT_TAINTING_CODES = new Set([
+  "session_key_invalid", "session_stale_relogin", "authorize_failed", "token_exchange_failed",
+  "validate_failed", "team_mismatch", "cloudflare_challenge", "organization_mismatch",
+  "oauth_verification_failed",
+]);
+export function failureTaintsExit(code: string): boolean {
+  return EXIT_TAINTING_CODES.has(code);
+}
+
 /** Idempotent terminal transition; a late runner cannot overwrite cancel/done. */
 export function endReservation(jobId: string, code: string, message: string): boolean {
   const j = one<{ id:string; isolation_version:number; status:string; team_id:string|null; proxy_resource_key:string|null; proxy_id:string|null; node_id:string; requester_id:string|null; egress_started_at:string|null }>("SELECT * FROM onboarding_jobs WHERE id=?", jobId);
   if (!j || j.isolation_version !== 1 || !["working", "pending_callback"].includes(j.status)) return false;
   const claimed = j.proxy_resource_key ? one<{team_id:string}>("SELECT team_id FROM proxy_team_claims WHERE resource_key=?", j.proxy_resource_key) : undefined;
-  if (j.egress_started_at && j.proxy_resource_key && (!claimed || claimed.team_id !== j.team_id || code === "team_mismatch")) {
-    for (const resource of [j.proxy_resource_key, `proxy:${j.proxy_id}`])
-      run("INSERT OR IGNORE INTO proxy_quarantine(resource_key,reason) VALUES (?,?)", resource, code.slice(0,200));
-    recordProxyTeamEvent({resourceKey:j.proxy_resource_key,proxyId:j.proxy_id,nodeId:j.node_id,teamId:j.team_id,jobId,event:"quarantined",reason:code});
+  const wentOut = !!j.egress_started_at && !!j.proxy_resource_key;
+  const unclaimedOrForeign = !claimed || claimed.team_id !== j.team_id || code === "team_mismatch";
+  // A touched exit never becomes virgin again. Three outcomes:
+  //  - upstream verdict (tainting code) or an exit already owned by another organization → quarantine;
+  //  - platform-side failure with the organization specified by the operator → the exit is
+  //    claimed for that organization (reusable by its own accounts, never by another);
+  //  - platform-side failure with no organization known → quarantine (unknown egress).
+  let outcome: "quarantined" | "kept_for_team" | "released" = "released";
+  if (wentOut && unclaimedOrForeign) {
+    const foreign = !!claimed && claimed.team_id !== j.team_id;
+    if (failureTaintsExit(code) || foreign || !j.team_id) outcome = "quarantined";
+    else {
+      try {
+        ensureUpstreamTeam(j.team_id);
+        claimProxyResource(j.proxy_resource_key!, j.team_id);
+        outcome = "kept_for_team";
+      } catch {
+        outcome = "quarantined";
+      }
+    }
+  }
+  if (outcome === "quarantined") {
+    for (const resource of [j.proxy_resource_key!, `proxy:${j.proxy_id}`])
+      quarantineResource(resource, code);
+    recordProxyTeamEvent({resourceKey:j.proxy_resource_key!,proxyId:j.proxy_id,nodeId:j.node_id,teamId:j.team_id,jobId,event:"quarantined",reason:code});
+  } else if (outcome === "kept_for_team") {
+    recordProxyTeamEvent({resourceKey:j.proxy_resource_key!,proxyId:j.proxy_id,nodeId:j.node_id,teamId:j.team_id,jobId,event:"exit_kept_for_team",
+      reason:`${code}: platform-side failure after egress; exit claimed for the specified organization instead of quarantined`});
   }
   const changed = run("UPDATE onboarding_jobs SET status='failed', error=?, payload_enc=NULL, authorize_url=NULL, updated_at=? WHERE id=? AND isolation_version=1 AND status IN ('working','pending_callback')", `${code}: ${message}`.slice(0,500), nowIso(), jobId).changes;
-  if (changed && j.proxy_resource_key) recordProxyTeamEvent({resourceKey:j.proxy_resource_key,proxyId:j.proxy_id,nodeId:j.node_id,teamId:j.team_id,jobId,actorId:j.requester_id,event:"slot_released",reason:code});
+  if (changed && j.proxy_resource_key) recordProxyTeamEvent({resourceKey:j.proxy_resource_key,proxyId:j.proxy_id,nodeId:j.node_id,teamId:j.team_id,jobId,actorId:j.requester_id,event:"slot_released",
+    reason:`${code}; ${outcome === "quarantined" ? "exit quarantined" : outcome === "kept_for_team" ? "exit kept for the specified organization (platform-side failure, not tainted)" : "released before egress"}`});
   return changed > 0;
 }
 
