@@ -161,8 +161,23 @@ export class ProxyPool {
   replaceAll(urls: string[], metadata?: { proxyTeams?: Record<string, string>; proxyAccounts?: Record<string, string[]> }): { accepted: number; rejected: number } {
     const valid = [...new Set(urls.filter(isValidProxyUrl))];
     const rejected = urls.length - valid.length;
-    this.health.clear();
-    for (const url of valid) this.health.set(url, freshHealth());
+    // Keep what we already know about proxies that stay in the pool (liveness, strikes,
+    // measured exit IP). The platform pushes the pool on every onboarding event and on
+    // every heartbeat that changed something; wiping the health map each time restarted
+    // the probe pass from scratch, so the tail of a large pool was never measured and the
+    // platform kept reading "alive, exit unknown" for proxies that served requests
+    // (2026-10-28 outage). Only URLs new to the pool start unprobed.
+    const previous = this.health;
+    this.health = new Map();
+    let added = 0;
+    for (const url of valid) {
+      const kept = previous.get(url);
+      if (kept) this.health.set(url, kept);
+      else {
+        this.health.set(url, freshHealth());
+        added += 1;
+      }
+    }
     this.store.data.proxies = valid.length > 0 ? valid : undefined;
     if (metadata) {
       const ids = new Set(valid.map(proxyId));
@@ -178,8 +193,11 @@ export class ProxyPool {
     }
     this.store.save();
     this.bridge.retain(new Set(valid.filter(isSocks5Url)));
-    this.log(`pool replaced: ${valid.length} proxies (${rejected} rejected)`);
-    if (this.opts.autoCheck !== false) void this.checkAll();
+    const retained = valid.length - added;
+    this.log(`pool replaced: ${valid.length} proxies (${rejected} rejected, ${retained} retained with their health, ${added} new)`);
+    // A pass is only needed for new entries; retained ones keep their verdict until the
+    // periodic pass (or a running one) re-probes them.
+    if (this.opts.autoCheck !== false && added > 0) void this.checkAll();
     return { accepted: valid.length, rejected };
   }
 
@@ -261,7 +279,10 @@ export class ProxyPool {
     if (!h) return;
     if (h.failStreak > 0) this.log(`proxy ${proxyId(url)} recovered (request ok after ${h.failStreak} failure(s))`);
     h.failStreak = 0;
-    h.live = true;
+    // A served request clears strikes, but an entry the probe has not seen yet stays
+    // "unprobed" (live=null): reporting it live without a measured exit made the platform
+    // refuse it as "exit identity unavailable".
+    if (h.live !== null) h.live = true;
     h.lastError = null;
   }
 
@@ -345,9 +366,10 @@ export class ProxyPool {
       let next = 0;
       const worker = async () => {
         while (next < entries.length) {
-          const [url, h] = entries[next++];
-          if (!this.health.has(url)) continue; // pool replaced mid-pass
-          await this.probe(target, url, h);
+          const [url] = entries[next++];
+          const h = this.health.get(url);
+          if (!h) continue; // pool replaced mid-pass: dropped URL
+          await this.probe(target, url, h); // current entry, never the snapshot's object
         }
       };
       await Promise.all(Array.from({ length: Math.min(HEALTHCHECK_CONCURRENCY, entries.length) }, worker));

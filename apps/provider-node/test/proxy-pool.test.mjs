@@ -49,3 +49,34 @@ strict.markDead(P1, "test: dead");
 assert.equal(strict.getPinned(id1), null, "deadAfter=1: first failure withdraws the proxy");
 
 console.log("proxy-pool: ALL PASSED");
+
+// 2026-10-28: a pool push keeps the health of proxies that stay in the pool (liveness,
+// strikes, measured exit IP) and only new URLs start unprobed; a served request never
+// promotes an unprobed entry to live (the platform would read "alive, exit unknown").
+{
+  const keep = new ProxyPool(fakeStore(), { autoCheck: false });
+  keep.replaceAll([P1, P2]);
+  const h1 = keep.health.get(P1);
+  h1.live = true; h1.exitIp = "203.0.113.7"; h1.latencyMs = 42; h1.lastCheckAt = Date.now();
+  keep.markDead(P2, "test: blip"); // one strike, still usable
+  keep.replaceAll([P1, P2, P3], { proxyTeams: { [proxyId(P1)]: "team-a" }, proxyAccounts: { [proxyId(P1)]: ["acct-a"] } });
+  const r1 = keep.heartbeatReport().proxies.find((p) => p.id === proxyId(P1));
+  assert.equal(r1.live, true, "retained proxy keeps its verdict across a pool push");
+  assert.equal(r1.exitIp, "203.0.113.7", "retained proxy keeps its measured exit");
+  assert.equal(keep.health.get(P2).failStreak, 1, "retained proxy keeps its strike streak");
+  assert.equal(keep.health.get(P3).live, null, "new proxy starts unprobed");
+  assert.equal(keep.getPinned(proxyId(P1), "acct-a", "team-a"), P1, "policy metadata still applied");
+  keep.replaceAll([P2, P3]);
+  assert.equal(keep.health.has(P1), false, "dropped URL leaves the pool");
+  // markAlive on an unprobed entry: strikes cleared, verdict stays unprobed.
+  keep.markDead(P3, "test: blip");
+  keep.markAlive(P3);
+  assert.equal(keep.health.get(P3).failStreak, 0);
+  assert.equal(keep.health.get(P3).live, null, "served request does not fake a probe");
+  keep.health.get(P3).live = true;
+  keep.markDead(P3, "test: blip");
+  keep.markAlive(P3);
+  assert.equal(keep.health.get(P3).live, true, "probed entry is marked alive as before");
+  keep.stopHealthChecks();
+  console.log("proxy-pool: pool push retains health OK");
+}
