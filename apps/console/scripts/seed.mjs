@@ -1,11 +1,16 @@
 #!/usr/bin/env node
 // v3 dev seed (docs/v3-design.md): one admin, one demo consumer ($50, one
 // API key), one demo provider, and two mock upstream accounts pointing at
-// apps/gateway/scripts/mock-upstream.mjs. Plaintexts are printed once.
+// apps/gateway/scripts/mock-upstream.mjs. Plaintext keys are written once to
+// data/seed-keys.txt (0600); stdout only shows previews, so a seed run captured
+// in journald / CI output never leaks a usable key (issue A-5 follow-up).
 //
 //   node scripts/seed.mjs [--mock http://127.0.0.1:19001]
+import { chmodSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import {
   applyLedger,
+  dataDir,
   encryptJson,
   encryptString,
   generateApiKey,
@@ -61,9 +66,26 @@ const out = tx(() => {
   return { admin, consumer, provider, ops, apiKey: k.plaintext };
 });
 
-console.log("admin    login key :", out.admin.loginKey);
-console.log("consumer login key :", out.consumer.loginKey, "(balance $50)");
-console.log("consumer API key   :", out.apiKey);
-console.log("provider login key :", out.provider.loginKey);
-console.log("ops      login key :", out.ops.loginKey);
+const keyFile = join(dataDir, "seed-keys.txt");
+writeFileSync(
+  keyFile,
+  [
+    `admin    login key : ${out.admin.loginKey}`,
+    `consumer login key : ${out.consumer.loginKey} (balance $50)`,
+    `consumer API key   : ${out.apiKey}`,
+    `provider login key : ${out.provider.loginKey}`,
+    `ops      login key : ${out.ops.loginKey}`,
+    "",
+  ].join("\n"),
+  { mode: 0o600 },
+);
+chmodSync(keyFile, 0o600);
+// SEED_PRINT_KEYS=1 (the e2e runner, which parses stdout into a temp file) prints the plaintext.
+const preview = (k) => (process.env.SEED_PRINT_KEYS === "1" ? k : `${k.slice(0, 16)}…`);
+console.log("admin    login key :", preview(out.admin.loginKey));
+console.log("consumer login key :", preview(out.consumer.loginKey), "(balance $50)");
+console.log("consumer API key   :", preview(out.apiKey));
+console.log("provider login key :", preview(out.provider.loginKey));
+console.log("ops      login key :", preview(out.ops.loginKey));
+console.log(`plaintext keys     : ${keyFile} (0600)`);
 console.log(`mock accounts      : ${mock} (anthropic) / ${mock}/v1 (openai) in group 'default'`);

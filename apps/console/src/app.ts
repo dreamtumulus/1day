@@ -12,6 +12,7 @@ import { registerProviderRoutes } from "./routes/provider.js";
 import { registerPublicRoutes } from "./routes/public.js";
 import { registerUserRoutes } from "./routes/user.js";
 import { cleanupSessions, ensureInitialAdmin } from "./session.js";
+import { cleanupAudit, registerAuditHook, registerAuditRoutes } from "./audit.js";
 import { startArchiveCleanup } from "./node/archive-cleanup.js";
 
 export async function buildApp(): Promise<FastifyInstance> {
@@ -43,7 +44,13 @@ export async function buildApp(): Promise<FastifyInstance> {
 
   ensureInitialAdmin((msg) => app.log.info(msg));
   cleanupSessions();
-  setInterval(cleanupSessions, 3_600_000).unref();
+  cleanupAudit();
+  setInterval(() => {
+    cleanupSessions();
+    cleanupAudit();
+  }, 3_600_000).unref();
+  // Audit trail for admin / provider mutations and failed logins (docs/auth.md §3a).
+  registerAuditHook(app);
   const swept = sweepStaleJobs();
   const stopOnboardingMaintenance = startOnboardingMaintenance();
   const stopArchiveCleanup = startArchiveCleanup();
@@ -56,6 +63,7 @@ export async function buildApp(): Promise<FastifyInstance> {
   registerUserRoutes(app);
   registerProviderRoutes(app);
   registerAdminRoutes(app);
+  registerAuditRoutes(app);
   registerOnboardingRoutes(app);
   registerOnboarderRoutes(app);
   registerNodeRoutes(app);

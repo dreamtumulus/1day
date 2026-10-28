@@ -19,7 +19,8 @@
 |---|---|---|
 | `schema_migrations` | 已应用的迁移版本 | — |
 | `users` | 账户：三种角色、登录密钥哈希、余额 | — |
-| `user_sessions` | 控制台会话 | `user_id → users` (CASCADE) |
+| `user_sessions` | 控制台会话：主键 `token_hash`（cookie token 的 sha256，迁移 24 起不存明文） | `user_id → users` (CASCADE) |
+| `admin_audit` | 管理员 / 号商变更操作与失败登录的审计（迁移 24，auth.md §3a；`summary` 为脱敏 JSON，保留 180 天） | 无外键（`user_id` 只是值，用户删除后保留） |
 | `groups` | 分组：倍率 + 模型白名单 + 是否专属 | — |
 | `user_allowed_groups` | 专属分组授权 | `users`、`groups` (CASCADE) |
 | `api_keys` | 调用推理用的 `sk-1d-` Key | `user_id → users` (CASCADE)、`group_id → groups` |

@@ -30,9 +30,24 @@ ops 的定位：盯账号死活，掉授权时手动补齐（控制台「账号�
 
 - `POST /auth/login {key}` → 按哈希查 `users`；不存在 401 `invalid_login_key`；被禁用 401 `user_disabled`；
   同一 IP 10 分钟内失败 ≥ 20 次 → 429 `too_many_attempts`（部署在 nginx 后需 `TRUST_PROXY=127.0.0.1,::1`，并由 nginx 仅信任 Cloudflare 网段后覆盖 XFF 才能按真实 IP 计）。
-- 成功：写 `user_sessions`（随机 32 字节 hex，7 天），下发 `oneday_session=<token>; Path=/; HttpOnly; SameSite=Lax; Max-Age=604800`，
+- 成功：生成随机 32 字节 hex token，`user_sessions` 只存它的 sha256（`token_hash`，迁移 24，2026-10-28；此前明文即主键），
+  7 天有效；下发 `oneday_session=<token>; Path=/; HttpOnly; SameSite=Lax; Max-Age=604800`，
   `COOKIE_SECURE=1` 时加 `Secure`；返回 `{data: {id, role, name, status, keyPreview, balanceUsd}}`，`GET /auth/me` 同形状。
-- `POST /auth/logout` 删除会话。会话随用户禁用、登录密钥重置而立即失效；过期会话每小时清理。
+  每次鉴权把 cookie 里的 token 哈希后查表，拿到库文件也无法伪造登录；迁移 24 把已有明文行按哈希搬入新表并删除明文表，旧 cookie 继续有效。
+- `POST /auth/logout` 按哈希删除会话。会话随用户禁用、登录密钥重置而立即失效；过期会话每小时清理。
+- 首次启动生成的管理员密钥只写入 `data/admin-key.txt`（0600），日志只打印前 16 位预览；`scripts/seed.mjs` 同理（明文写 `data/seed-keys.txt`）。
+
+### 3a. 管理员操作审计（2026-10-28，A-5）
+
+- 表 `admin_audit`（迁移 24）：`id, at, user_id, role, method, path, status, ip, summary`。
+- 写入时机（console `audit.ts` 的 `onSend` 钩子，单条 INSERT，try/catch，失败不影响请求）：
+  - 已登录用户对 `/api/admin/*`、`/api/provider/*` 的所有非 GET/HEAD/OPTIONS 请求（含 4xx/5xx），`summary` = `{params, body, error?}`；
+    body 经脱敏：键名匹配 `key|token|secret|password|sessionkey|credential|cookie|authorization` 的值替换为 `[redacted]`，字符串截到 200 字符，深度 4、每层 60 键；
+  - `POST /auth/login` 失败（401/429）：`user_id` 为空，`summary = {reason: <错误码>}`，不记录尝试的密钥；成功登录不记。
+  - 未登录的 401 请求不记（不是任何人的操作）。
+- 查询 `GET /api/admin/audit?page&pageSize&userId&method&path&from&to`（仅 admin；`path` 为包含匹配，`from/to` 为 UTC 日期）
+  → `{data:{items:[{id, at, userId, userName, role, method, path, status, ip, summary}], total, page, pageSize}}`，最新在前。
+- 保留 180 天，和过期会话一起每小时清理。
 
 ## 4. 推理鉴权
 

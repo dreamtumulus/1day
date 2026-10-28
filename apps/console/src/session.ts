@@ -87,9 +87,11 @@ export function login(plaintext: string): LoginResult {
   if (!r) return { ok: false, code: "invalid_login_key" };
   if (r.status !== "active") return { ok: false, code: "user_disabled" };
   const token = randomHex(32);
+  // Only the hash is stored (migration 24, docs/auth.md §3): a copy of the DB cannot be
+  // replayed as a login; the cookie carries the random token and is hashed on every lookup.
   run(
-    "INSERT INTO user_sessions (token, user_id, expires_at, created_at) VALUES (?, ?, ?, ?)",
-    token,
+    "INSERT INTO user_sessions (token_hash, user_id, expires_at, created_at) VALUES (?, ?, ?, ?)",
+    sessionTokenHash(token),
     r.id,
     isoIn(SESSION_TTL_DAYS * 86_400_000),
     nowIso(),
@@ -98,15 +100,21 @@ export function login(plaintext: string): LoginResult {
   return { ok: true, user: shape(r), token };
 }
 
+/** The at-rest form of a session token (what user_sessions.token_hash holds). */
+export function sessionTokenHash(token: string): string {
+  return sha256Hex(token);
+}
+
 export function logout(token: string): void {
-  run("DELETE FROM user_sessions WHERE token = ?", token);
+  run("DELETE FROM user_sessions WHERE token_hash = ?", sessionTokenHash(token));
 }
 
 export function sessionUser(token: string): SessionUser | null {
+  if (!token || token.length > 256) return null;
   const r = one<UserRow>(
     `SELECT u.* FROM user_sessions s JOIN users u ON u.id = s.user_id
-     WHERE s.token = ? AND s.expires_at > ? AND u.status = 'active'`,
-    token,
+     WHERE s.token_hash = ? AND s.expires_at > ? AND u.status = 'active'`,
+    sessionTokenHash(token),
     nowIso(),
   );
   return r ? shape(r) : null;
@@ -197,7 +205,8 @@ export function ensureInitialAdmin(log: (msg: string) => void): void {
   const keyFile = join(dataDir, "admin-key.txt");
   writeFileSync(keyFile, loginKey + "\n", { mode: 0o600 });
   chmodSync(keyFile, 0o600);
-  log(`[auth] no admin found; generated initial admin login key -> ${keyFile} (0600)`);
+  // The plaintext key goes to the 0600 file only; logs (journald, CI output) get the preview.
+  log(`[auth] no admin found; generated initial admin login key ${loginKey.slice(0, 16)}… -> ${keyFile} (0600)`);
 }
 
 export function cleanupSessions(): void {

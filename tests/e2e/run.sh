@@ -27,7 +27,7 @@ start_stack() {
   PORT=$E2E_GATEWAY_PORT HOST=127.0.0.1 CONSOLE_BASE=http://127.0.0.1:$E2E_CONSOLE_PORT CCR_POLL_INTERVAL_MS=50 \
     CCR_POOL_SWEEP_MS=200 \
     node --no-warnings "$ROOT/apps/gateway/dist/index.js" > "$WORK/gateway.log" 2>&1 & PIDS+=($!)
-  (cd "$ROOT/apps/console" && node --no-warnings scripts/seed.mjs --mock "http://127.0.0.1:$MOCK_PORT") > "$WORK/seed.txt"
+  (cd "$ROOT/apps/console" && SEED_PRINT_KEYS=1 node --no-warnings scripts/seed.mjs --mock "http://127.0.0.1:$MOCK_PORT") > "$WORK/seed.txt"
   E2E_FIXTURE=1 node --no-warnings "$ROOT/tests/e2e/seed-models.mjs" || return 1
   sleep 0.8
 }
