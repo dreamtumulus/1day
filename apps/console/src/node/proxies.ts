@@ -163,6 +163,36 @@ export function replaceNodeProxies(nodeId: string, proxies: ProxyInput[]): Repla
   return { urls: unique.map((p) => p.url), skipped, skippedUrls };
 }
 
+/**
+ * Remove proxies from a node's pool by id (operator decision, 2026-10-28: a provider's
+ * revoked list). Rows that still carry an account or a live onboarding reservation are
+ * left in place and reported (delete the account first, docs/onboarding.md §1 原则 3);
+ * everything else is deleted. Quarantine / claim / event history is append-only and stays.
+ */
+export interface RemoveProxiesResult {
+  removed: string[];
+  bound: string[];
+  reserved: string[];
+  notFound: string[];
+}
+export function removeNodeProxies(nodeId: string, proxyIds: string[], actorId: string | null): RemoveProxiesResult {
+  const out: RemoveProxiesResult = { removed: [], bound: [], reserved: [], notFound: [] };
+  for (const raw of proxyIds) {
+    const id = String(raw).slice(0, 40);
+    const p = one<{ id: string; bound_account_id: string | null; resource_key: string | null; team_id: string | null }>(
+      "SELECT id, bound_account_id, resource_key, team_id FROM node_proxies WHERE id = ? AND node_id = ?", id, nodeId);
+    if (!p) { out.notFound.push(id); continue; }
+    if (p.bound_account_id || one("SELECT 1 FROM accounts WHERE bound_proxy_id = ?", id)) { out.bound.push(id); continue; }
+    if (proxyReserved(id)) { out.reserved.push(id); continue; }
+    run("DELETE FROM node_proxy_assignments WHERE node_id = ? AND proxy_id = ?", nodeId, id);
+    run("DELETE FROM node_proxies WHERE id = ? AND node_id = ?", id, nodeId);
+    recordProxyTeamEvent({ resourceKey: p.resource_key ?? `proxy:${id}`, proxyId: id, nodeId, teamId: p.team_id, actorId, event: "proxy_removed",
+      reason: "removed from the pool by an operator" });
+    out.removed.push(id);
+  }
+  return out;
+}
+
 /** Proxies an in-flight onboarding job has already picked (not yet bound: the bot is still running). */
 export const RESERVED_PROXY_SQL = `SELECT proxy_id FROM onboarding_jobs j WHERE proxy_id IS NOT NULL AND ${liveReservationSql()}`;
 

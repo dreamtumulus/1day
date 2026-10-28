@@ -60,7 +60,7 @@ import {
   strArray,
 } from "../http.js";
 import { deployNodeLocal, deployNodeViaSsh } from "../node/deploy.js";
-import { ProxyInputError, addNodeProxies, listNodeProxies, listProxiesForPicker, nodeExists, nodeProxyUrls, releaseAccountProxies, releaseNodeResources, replaceNodeProxies, unquarantineProxy, validateProxies, type AddProxiesResult, type ProxyInput, type ReplaceProxiesResult } from "../node/proxies.js";
+import { ProxyInputError, addNodeProxies, removeNodeProxies, listNodeProxies, listProxiesForPicker, nodeExists, nodeProxyUrls, releaseAccountProxies, releaseNodeResources, replaceNodeProxies, unquarantineProxy, validateProxies, type AddProxiesResult, type ProxyInput, type ReplaceProxiesResult } from "../node/proxies.js";
 import { requestViaNode } from "../node/egress-request.js";
 import { disconnectNode, pushProxies } from "../node/registry.js";
 import { createUser, dropSessions, requireAdmin, requireOps, resetLoginKey } from "../session.js";
@@ -1377,6 +1377,18 @@ export function registerAdminRoutes(app: FastifyInstance): void {
     }
     const pushed = pushProxies(id, nodeProxyUrls(id));
     return { data: { pushed, added: res.added, skipped: res.skipped, skippedUrls: res.skippedUrls, proxies: listNodeProxies(id) } };
+  });
+
+  // Remove proxies by id (bound / reserved ones are reported, not removed); the pool is re-pushed.
+  app.post("/api/admin/nodes/:id/proxies/remove", pre, async (req) => {
+    const { id } = req.params as { id: string };
+    if (!nodeExists(id)) notFound("node");
+    const ids = strArray(body(req), "proxyIds");
+    if (!ids || ids.length === 0) bad("invalid_request", "proxyIds is required");
+    if (ids.length > 1000) bad("invalid_request", "at most 1000 proxyIds per call");
+    const res = tx(() => removeNodeProxies(id, ids, req.user!.id));
+    const pushed = res.removed.length ? pushProxies(id, nodeProxyUrls(id)) : false;
+    return { data: { ...res, pushed, remaining: one<{ n: number }>("SELECT COUNT(*) AS n FROM node_proxies WHERE node_id = ?", id)!.n } };
   });
 
   // Lift a quarantine (docs/onboarding.md §12.1): operator decision, kept in the history.
