@@ -410,14 +410,18 @@ async function finishVerifiedJob(job:JobRow,res:AuthResult):Promise<void> {
       ensureUpstreamTeam(actual,params.teamName);
       claimDiscoveredProxy(job.proxy_id!,actual,job.id);
       run("UPDATE onboarding_jobs SET team_id=? WHERE id=?",actual,job.id);
-      const final=resolveTeamProxy(job.node_id,actual,undefined,job.id);
-      if(final.id!==job.proxy_id){
+      // Spread-first policy (2026-10-29): the discovery exit (virgin, so the least loaded) is kept unless a
+      // strictly less-loaded same-organization exit exists in the same proxy group — which cannot happen
+      // for a virgin exit, so the account normally stays where it authorized.
+      const reservedGroup=one<{group_name:string|null}>("SELECT group_name FROM node_proxies WHERE id=?",job.proxy_id!);
+      const final=resolveTeamProxy(job.node_id,actual,undefined,job.id,undefined,reservedGroup?(reservedGroup.group_name??null):undefined);
+      if(final.id!==job.proxy_id && proxyOccupancy(final.resource_key!,job.id).total<proxyOccupancy(job.proxy_resource_key!,job.id).total){
         recordProxyTeamEvent({resourceKey:job.proxy_resource_key!,proxyId:job.proxy_id,nodeId:job.node_id,teamId:actual,
-          jobId:job.id,event:"discovery_slot_released",reason:"final account uses an existing same-organization exit"});
+          jobId:job.id,event:"discovery_slot_released",reason:"final account uses a less-loaded same-organization exit"});
         run("UPDATE onboarding_jobs SET proxy_id=?,proxy_resource_key=? WHERE id=?",final.id,final.resource_key,job.id);
         recordProxyTeamEvent({resourceKey:final.resource_key!,proxyId:final.id,nodeId:job.node_id,teamId:actual,jobId:job.id,
           actorId:job.requester_id,event:"slot_reserved",reason:proxyOccupancy(final.resource_key!,job.id).total>=2?
-            "third slot: no normal capacity":"discovery complete: prefer an existing one-account exit"});
+            "third slot: every exit carries two":"discovery complete: least-loaded exit"});
       }
     });
     pushProxies(job.node_id,nodeProxyUrls(job.node_id));

@@ -230,13 +230,19 @@ export function OnboardPage({ scope }: { scope: OnboardScope }) {
     if (!nodeId && onlineNodes.length) setNodeId(onlineNodes[0].nodeId);
   }, [onlineNodes, nodeId]);
 
-  // The server checks organization membership and reserves a capacity slot.
+  // A node switch resets the pick; the pool itself is (re)loaded below.
   useEffect(() => {
     setProxyId((p) => (p === PROXY_OWN ? p : "auto")); // a supplied address survives a node switch
     setProxies(null);
     setProxiesErr(null);
     setProxyGroups([]);
     setProxyGroup("");
+  }, [scope, nodeId]);
+  // The server checks organization membership and reserves a capacity slot. Occupancy is re-read
+  // after every finished job (2026-10-29: the picker kept showing the load from page load, so a
+  // pool pick looked empty while it already carried two or three accounts).
+  const [proxyRefresh, setProxyRefresh] = useState(0);
+  useEffect(() => {
     if (!nodeId) return;
     let alive = true;
     nodeProxies(scope, nodeId, true)
@@ -248,7 +254,7 @@ export function OnboardPage({ scope }: { scope: OnboardScope }) {
     return () => {
       alive = false;
     };
-  }, [scope, nodeId]);
+  }, [scope, nodeId, proxyRefresh]);
 
   // Poll the job while the server is working; pending_callback is a stable
   // state (waiting for the user to paste the callback URL), done/failed stop.
@@ -655,6 +661,14 @@ export function OnboardPage({ scope }: { scope: OnboardScope }) {
     return c;
   }, [batch?.items]);
   const batchFinished = !!batch && !batch.running && batchCounts.working === 0;
+  // Re-read pool occupancy whenever a single job or a batch item finishes.
+  useEffect(() => {
+    if (job && (job.status === "done" || job.status === "failed")) setProxyRefresh((n) => n + 1);
+  }, [job?.jobId, job?.status]);
+  useEffect(() => {
+    if (batch) setProxyRefresh((n) => n + 1);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [batchCounts.done, batchCounts.failed]);
   const batchNextIn = batch?.nextAt ? Math.max(0, Math.ceil((batch.nextAt - Date.now()) / 1000)) : null;
 
   // Proxy choice as three modes: automatic, a pool pick, or an operator-supplied address.

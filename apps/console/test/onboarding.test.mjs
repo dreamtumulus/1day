@@ -290,7 +290,7 @@ await test("provider scope: own node only; approved on the spot into the provide
   assert.equal(a.owner_id, provider.id);
   assert.equal(a.review_status, "approved", "no admin review for provider onboarding (user rule 2026-10-26)");
   assert.equal(a.status, "active");
-  assert.equal(a.bound_proxy_id, pNew, "prefer an existing one-account team exit before opening another");
+  assert.equal(a.bound_proxy_id, pOld, "spread first (2026-10-29): the empty exit before doubling up on the one-account exit");
   assert.equal(a.temp_unschedulable_until, null, "no onboarding cooldown for provider onboarding");
   assert.equal(a.error_message, null);
   assert.equal(done.cooldownUntil, undefined);

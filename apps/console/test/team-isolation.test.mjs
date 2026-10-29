@@ -57,7 +57,7 @@ async function done(jobId){
   throw new Error("job timed out");
 }
 
-test("normal two slots, emergency third, alias IP global cap, permanent organization claim",async()=>{
+test("spread first (one per exit, then two, emergency third), alias IP global cap, permanent organization claim",async()=>{
   const [p1,p2,pAlias]=node("capacity",["192.0.2.1","192.0.2.2","192.0.2.1"]);
   const jobs=[];
   // Concurrent reservations must count before either authorization finishes.
@@ -84,7 +84,7 @@ test("normal two slots, emergency third, alias IP global cap, permanent organiza
   assert.ok(nodeProxyConfig("capacity").proxyTeams[p2]);
 });
 
-test("unknown organization discovery permanently claims its exit, then fills an existing one-account exit",async()=>{
+test("unknown organization discovery permanently claims its exit and stays on it; later accounts spread one per exit before doubling up",async()=>{
   const proxies=node("discovery",["192.0.2.10","192.0.2.11"]);
   const initial=await done((await start("discovery",A)).data.jobId);
   assert.equal(initial.status,"done");
@@ -94,11 +94,17 @@ test("unknown organization discovery permanently claims its exit, then fills an 
   const bootstrapKey=core.one("SELECT resource_key FROM node_proxies WHERE id=?",bootstrap).resource_key;
   const second=await done((await start("discovery",null)).data.jobId);
   assert.equal(second.status,"done",second.error);
-  assert.equal(core.one("SELECT bound_proxy_id FROM accounts WHERE id=?",second.accountId).bound_proxy_id,first);
+  // Spread first (2026-10-29): the discovered account keeps its virgin exit instead of moving onto the one-account exit.
+  assert.equal(core.one("SELECT bound_proxy_id FROM accounts WHERE id=?",second.accountId).bound_proxy_id,bootstrap);
   assert.equal(core.one("SELECT team_id FROM node_proxies WHERE id=?",bootstrap).team_id,A);
-  assert.equal(proxyOccupancy(firstKey).bound,2);
-  assert.equal(proxyOccupancy(bootstrapKey).bound,0);
+  assert.equal(proxyOccupancy(firstKey).bound,1);
+  assert.equal(proxyOccupancy(bootstrapKey).bound,1);
   assert.ok(core.one("SELECT 1 FROM proxy_team_events WHERE proxy_id=? AND event='organization_discovered'",bootstrap));
+  // Both exits carry one: the next two accounts take the second slot of each exit, never a third anywhere.
+  for(let i=0;i<2;i++){const r=await done((await start("discovery",A)).data.jobId);assert.equal(r.status,"done",r.error);}
+  assert.equal(proxyOccupancy(firstKey).bound,2);
+  assert.equal(proxyOccupancy(bootstrapKey).bound,2);
+  assert.equal(core.one("SELECT count(*) n FROM proxy_team_events WHERE node_id='discovery' AND event='slot_reserved' AND reason LIKE 'third slot%'").n,0);
 });
 
 test("only actual admins receive team names, UUIDs, and history; ops and provider bodies omit metadata",async()=>{

@@ -429,11 +429,12 @@ function teamCompatible(p: IsolatedProxy, teamId: string | null): boolean {
 
 /**
  * Caller reserves the returned resource inside the same BEGIN IMMEDIATE.
- * Automatic picks fill the normal two slots per exit first and fall back to the third
- * only when no exit has a normal slot left. An explicitly requested proxy (operator's
- * pick or a self-supplied one) is accepted as long as the hard limit of 3 holds;
- * before 2026-10-28 it was refused whenever some other exit still had a normal slot,
- * which read as a failure for a proxy the operator had just chosen on purpose.
+ * Automatic picks spread first (operator decision 2026-10-29; before, an exit was filled to two
+ * before the next one opened, which put consecutive accounts on one IP): the least-loaded
+ * compatible exit wins, so every exit in scope carries one account before any carries two, and
+ * the third slot is used only when every exit already carries two. Ties keep the probe order
+ * (oldest-checked first). An explicitly requested proxy (operator's pick or a self-supplied one)
+ * is accepted as long as the hard limit of 3 holds (2026-10-28).
  */
 export function resolveTeamProxy(nodeId: string, teamIdInput?: string | null, requested?: string, excludeJobId="", excludeProxyIds?: Set<string>, groupName?: string | null): IsolatedProxy {
   expireJobReservations();
@@ -452,13 +453,11 @@ export function resolveTeamProxy(nodeId: string, teamIdInput?: string | null, re
   const group = groupName === undefined ? undefined : normalizeProxyGroup(groupName);
   const candidates = all<IsolatedProxy>("SELECT * FROM node_proxies WHERE node_id=? ORDER BY last_check_at,id", nodeId)
     .filter((p) => (group === undefined || (p.group_name ?? null) === group) && !excludeProxyIds?.has(p.id) && teamCompatible(p, teamId))
-    .map((p) => ({ p, ...proxyOccupancy(p.resource_key!,excludeJobId),count:proxyOccupancy(p.resource_key!,excludeJobId).total }))
+    .map((p) => ({ p, count: proxyOccupancy(p.resource_key!, excludeJobId).total }))
     .filter((x) => x.count < 3);
-  const normal = candidates.filter((x) => x.count < 2);
-  const allowed = normal.length ? normal : candidates;
-  const selected = allowed.sort((a, b) => Number(b.bound===1) - Number(a.bound===1) ||
-      Number(b.p.team_id === teamId && !!teamId) - Number(a.p.team_id === teamId && !!teamId) || a.count - b.count)[0];
-  if (!selected) throw new ProxyInputError(group !== undefined ? `No compatible verified proxy capacity in group ${group ?? "(ungrouped)"} (normal 2, maximum 3)` : "No compatible verified proxy capacity (normal 2, maximum 3)");
+  // Stable sort: equal loads keep the probe order, so the pick walks the pool instead of camping on one exit.
+  const selected = candidates.sort((a, b) => a.count - b.count)[0];
+  if (!selected) throw new ProxyInputError(group !== undefined ? `No compatible verified proxy capacity in group ${group ?? "(ungrouped)"} (maximum 3 per exit)` : "No compatible verified proxy capacity (maximum 3 per exit)");
   return selected.p;
 }
 
