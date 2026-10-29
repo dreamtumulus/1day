@@ -267,6 +267,8 @@ function parseRoutes(v: unknown): OrgRoute[] {
     if (!x || typeof x !== "object") bad("invalid_request", "each route must be an object {nodeId, group?}");
     const nodeId = (x as Record<string, unknown>).nodeId;
     if (typeof nodeId !== "string" || !one("SELECT 1 FROM nodes WHERE node_id = ?", nodeId)) bad("node_not_found", `Node '${String(nodeId)}' not found`);
+    // Provider-owned nodes (mirasim's) serve that provider's own accounts; pool onboarding never routes there.
+    if (!one("SELECT 1 FROM nodes n JOIN users u ON u.id = n.provider_id WHERE n.node_id = ? AND u.role = 'admin'", nodeId)) bad("node_not_platform", `Node '${nodeId}' belongs to a provider and cannot be an onboarding route`);
     let group: string | null;
     try { group = normalizeProxyGroup((x as Record<string, unknown>).group); } catch (e) { bad("invalid_request", (e as Error).message); }
     if (!out.some((r) => r.nodeId === nodeId && r.group === group)) out.push({ nodeId, group });

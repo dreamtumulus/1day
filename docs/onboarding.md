@@ -507,6 +507,7 @@ POST /api/onboard/jobs  body 多 orgId、domain、proxyGroup
 新增 `GET /api/onboard/node-groups?nodeId=` 返回该节点各 IP 分组的 total/live/assignable。站点第 ③ 步固定显示节点下拉 + 分组 chips，
 推荐路线以 chips 形式列在上方，点选即填入；令牌绑定单节点时下拉只有一项并提示找管理员改为「任意节点」。
 **开始前核对**：所选节点 / 分组不在推荐路线内，或与上一次上号的（组织、节点、分组）不同，提交前弹出核对卡片，确认后才创建作业。
+**平台节点限定（2026-10-29 下午）**：上号员可见节点与组织路线都只含平台自己的节点（注册者为 admin 用户）；供应商自建节点（mirasim，`users.role='provider'`）只承载该供应商自己的账号，`routes` 指向它时返回 `node_not_platform`，后台路线编辑器的节点下拉也不再列出。
 
 ## 11. 原地重授权（2026-10-22）
 

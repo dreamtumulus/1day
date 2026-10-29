@@ -289,7 +289,8 @@ export function AdminOnboarders() {
   ];
 
   const nodeOptions = useMemo(
-    () => (nodes.data ?? []).map((n) => ({ value: n.nodeId, label: `${n.deployMeta?.name ?? n.nodeId.slice(0, 20)} · ${n.online ? t("admin.accounts.nodeOnline") : t("admin.accounts.nodeOffline")}` })),
+    // Platform nodes only: a provider's own node (mirasim) carries that provider's accounts and is never an onboarding route.
+    () => (nodes.data ?? []).filter((n) => n.platformNode !== false).map((n) => ({ value: n.nodeId, label: `${n.deployMeta?.name ?? n.nodeId.slice(0, 20)} · ${n.online ? t("admin.accounts.nodeOnline") : t("admin.accounts.nodeOffline")}` })),
     [nodes.data, t],
   );
 

@@ -34,7 +34,7 @@ const cookie = (lr.headers.get("set-cookie") ?? "").split(";")[0];
 const admin = (m, p, b) => req({ cookie }, m, p, b);
 
 const { createUser } = await import("../dist/session.js");
-const owner = createUser("provider", "oo-owner");
+const owner = createUser("admin", "oo-owner"); // platform nodes: provider-owned nodes are invisible to onboarders (2026-10-29)
 run("INSERT INTO nodes(node_id,provider_id,secret_hash,online,accepting_sessions,capacity,created_at) VALUES ('oo-a',?,'h',1,1,50,?)", owner.id, core.nowIso());
 run("INSERT INTO nodes(node_id,provider_id,secret_hash,online,accepting_sessions,capacity,created_at) VALUES ('oo-b',?,'h',1,1,50,?)", owner.id, core.nowIso());
 const urls = { a1: "socks5://u:p@203.0.113.1:1080", a2: "socks5://u:p@203.0.113.2:1080", b1: "socks5://u:p@203.0.113.3:1080" };

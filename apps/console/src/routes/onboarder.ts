@@ -75,8 +75,14 @@ interface NodeRowLite {
   name: string | null;
 }
 
+/**
+ * Platform nodes only: a node registered by a provider user (e.g. mirasim's own node) carries that
+ * provider's accounts and proxies and is never an onboarding target for pool accounts (user rule
+ * 2026-10-29 "mirasim 节点是指定 mirasim 用户使用的"). Tokens bound to such a node see nothing.
+ */
 function nodeRows(nodeId?: string): NodeRowLite[] {
-  const sql = `SELECT node_id, online, capacity, json_extract(deploy_meta, '$.name') AS name FROM nodes${nodeId ? " WHERE node_id = ?" : ""} ORDER BY online DESC, created_at`;
+  const sql = `SELECT n.node_id, n.online, n.capacity, json_extract(n.deploy_meta, '$.name') AS name FROM nodes n
+    JOIN users u ON u.id = n.provider_id WHERE u.role = 'admin'${nodeId ? " AND n.node_id = ?" : ""} ORDER BY n.online DESC, n.created_at`;
   return nodeId ? all<NodeRowLite>(sql, nodeId) : all<NodeRowLite>(sql);
 }
 
