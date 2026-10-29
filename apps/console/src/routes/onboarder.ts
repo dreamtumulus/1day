@@ -16,6 +16,7 @@ import {
 } from "../onboard/jobs.js";
 import { nodeOccupancy } from "../node/capacity.js";
 import { requireAdmin } from "../session.js";
+import { listOrgs, loadOrg, orgDomains, orgOut, orgRoutes, type OrgRow } from "./onboarding.js";
 
 // 上号员站点（/onboard）的独立鉴权与上号 API。管理员在控制台签发 1dk_onb_…
 // 令牌并绑定目标节点；上号员持令牌在该节点执行上号，账号落入平台池
@@ -27,6 +28,8 @@ interface OnboardToken {
   label: string;
   token_preview: string;
   node_id: string;
+  /** JSON array of onboard_orgs ids this operator may use; null = every active organization. */
+  org_ids_json: string | null;
   status: string;
   last_used_at: string | null;
   created_by: string | null;
@@ -95,14 +98,37 @@ function pickNode(token: OnboardToken, requested: string | undefined): NodeRowLi
   return dflt;
 }
 
+function tokenOrgIds(t: OnboardToken): string[] | null {
+  if (!t.org_ids_json) return null;
+  try { const v = JSON.parse(t.org_ids_json); return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : null; } catch { return null; }
+}
+/** Organizations this operator may onboard into (active profiles; routes limited to the token's node when it is bound to one). */
+function visibleOrgs(t: OnboardToken): OrgRow[] {
+  const ids = tokenOrgIds(t);
+  return listOrgs(true).filter((o) => !ids || ids.includes(o.id));
+}
+function orgForOnboarder(t: OnboardToken, o: OrgRow) {
+  const view = orgOut(o, { withUuid: false });
+  return { ...view, routes: view.routes.filter((r) => t.node_id === ANY_NODE || r.nodeId === t.node_id) };
+}
+function parseOrgIds(v: unknown): string[] | null {
+  if (v === null || v === undefined) return null;
+  if (!Array.isArray(v) || !v.every((x) => typeof x === "string")) bad("invalid_request", "orgIds must be an array of organization ids or null");
+  const ids = [...new Set(v as string[])];
+  for (const id of ids) loadOrg(id);
+  return ids;
+}
 function tokenOut(t: OnboardToken) {
   const nodeOnline = t.node_id === ANY_NODE ? nodeRows().some((n) => n.online === 1) : nodeRows(t.node_id)[0]?.online === 1;
+  const orgIds = tokenOrgIds(t);
   return {
     id: t.id,
     label: t.label,
     preview: t.token_preview,
     nodeId: t.node_id,
     nodeOnline,
+    orgIds,
+    orgNames: orgIds ? orgIds.map((id) => one<{ name: string }>("SELECT name FROM onboard_orgs WHERE id = ?", id)?.name ?? "?") : null,
     status: t.status,
     lastUsedAt: t.last_used_at,
     createdAt: t.created_at,
@@ -129,8 +155,8 @@ function onboarderNode(token: OnboardToken, requested?: string) {
   return nodeView(pickNode(token, requested));
 }
 
-function resolveProxyForToken(nodeId:string,proxyIdInput:string|undefined,teamId?:string):string {
-  try{return resolveTeamProxy(nodeId,teamId,proxyIdInput).id;}
+function resolveProxyForToken(nodeId:string,proxyIdInput:string|undefined,teamId?:string,proxyGroup?:string|null):string {
+  try{return resolveTeamProxy(nodeId,teamId,proxyIdInput,"",undefined,proxyGroup===undefined?undefined:proxyGroup).id;}
   catch(e){if(e instanceof ProxyInputError)bad("proxy_pool_empty",e.message);throw e;}
 }
 
@@ -171,14 +197,37 @@ async function onboardAsToken(req: FastifyRequest) {
     note: str(b, "note", { max: 500 }),
   };
 
+  // Organization profile (docs/onboarding.md §10.1): once profiles exist for this operator, every
+  // job names one; the organization UUID comes from the profile, the domain and the node / IP-group
+  // route must be among the profile's, and the automatic proxy pick stays inside that group.
+  const orgs = visibleOrgs(token);
+  const orgId = str(b, "orgId", { max: 60 });
+  let proxyGroup: string | null | undefined;
+  if (orgs.length > 0 && !orgId) bad("org_required", "Pick an organization first");
+  if (orgId) {
+    const org = orgs.find((o) => o.id === orgId);
+    if (!org) bad("org_not_allowed", "This token cannot onboard into that organization");
+    const domains = orgDomains(org);
+    const domain = str(b, "domain", { max: 253 })?.toLowerCase().replace(/^@/, "");
+    if (domains.length > 0 && (!domain || !domains.includes(domain))) bad("domain_invalid", `Pick one of the organization's domains (${domains.join(", ")})`);
+    const routes = orgRoutes(org).filter((r) => token.node_id === ANY_NODE || r.nodeId === token.node_id);
+    const groupReq = str(b, "proxyGroup", { max: 60 }) ?? null;
+    const route = routes.find((r) => r.nodeId === node.nodeId && (r.group === null || r.group === groupReq));
+    if (routes.length > 0 && !route) bad("route_invalid", "Pick one of the organization's node / IP-group routes");
+    proxyGroup = route ? (route.group ?? groupReq ?? undefined) : groupReq ?? undefined;
+    params.expectedTeamId = org.org_uuid;
+    params.teamName = org.name;
+    params.orgProfileId = org.id;
+    if (domain) params.expectedDomain = domain;
+  }
 
   if (method === "session_key") {
     const sessionKey = str(b, "sessionKey", { required: true, max: 8000 })!;
-    const orgUuid = uuid(b, "orgUuid");
-    const jobId = tx(() => startSessionKeyJob("onboarder", requesterId, node.nodeId, resolveProxyForToken(node.nodeId,str(b,"proxyId",{max:60}),params.expectedTeamId), sessionKey, params, orgUuid));
+    const orgUuid = params.expectedTeamId ?? uuid(b, "orgUuid");
+    const jobId = tx(() => startSessionKeyJob("onboarder", requesterId, node.nodeId, resolveProxyForToken(node.nodeId,str(b,"proxyId",{max:60}),params.expectedTeamId,proxyGroup), sessionKey, params, orgUuid));
     return { data: { jobId, status: "working" } };
   }
-  const { jobId, authorizeUrl } = tx(() => startAuthUrlJob("onboarder", requesterId, node.nodeId, resolveProxyForToken(node.nodeId,str(b,"proxyId",{max:60}),params.expectedTeamId), params));
+  const { jobId, authorizeUrl } = tx(() => startAuthUrlJob("onboarder", requesterId, node.nodeId, resolveProxyForToken(node.nodeId,str(b,"proxyId",{max:60}),params.expectedTeamId,proxyGroup), params));
   return { data: { jobId, status: "pending_callback", authorizeUrl } };
 }
 
@@ -195,15 +244,17 @@ export function registerOnboarderRoutes(app: FastifyInstance): void {
     const label = str(b, "label", { required: true, max: 80 })!;
     const nodeId = str(b, "nodeId", { required: true, max: 120 })!;
     if (nodeId !== ANY_NODE && !one("SELECT 1 FROM nodes WHERE node_id = ?", nodeId)) bad("node_not_found", `Node '${nodeId}' not found`);
+    const orgIds = "orgIds" in b ? parseOrgIds(b.orgIds) : null;
     const k = generateOnboardToken();
     const id = newId();
     run(
-      "INSERT INTO onboard_tokens (id, label, token_hash, token_preview, node_id, created_by) VALUES (?, ?, ?, ?, ?, ?)",
+      "INSERT INTO onboard_tokens (id, label, token_hash, token_preview, node_id, org_ids_json, created_by) VALUES (?, ?, ?, ?, ?, ?, ?)",
       id,
       label,
       k.hash,
       k.preview,
       nodeId,
+      orgIds ? JSON.stringify(orgIds) : null,
       req.user!.id,
     );
     // 明文仅此一次返回
@@ -213,9 +264,22 @@ export function registerOnboarderRoutes(app: FastifyInstance): void {
     const { id } = req.params as { id: string };
     const t = one<OnboardToken>("SELECT * FROM onboard_tokens WHERE id = ?", id);
     if (!t) notFound("onboard_token");
-    const status = str(body(req), "status", { required: true })!;
-    if (status !== "active" && status !== "revoked") bad("invalid_request", "status must be active or revoked");
-    run("UPDATE onboard_tokens SET status = ? WHERE id = ?", status, id);
+    const b = body(req);
+    const status = str(b, "status");
+    if (status !== undefined) {
+      if (status !== "active" && status !== "revoked") bad("invalid_request", "status must be active or revoked");
+      run("UPDATE onboard_tokens SET status = ? WHERE id = ?", status, id);
+    }
+    if ("orgIds" in b) {
+      const orgIds = parseOrgIds(b.orgIds);
+      run("UPDATE onboard_tokens SET org_ids_json = ? WHERE id = ?", orgIds ? JSON.stringify(orgIds) : null, id);
+    }
+    if ("label" in b) run("UPDATE onboard_tokens SET label = ? WHERE id = ?", str(b, "label", { required: true, max: 80 })!, id);
+    if ("nodeId" in b) {
+      const nodeId = str(b, "nodeId", { required: true, max: 120 })!;
+      if (nodeId !== ANY_NODE && !one("SELECT 1 FROM nodes WHERE node_id = ?", nodeId)) bad("node_not_found", `Node '${nodeId}' not found`);
+      run("UPDATE onboard_tokens SET node_id = ? WHERE id = ?", nodeId, id);
+    }
     return { data: tokenOut(one<OnboardToken>("SELECT * FROM onboard_tokens WHERE id = ?", id)!) };
   });
 
@@ -224,12 +288,14 @@ export function registerOnboarderRoutes(app: FastifyInstance): void {
     const t = req.onboardToken!;
     const nodes = allowedNodes(t).map(nodeView);
     // `node` stays for older site bundles; `nodes` is the selectable list (one entry for a bound token).
-    return { data: { label: t.label, node: onboarderNode(t), nodes, anyNode: t.node_id === ANY_NODE } };
+    // `orgs`: organization profiles this operator may use (no UUIDs), with live route facts.
+    return { data: { label: t.label, node: onboarderNode(t), nodes, anyNode: t.node_id === ANY_NODE, orgs: visibleOrgs(t).map((o) => orgForOnboarder(t, o)) } };
   });
   app.get("/api/onboard/proxies", preOnb, async (req) => {
-    const q = req.query as { nodeId?: string };
+    const q = req.query as { nodeId?: string; group?: string };
     const node = pickNode(req.onboardToken!, typeof q.nodeId === "string" && q.nodeId ? q.nodeId : undefined);
-    return { data: listProxiesForPicker(node.node_id, true) };
+    const rows = listProxiesForPicker(node.node_id, true);
+    return { data: typeof q.group === "string" && q.group ? rows.filter((p) => (p.group ?? "") === q.group) : rows };
   });
   app.post("/api/onboard/jobs", preOnb, (req) => onboardAsToken(req));
   app.post("/api/onboard/jobs/:jobId/cancel", preOnb, async (req) => {

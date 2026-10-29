@@ -86,6 +86,7 @@ function errorHintKey(err: string | null | undefined): string | null {
   if (/team_mismatch|organization_mismatch|team_identity_invalid/.test(err)) return "onboard.hint.teamMismatch";
   if (/node_offline|no_proxy_available/.test(err) && !/proxy_pool_empty/.test(err)) return "onboard.hint.nodeOffline";
   if (/authorize_failed: authorize: HTTP 404|not a member of organization/.test(err)) return "onboard.hint.orgNotFound";
+  if (/domain_mismatch/.test(err)) return "onboard.hint.domain";
   if (/proxy_pool_empty|No compatible verified proxy/.test(err)) return "onboard.hint.noProxy";
   if (/proxy_unassignable|proxy_full|proxy_not_found/.test(err)) return "onboard.hint.proxyPick";
   if (/job_expired|callback_expired/.test(err)) return "onboard.hint.expired";
@@ -305,6 +306,23 @@ export function OnboardPage({ scope }: { scope: OnboardScope }) {
   const effTeamName = canSeeTeam ? (selectedOrg ? selectedOrg.name : orgChoice === ORG_MANUAL ? teamName.trim() : "") : "";
   const orgUuidBad = orgChoice === ORG_MANUAL && !!orgUuid.trim() && !UUID_RE.test(orgUuid.trim());
 
+  // Organization profile (§10.1): selecting one applies its first route (node + group) when the
+  // current pick is not one of its routes, and offers its email domains as a rule.
+  const [domain, setDomain] = useState("");
+  useEffect(() => {
+    setDomain(selectedOrg?.domains?.[0] ?? "");
+    const routes = selectedOrg?.routes ?? [];
+    if (!routes.length) return;
+    const onRoute = routes.some((r) => r.nodeId === nodeId && (r.group === null || r.group === proxyGroup));
+    if (!onRoute) {
+      const first = routes.find((r) => r.nodeOnline) ?? routes[0];
+      setNodeId(first.nodeId);
+      // the node effect resets the group; apply the route's group right after it
+      setTimeout(() => setProxyGroup(first.group ?? ""), 0);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedOrg?.id]);
+
   const orgOptions = useMemo(
     () => [
       { value: "", label: t("onboard.orgNone") },
@@ -446,6 +464,7 @@ export function OnboardPage({ scope }: { scope: OnboardScope }) {
       rpmLimit: Number(rpm) || 0,
     };
     if (proxyId === "auto" && proxyGroup) body.proxyGroup = proxyGroup;
+    if (domain) body.domain = domain;
     if (name.trim()) body.name = name.trim();
     if (note.trim()) body.note = note.trim();
     if (isAdmin && groupId) body.groupId = groupId;
@@ -688,6 +707,16 @@ export function OnboardPage({ scope }: { scope: OnboardScope }) {
           <CopyButton text={selectedOrg.orgUuid} />
           <Button onClick={() => openOrgForm(selectedOrg)}>{t("common.edit")}</Button>
         </div>
+      )}
+      {selectedOrg && selectedOrg.domains?.length > 0 && (
+        <Field label={t("onboard.domain")} hint={t("onboard.domainHint")}>
+          <Select value={domain} onChange={(e) => setDomain(e.target.value)} options={[{ value: "", label: t("onboard.domainNone") }, ...selectedOrg.domains.map((d) => ({ value: d, label: `@${d}` }))]} />
+        </Field>
+      )}
+      {selectedOrg && selectedOrg.routes?.length > 0 && (
+        <p className="text-[12.5px] text-on-surface-faint">
+          {t("onboard.orgRoutes")}: {selectedOrg.routes.map((r) => `${r.nodeName ?? r.nodeId.slice(0, 14)} · ${r.group ?? t("onboard.proxyGroupAll")}`).join(" / ")}
+        </p>
       )}
       {orgChoice === ORG_MANUAL && (
         <div className="grid gap-4 sm:grid-cols-2">

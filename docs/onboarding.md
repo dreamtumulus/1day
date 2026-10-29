@@ -467,6 +467,41 @@ wss://bridge.claudeusercontent.com/chrome/{accountUuid}
   每条作业 3 s 轮询一次，表格显示 待提交 / 提交中 / 授权中 / 已新增 / 重新授权 / 失败，失败行可一键复制重试。
   令牌失效或节点无兼容容量时停止提交，当前行留在队列。所有方式共用组织验证、出口名额和追加历史规则。
 
+### 10.1 组织方案：组织 → 域名 → 节点 · IP 分组（2026-10-29）
+
+把「常用组织」（`onboard_orgs`）扩成**组织方案**（迁移 28）：`domains_json`（该组织账号使用的邮箱域名列表）、`routes_json`
+（允许上号的 `{nodeId, group|null}` 路线列表，`group=null` = 该节点整个池）、`status`（active / disabled）。令牌表
+`onboard_tokens.org_ids_json`：该上号员可见的方案 id 列表，NULL = 全部启用中的方案。
+
+```
+GET/POST/PATCH/DELETE /api/admin/onboard/orgs[/:id]   body 多 domains（数组或按行/逗号分隔文本）、routes、status
+  → 每条多 domains[]、routes[]（含 nodeName/nodeOnline/capacity/used/assignable/groupExists）、status、accounts
+POST/PATCH /api/admin/onboard-tokens[/:id]            body 多 orgIds: string[] | null（PATCH 还可改 label / nodeId）
+GET  /api/onboard/me                                  → 多 orgs[]（不含 orgUuid；令牌绑定单节点时 routes 只剩该节点）
+GET  /api/onboard/proxies?nodeId=&group=              → 可按分组过滤
+POST /api/onboard/jobs  body 多 orgId、domain、proxyGroup
+```
+
+服务端规则（`routes/onboarder.ts`）：令牌可见方案非空时 **必须带 `orgId`**（400 `org_required`）；`orgId` 不在可见列表 → `org_not_allowed`；
+方案有域名而 `domain` 不在其中 → `domain_invalid`；方案有路线而 `(nodeId, proxyGroup)` 不匹配任一路线 → `route_invalid`
+（`group=null` 的路线接受该节点任意分组）。通过后组织 UUID 取方案的 `org_uuid`（客户端传的 `orgUuid` 被忽略），
+`teamName` 取方案名，自动分配限定在路线分组内，`params.expectedDomain = domain`。
+
+**完成时的域名校验**（`jobs.ts finishJob`）：有 `expectedDomain` 时先经作业自己的出口拉 `/api/oauth/profile` 拿邮箱
+（`fetchProfileViaEgress`，失败重试一次；mock 模式用 mock 邮箱），邮箱域名不等于所选域名 → 作业以 `domain_mismatch` 失败、不写账号；
+该码不在污染名单里，组织已验证一致，出口按「kept_for_team」处理。拿不到邮箱时只记日志、照常落库（事后 profile 回填仍会写邮箱）。
+管理员上号页也可传 `domain`（选了组织方案后出现「邮箱域名规则」下拉），同样在完成时校验。
+
+**管理台「上号员」页**（`admin/Onboarders.tsx`）：上半是组织方案表（名称 + UUID、域名片、路线列表带在线点与可分配数、账号数；
+新增 / 编辑 / 停用 / 删除；编辑弹窗里路线是「节点下拉 + 分组下拉（取该节点实时分组）」多行），下半是令牌表（多「组织」列，
+签发时可选「全部组织」或勾选若干，事后可改）。
+
+**上号员站点**（`pages/OnboardSite.tsx`）：按步骤卡片 ① 组织（卡片：名称、域名、路线数）→ ② 邮箱域名（片）→ ③ 节点 · IP 分组
+（片：在线点、容量、可分配数；离线 / 0 可分配标红）→ ④ 凭据（粘贴 sessionKey：1 行单条、多行自动批量；或授权链接），
+右侧摘要卡 + 唯一的开始按钮；只有一个可选项的步骤自动选中；上一步未完成下一步不出现。常见失败给出中文解释
+（组织 404、域名不符、分组无代理）。最近作业表多「组织 @域名」列。令牌没有可见方案时退回老流程（选节点、选代理）。
+测试：`test/onboarder-orgs.test.mjs`。
+
 ## 11. 原地重授权（2026-10-22）
 
 掉授权的账号不用删行重上。两条路都落到同一段引擎代码（`jobs.ts` `reauthorizeInPlace`）：

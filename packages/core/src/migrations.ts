@@ -313,6 +313,7 @@ const MIGRATIONS: Array<{ version: number; up: (d: DatabaseSync, log: Log) => vo
   { version: 25, up: migration25 },
   { version: 26, up: migration26 },
   { version: 27, up: migration27 },
+  { version: 28, up: migration28 },
 ];
 
 // 上号员令牌（独立鉴权的上号站点 /onboard）：admin 签发，绑定目标节点；
@@ -867,4 +868,13 @@ function migration27(d: DatabaseSync, log: Log): void {
   addColumns(d, log, "node_proxies", [["group_name", "TEXT"]]);
   d.exec("CREATE INDEX IF NOT EXISTS idx_node_proxies_group ON node_proxies(node_id, group_name)");
   log("migration 27: node_proxies.group_name");
+}
+
+// Organization profiles for onboarding (2026-10-29): a saved organization carries the email
+// domains its accounts use and the node / IP-group routes it may be onboarded through; an
+// onboarder token may be limited to some organizations. All additive, JSON arrays as text.
+function migration28(d: DatabaseSync, log: Log): void {
+  addColumns(d, log, "onboard_orgs", [["domains_json", "TEXT"], ["routes_json", "TEXT"], ["status", "TEXT NOT NULL DEFAULT 'active'"]]);
+  addColumns(d, log, "onboard_tokens", [["org_ids_json", "TEXT"]]);
+  log("migration 28: onboard_orgs.domains_json/routes_json/status, onboard_tokens.org_ids_json");
 }

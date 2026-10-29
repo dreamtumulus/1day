@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
-import { CC_AUX_ACCEPT, CC_VERSION, CCR, isoIn, OAUTH_ENDPOINTS } from "@1dayapi/core";
+import { CC_AUX_ACCEPT, CC_VERSION, CCR, isoIn, OAUTH_ENDPOINTS, CC_AUX_UA, parseOAuthProfile, type OAuthProfile } from "@1dayapi/core";
 import { requestViaNodeProxy } from "../node/egress-request.js";
 
 // sessionKey → OAuth token pair without a browser (docs/onboarding.md §2.1):
@@ -227,6 +227,21 @@ export async function verifyAccessToken(target:EgressTarget,accessToken:string):
   const v=await validate(target,accessToken);
   if(!v)throw new OnboardError("validate_failed","The token's actual organization could not be verified");
   return v;
+}
+
+/**
+ * GET /api/oauth/profile through the job's egress (same proxy the consent used) — the account's
+ * email before the row exists, so an organization profile's domain rule can refuse a wrong
+ * account up front (docs/onboarding.md §10.1). Best effort: null on any failure.
+ */
+export async function fetchProfileViaEgress(target: EgressTarget, accessToken: string): Promise<OAuthProfile | null> {
+  try {
+    const r = await call(target, `https://api.anthropic.com${CCR.profilePath}`, { authorization: `Bearer ${accessToken}`, "user-agent": CC_AUX_UA, accept: CC_AUX_ACCEPT });
+    if (r.status < 200 || r.status >= 300) return null;
+    return parseOAuthProfile(r.json);
+  } catch {
+    return null;
+  }
 }
 
 /** GET claude.ai/api/organizations with the SK cookie; a Cloudflare challenge here is the one failure the form's 组织 UUID field sidesteps. */

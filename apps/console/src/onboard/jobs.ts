@@ -18,7 +18,7 @@ import {
   type AccountRow,
   type Credential,
 } from "@1dayapi/core";
-import { authorizeWithSessionKey, exchangeCallbackCode, newPkce, OnboardError, verifyAccessToken, type AuthResult } from "./direct-oauth.js";
+import { authorizeWithSessionKey, exchangeCallbackCode, newPkce, OnboardError, verifyAccessToken, type AuthResult, fetchProfileViaEgress } from "./direct-oauth.js";
 import { enrichAccountProfile } from "../ccr/profile.js";
 import { claimDiscoveredProxy, claimTeamProxy, nodeProxyUrls, proxyOccupancy, quarantineJobProxy, resolveTeamProxy, type IsolatedProxy } from "../node/proxies.js";
 import { pushProxies } from "../node/registry.js";
@@ -45,6 +45,13 @@ export interface OnboardParams {
   credentialImport?:boolean;
   expectedTeamId?: string;
   teamName?: string;
+  /**
+   * Organization profile rule (docs/onboarding.md §10.1): the account's email must be under this
+   * domain, checked from the OAuth profile before the row is written; mismatch fails the job.
+   */
+  expectedDomain?: string;
+  /** Saved organization (onboard_orgs.id) the operator picked, for reporting. */
+  orgProfileId?: string;
   /** Resolved at job start from the target node; null = platform-owned. */
   ownerId?: string | null;
   concurrencyLimit?: number;
@@ -108,8 +115,10 @@ export function jobOut(j: JobRow, admin = false) {
   // in place (docs/onboarding.md §11: revoked row + same Claude account, or an
   // explicit re-auth): the onboarder must see that nothing new was added.
   let flagged = false;
+  let p: OnboardParams = {};
   try {
-    flagged = j.params_json ? (JSON.parse(j.params_json) as OnboardParams).reauthorized === true : false;
+    p = j.params_json ? (JSON.parse(j.params_json) as OnboardParams) : {};
+    flagged = p.reauthorized === true;
   } catch {
     flagged = false;
   }
@@ -124,6 +133,8 @@ export function jobOut(j: JobRow, admin = false) {
     accountId: j.account_id ?? undefined,
     accountName: acc?.name,
     accountEmail: acc?.account_email ?? undefined,
+    ...(p.teamName ? { orgName: p.teamName } : {}),
+    ...(p.expectedDomain ? { domain: p.expectedDomain } : {}),
     ...(reused ? { reused: true } : {}),
     ...(cooldownUntil ? { cooldownUntil } : {}),
     error: j.error ? (admin ? j.error : `${j.error.match(/^([a-z][a-z0-9_]{0,63}):/)?.[1]??"authorization_failed"}: account authorization could not be completed`) : undefined,
@@ -444,6 +455,21 @@ async function finishJob(job: JobRow, res: AuthResult): Promise<void> {
   const teamId=normalizeTeamId(res.orgUuid);
   if(!teamId || (job.team_id && job.team_id!==teamId)){
     failJob(job.id,"team_mismatch","The verified upstream organization differs from the reserved organization");return;
+  }
+  // Organization profile domain rule (§10.1): learn the email now (profile through the job's
+  // own egress) and refuse an account from another domain before anything is written.
+  if (params.expectedDomain) {
+    if (!res.email) {
+      const target = egressTarget(job);
+      const profile = (await fetchProfileViaEgress(target, res.accessToken)) ?? (await fetchProfileViaEgress(target, res.accessToken));
+      if (profile?.email) res.email = profile.email;
+      else console.warn(`[onboard] job ${job.id}: profile unavailable before insert; domain rule ${params.expectedDomain} not checked up front`);
+    }
+    const domain = res.email?.split("@")[1]?.toLowerCase();
+    if (domain && domain !== params.expectedDomain.toLowerCase()) {
+      failJob(job.id, "domain_mismatch", `账号邮箱 ${res.email} 不属于所选域名 ${params.expectedDomain}，已拒绝，未新增账号 / account ${res.email} is not under the selected domain ${params.expectedDomain}`);
+      return;
+    }
   }
   // Owner was resolved at job start from the node (provider node → that
   // provider, platform node → platform); legacy rows fall back to the scope rule.

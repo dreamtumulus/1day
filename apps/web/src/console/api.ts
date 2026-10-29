@@ -577,18 +577,43 @@ export const onboardCancel = (scope: OnboardScope, jobId: string) =>
   api.post<OnboardJob>(`/api/${scope}/accounts/onboard/${jobId}/cancel`, {});
 
 /** Saved organizations for the onboarding form (admin only, docs/onboarding.md §3 常用组织). */
+/** A route an organization may be onboarded through: a node and (optionally) one of its proxy groups. */
+export interface OrgRouteView {
+  nodeId: string;
+  group: string | null;
+  nodeName: string | null;
+  nodeOnline: boolean;
+  nodeExists: boolean;
+  capacity: number;
+  used: number;
+  assignable: number;
+  groupExists: boolean;
+}
+/** Organization profile (docs/onboarding.md §10.1): saved UUID + allowed email domains + node / group routes. */
 export interface OnboardOrg {
   id: string;
   orgUuid: string;
   name: string;
   note: string | null;
+  status: "active" | "disabled" | string;
+  domains: string[];
+  routes: OrgRouteView[];
+  accounts: number;
   createdAt: string;
   updatedAt: string;
 }
+export interface OnboardOrgInput {
+  name?: string;
+  orgUuid?: string;
+  note?: string | null;
+  domains?: string[];
+  routes?: Array<{ nodeId: string; group?: string | null }>;
+  status?: "active" | "disabled";
+}
 export const onboardOrgs = () => api.get<OnboardOrg[]>("/api/admin/onboard/orgs");
-export const onboardOrgCreate = (body: { name: string; orgUuid: string; note?: string }) =>
+export const onboardOrgCreate = (body: OnboardOrgInput & { name: string; orgUuid: string }) =>
   api.post<OnboardOrg>("/api/admin/onboard/orgs", body);
-export const onboardOrgUpdate = (id: string, body: { name?: string; orgUuid?: string; note?: string | null }) =>
+export const onboardOrgUpdate = (id: string, body: OnboardOrgInput) =>
   api.patch<OnboardOrg>(`/api/admin/onboard/orgs/${id}`, body);
 export const onboardOrgDelete = (id: string) => api.del(`/api/admin/onboard/orgs/${id}`);
 

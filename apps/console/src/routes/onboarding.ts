@@ -1,7 +1,8 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { all, newId, nowIso, one, run, tx, type AccountRow } from "@1dayapi/core";
 import { bad, body, notFound, num, oneOf, query, str, uuid, type Body } from "../http.js";
-import { listNodeProxyGroups, listProxiesForPicker, nodeProxyUrls, resolveSuppliedProxy, resolveTeamProxy, ProxyInputError } from "../node/proxies.js";
+import { listNodeProxyGroups, listProxiesForPicker, nodeProxyUrls, normalizeProxyGroup, resolveSuppliedProxy, resolveTeamProxy, ProxyInputError } from "../node/proxies.js";
+import { nodeOccupancy } from "../node/capacity.js";
 import { pushProxies } from "../node/registry.js";
 import { requireAdmin, requireOps, requireProvider } from "../session.js";
 import {
@@ -87,6 +88,12 @@ function parseParams(req: FastifyRequest, scope: OnboardScope): OnboardParams {
   out.rpmLimit = num(b, "rpmLimit", { int: true, min: 0, max: 100000 }) ?? 0;
   out.name = str(b, "name", { max: 80 });
   out.note = str(b, "note", { max: 500 });
+  // Optional email-domain rule (§10.1): the account's email must be under it or the job fails.
+  const domain = str(b, "domain", { max: 253 })?.toLowerCase().replace(/^@/, "");
+  if (domain) {
+    if (!DOMAIN_RE.test(domain)) bad("invalid_request", `'${domain}' is not a valid email domain`);
+    out.expectedDomain = domain;
+  }
   if (scope === "admin") {
     const groupId = str(b, "groupId", { max: 80 });
     if (groupId) {
@@ -206,36 +213,120 @@ async function jobStatus(req: FastifyRequest, scope: OnboardScope) {
 // Admin-only address book for the onboarding form: a name + organization UUID the
 // operator records once and then picks from a list. It is convenience data only —
 // independent of upstream_teams / proxy claims, which the server still verifies.
-interface OrgRow {
+/**
+ * Organization profile (docs/onboarding.md §10.1, 2026-10-29): a saved organization plus the
+ * email domains its accounts use and the node / IP-group routes it may be onboarded through.
+ * The onboarder picks organization → domain → route; the server derives the organization UUID
+ * and checks every choice against the profile.
+ */
+export interface OrgRow {
   id: string;
   org_uuid: string;
   name: string;
   note: string | null;
+  domains_json: string | null;
+  routes_json: string | null;
+  status: string;
   created_at: string;
   updated_at: string;
 }
-const orgOut = (r: OrgRow) => ({ id: r.id, orgUuid: r.org_uuid, name: r.name, note: r.note, createdAt: r.created_at, updatedAt: r.updated_at });
-function loadOrg(id: string): OrgRow {
+export interface OrgRoute {
+  nodeId: string;
+  /** null = any group on that node. */
+  group: string | null;
+}
+const DOMAIN_RE = /^(?=.{1,253}$)[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$/;
+export function orgDomains(r: OrgRow): string[] {
+  try { const v = r.domains_json ? JSON.parse(r.domains_json) : []; return Array.isArray(v) ? v.filter((d): d is string => typeof d === "string") : []; } catch { return []; }
+}
+export function orgRoutes(r: OrgRow): OrgRoute[] {
+  try {
+    const v = r.routes_json ? JSON.parse(r.routes_json) : [];
+    return Array.isArray(v) ? v.filter((x): x is OrgRoute => !!x && typeof x === "object" && typeof (x as OrgRoute).nodeId === "string")
+      .map((x) => ({ nodeId: x.nodeId, group: typeof x.group === "string" && x.group ? x.group : null })) : [];
+  } catch { return []; }
+}
+/** Domains: array or newline/comma/space separated text; lowercased, validated, de-duplicated. */
+function parseDomains(v: unknown): string[] {
+  const raw: unknown[] = Array.isArray(v) ? v : typeof v === "string" ? v.split(/[\s,;]+/) : [];
+  const out: string[] = [];
+  for (const d of raw) {
+    if (typeof d !== "string") bad("invalid_request", "domains must be strings");
+    const dom = d.trim().toLowerCase().replace(/^@/, "");
+    if (!dom) continue;
+    if (!DOMAIN_RE.test(dom)) bad("invalid_request", `'${dom}' is not a valid email domain`);
+    if (!out.includes(dom)) out.push(dom);
+  }
+  if (out.length > 50) bad("invalid_request", "at most 50 domains");
+  return out;
+}
+function parseRoutes(v: unknown): OrgRoute[] {
+  if (!Array.isArray(v)) bad("invalid_request", "routes must be an array of {nodeId, group?}");
+  const out: OrgRoute[] = [];
+  for (const x of v as unknown[]) {
+    if (!x || typeof x !== "object") bad("invalid_request", "each route must be an object {nodeId, group?}");
+    const nodeId = (x as Record<string, unknown>).nodeId;
+    if (typeof nodeId !== "string" || !one("SELECT 1 FROM nodes WHERE node_id = ?", nodeId)) bad("node_not_found", `Node '${String(nodeId)}' not found`);
+    let group: string | null;
+    try { group = normalizeProxyGroup((x as Record<string, unknown>).group); } catch (e) { bad("invalid_request", (e as Error).message); }
+    if (!out.some((r) => r.nodeId === nodeId && r.group === group)) out.push({ nodeId, group });
+  }
+  if (out.length > 50) bad("invalid_request", "at most 50 routes");
+  return out;
+}
+/** Route with live node facts and the group's assignable count (what the picker shows). */
+export function orgRouteView(r: OrgRoute) {
+  const n = one<{ online: number; capacity: number; name: string | null }>("SELECT online, capacity, json_extract(deploy_meta, '$.name') AS name FROM nodes WHERE node_id = ?", r.nodeId);
+  const groups = n ? listNodeProxyGroups(r.nodeId) : [];
+  const assignable = r.group === null ? groups.reduce((a, g) => a + g.assignable, 0) : (groups.find((g) => g.group === r.group)?.assignable ?? 0);
+  return {
+    nodeId: r.nodeId, group: r.group, nodeName: n?.name ?? null, nodeOnline: n?.online === 1, nodeExists: !!n,
+    capacity: n?.capacity ?? 0, used: n ? nodeOccupancy(r.nodeId) : 0, assignable,
+    groupExists: r.group === null || groups.some((g) => g.group === r.group),
+  };
+}
+export function orgOut(r: OrgRow, opts: { withUuid?: boolean } = { withUuid: true }) {
+  return {
+    id: r.id,
+    ...(opts.withUuid === false ? {} : { orgUuid: r.org_uuid }),
+    name: r.name,
+    note: r.note,
+    status: r.status ?? "active",
+    domains: orgDomains(r),
+    routes: orgRoutes(r).map(orgRouteView),
+    accounts: one<{ n: number }>("SELECT COUNT(*) AS n FROM accounts WHERE team_id = ?", r.org_uuid)?.n ?? 0,
+    createdAt: r.created_at,
+    updatedAt: r.updated_at,
+  };
+}
+export function loadOrg(id: string): OrgRow {
   const r = one<OrgRow>("SELECT * FROM onboard_orgs WHERE id = ?", id);
   if (!r) notFound("organization");
   return r;
+}
+export function listOrgs(onlyActive = false): OrgRow[] {
+  return all<OrgRow>(`SELECT * FROM onboard_orgs${onlyActive ? " WHERE status = 'active'" : ""} ORDER BY name COLLATE NOCASE, created_at`);
 }
 function writeOrg(b: Body, existing: OrgRow | null, userId: string): OrgRow {
   const name = str(b, "name", { required: !existing, max: 120 }) ?? existing!.name;
   const orgUuid = uuid(b, "orgUuid") ?? existing?.org_uuid;
   if (!orgUuid) bad("invalid_request", "orgUuid is required");
   const note = "note" in b ? (str(b, "note", { max: 500 }) ?? null) : (existing?.note ?? null);
+  const domains = "domains" in b ? parseDomains(b.domains) : existing ? orgDomains(existing) : [];
+  const routes = "routes" in b ? parseRoutes(b.routes) : existing ? orgRoutes(existing) : [];
+  const status = "status" in b ? oneOf(b, "status", ["active", "disabled"] as const) ?? "active" : (existing?.status ?? "active");
   const dup = one<{ id: string }>("SELECT id FROM onboard_orgs WHERE org_uuid = ? AND id <> ?", orgUuid, existing?.id ?? "");
   if (dup) bad("org_exists", "This organization UUID is already saved");
   const now = nowIso();
   if (existing) {
-    run("UPDATE onboard_orgs SET name = ?, org_uuid = ?, note = ?, updated_at = ? WHERE id = ?", name, orgUuid, note, now, existing.id);
+    run("UPDATE onboard_orgs SET name = ?, org_uuid = ?, note = ?, domains_json = ?, routes_json = ?, status = ?, updated_at = ? WHERE id = ?",
+      name, orgUuid, note, JSON.stringify(domains), JSON.stringify(routes), status, now, existing.id);
     return loadOrg(existing.id);
   }
   const id = newId();
   run(
-    "INSERT INTO onboard_orgs (id, org_uuid, name, note, created_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-    id, orgUuid, name, note, userId, now, now,
+    "INSERT INTO onboard_orgs (id, org_uuid, name, note, domains_json, routes_json, status, created_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    id, orgUuid, name, note, JSON.stringify(domains), JSON.stringify(routes), status, userId, now, now,
   );
   return loadOrg(id);
 }
@@ -315,7 +406,7 @@ export function registerOnboardingRoutes(app: FastifyInstance): void {
   // Saved organizations for the form (admin only: names and UUIDs are admin-visible, §7).
   const preAdminOnly = { preHandler: requireAdmin };
   app.get("/api/admin/onboard/orgs", preAdminOnly, async () => ({
-    data: all<OrgRow>("SELECT * FROM onboard_orgs ORDER BY name COLLATE NOCASE, created_at").map(orgOut),
+    data: listOrgs().map((r) => orgOut(r)),
   }));
   app.post("/api/admin/onboard/orgs", preAdminOnly, async (req, reply) =>
     reply.status(201).send({ data: orgOut(writeOrg(body(req), null, req.user!.id)) }));
