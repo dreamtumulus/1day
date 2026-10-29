@@ -917,14 +917,20 @@ export class CcWorkerManager {
       // account owner's e-mail and make the model believe it works in /var/lib/1dayapi-cc-worker on Linux
       // (customer report 2026-10-19). The customer's own system prompt already carries their environment.
       env.CLAUDE_CODE_DISABLE_ATTACHMENTS = "1";
-      // Telemetry, error reporting and update checks off (the enterprise-style configuration, same as
-      // ops/cc-capture): Sentry events carry the node's hostname and process paths, Statsig the runtime
-      // environment — identical for every account on this node, i.e. a cross-account correlation key
-      // (audit 2026-10-29). All of it would leave on the account's proxy, so the IP was never the issue.
-      env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = "1";
-      env.DISABLE_TELEMETRY = "1";
+      // Telemetry stays ON (measured 2026-10-29 with a local MITM, 2.1.312, 8 sessions): a normal session
+      // calls /api/claude_cli/bootstrap, /api/eval/*, /mcp-registry and posts one /api/event_logging/v2/batch
+      // (~120 events, ~230 KB) — all of it on the account's proxy. Its payload carries the pinned device_id,
+      // session_id and a machine `env` block (kernel, distro, arch, RAM); no hostname, user or path. With
+      // DISABLE_TELEMETRY / CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC those calls vanish entirely, which is
+      // the more visible oddity (user rule 2026-10-29: 关闭遥测是不正常的行为). Only the two parts that add
+      // nothing visible stay off: Sentry (never fired in normal or API-500 sessions; a crash report would
+      // carry the node's hostname) and the autoupdater (no update check was observed in -p sessions; a
+      // download into the per-session HOME would be wasted on every turn).
       env.DISABLE_ERROR_REPORTING = "1";
       env.DISABLE_AUTOUPDATER = "1";
+      // The "# Environment" system block names the shell: SHELL unset under systemd → the uid's login shell
+      // (nologin for team identities) → "Shell: nologin". A plain bash is what every real session says.
+      if (!env.SHELL) env.SHELL = "/bin/bash";
       // NOT CLAUDE_CODE_SIMPLE / --bare: both stop Claude Code from reading the OAuth credentials file
       // ("Not logged in · Please run /login", canary 2026-10-19 08:53 CEST).
       if (mcpConfigFile) {

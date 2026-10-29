@@ -153,6 +153,7 @@ Accept: application/json
 3. **X-Claude-Code-Session-Id**：客户端发则透传；注入模式下不合成（合成固定值反而异常）。
 4. **HTTP 头顺序**：undici 与 Bun 的头块顺序不同，不做对齐（无证据表明上游校验顺序）。
 5. 后台小模型调用（话题摘要等）、`count_tokens`、遥测流量由客户端直连，与网关无关。
+6. **`# Environment` 块**（2026-10-29 实测 2.1.312）：worker 路径每个请求的 `messages[1]`（role=system）带节点内核版本（`os.release()`）与会话工作目录（`/var/lib/1dayapi-cc-worker/...` 前缀），同节点所有账号同值。无环境变量开关（`CLAUDE_CODE_DISABLE_ATTACHMENTS` 只管附件；`CLAUDE_CODE_SIMPLE`/`--bare` 会丢 OAuth 凭证）。可做的：工作目录改成类似开发者的路径布局、`SHELL=/bin/bash`（已做）；内核串只能接受。
 
 ## 8. 辅助端点（非 /v1/messages）指纹
 
@@ -167,7 +168,8 @@ CC 对非 SDK 线端点的调用**不走**不锈钢头集，而是 axios 辅助�
 
 - console 巡检 `probeHeaders` 与刷新 `refreshOAuthCredential` 按上表发送（`CC_AUX_UA` / `CC_AUX_ACCEPT` / `refreshScopes` 常量）。
 - provider-node 出口的不锈钢指纹补齐**只作用于 `/v1/*` 路径（`/v1/oauth/*` 除外，2026-10-29）**；`/api/oauth/*` 与 `/v1/oauth/*` 保持调用方原样（调用方自带 `CC_AUX_UA`），否则辅助调用会被"过度装扮"成异常指纹。节点上没有 UA 的请求会带 Bun 默认 `Bun/x`：刷新（platform.claude.com 不在补齐范围）与代理健康探测都因此显式带 `CC_AUX_UA`（2026-10-29 审计）。
-- 节点 CC 进程关闭遥测/错误上报/自动升级（`CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`、`DISABLE_TELEMETRY`、`DISABLE_ERROR_REPORTING`、`DISABLE_AUTOUPDATER`）：Sentry 事件带主机名/路径，同节点所有账号同值，是跨账号关联键。
+- 节点 CC 进程**保留遥测**（2026-10-29 本地 MITM 实测 2.1.312 共 8 个会话）：正常会话会调 `/api/claude_cli/bootstrap`、`/api/eval/*`、`/mcp-registry/v0/servers` 并上报一批 `/api/event_logging/v2/batch`（≈120 事件、≈230 KB），载荷含固定 device_id、session_id 与机器 `env` 块（内核、发行版、架构、内存），不含主机名/用户名/路径；关掉后这些调用整体消失，比保留更显眼。只关 `DISABLE_ERROR_REPORTING`（Sentry 在正常与 API 500 会话中都未触发，崩溃报告会带主机名）与 `DISABLE_AUTOUPDATER`（-p 会话未见升级检查）。另设 `SHELL=/bin/bash`。
+- **`# Environment` 系统块（2.1.312）**：`messages[1]` 以 `role=system` 携带「Primary working directory / Is a git repository / Platform / Shell / OS Version(内核)」，`CLAUDE_CODE_DISABLE_ATTACHMENTS` 不再覆盖它。节点上所有账号共享同一内核串与 worker 根路径前缀——已知未对齐项，见 §7。
 - OAuth 订阅号的 `/v1/messages` 测试/探测必须带 §5 的计费头 system 块 + 身份句 + `metadata.user_id`（JSON 字符串），否则上游 429（2026-10-16 实测）：console 账号「测试」与 `/root/monitor/func.py` 的 `cc_dual_mode` 均已按此改造。
 
 ## 9. 版本升级 SOP
