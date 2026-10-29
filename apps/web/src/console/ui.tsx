@@ -855,6 +855,9 @@ export function Toolbar({ children }: { children: ReactNode }) {
 // modal / confirm
 // =====================================================================
 
+/** Modals currently holding the body scroll lock (see Modal). */
+let openModalCount = 0;
+
 export function Modal({
   open,
   title,
@@ -870,17 +873,25 @@ export function Modal({
   footer?: ReactNode;
   size?: "sm" | "md" | "lg";
 }) {
+  // Body scroll lock with a shared counter. The previous version saved/restored the old
+  // `overflow` per modal and re-ran on every render (inline onClose changed identity); with a
+  // nested modal (pool → history) the cleanups and setups interleaved and the outer modal
+  // "restored" the inner one's `hidden`, leaving the whole SPA without a scrollbar until a
+  // reload (2026-10-29). Now: lock while any modal is open, unlock when the last one closes.
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
   useEffect(() => {
     if (!open) return;
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onCloseRef.current();
     window.addEventListener("keydown", onKey);
-    const prev = document.body.style.overflow;
+    openModalCount += 1;
     document.body.style.overflow = "hidden";
     return () => {
       window.removeEventListener("keydown", onKey);
-      document.body.style.overflow = prev;
+      openModalCount = Math.max(0, openModalCount - 1);
+      if (openModalCount === 0) document.body.style.overflow = "";
     };
-  }, [open, onClose]);
+  }, [open]);
   if (!open) return null;
   const width = size === "sm" ? "max-w-md" : size === "lg" ? "max-w-3xl" : "max-w-xl";
   return (
