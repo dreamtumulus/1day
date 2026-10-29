@@ -13,11 +13,13 @@ import {
   onboardOrgs,
   onboardPrecheck,
   onboardStart,
+  onboardSupplyProxy,
   type Group,
   type NodeRow,
   type OnboardJob,
   type OnboardOrg,
   type OnboardScope,
+  type OnboardSuppliedProxy,
   type ProxyPickerItem,
 } from "../../api";
 import { useCT } from "../../i18n";
@@ -65,6 +67,10 @@ const POLL_MS = 1500;
 const SESSION_KEY_RE = /^sk-ant-sid\d{2}-[A-Za-z0-9_-]{40,}$/;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const ORG_MANUAL = "manual";
+/** Proxy picker value for an operator-supplied address (docs/onboarding.md §4.1). */
+const PROXY_OWN = "own";
+/** How long the form waits for the node to verify a freshly added proxy. */
+const OWN_PROXY_WAIT_MS = 90_000;
 
 /** Operator-facing hint for a failed job's error text (docs/onboarding.md §7). */
 function errorHintKey(err: string | null | undefined): string | null {
@@ -77,6 +83,7 @@ function errorHintKey(err: string | null | undefined): string | null {
   if (/team_mismatch|organization_mismatch|team_identity_invalid/.test(err)) return "onboard.hint.teamMismatch";
   if (/node_offline|no_proxy_available/.test(err) && !/proxy_pool_empty/.test(err)) return "onboard.hint.nodeOffline";
   if (/proxy_pool_empty|No compatible verified proxy/.test(err)) return "onboard.hint.noProxy";
+  if (/proxy_unassignable|proxy_full|proxy_not_found/.test(err)) return "onboard.hint.proxyPick";
   if (/job_expired|callback_expired/.test(err)) return "onboard.hint.expired";
   return null;
 }
@@ -161,6 +168,11 @@ export function OnboardPage({ scope }: { scope: OnboardScope }) {
 
   const [proxies, setProxies] = useState<ProxyPickerItem[] | null>(null);
   const [proxiesErr, setProxiesErr] = useState<string | null>(null);
+  // Operator-supplied proxy (§4.1): the address, its live preview and the probe countdown.
+  const [ownProxy, setOwnProxy] = useState("");
+  const [ownPreview, setOwnPreview] = useState<OnboardSuppliedProxy | null>(null);
+  const [ownPreviewErr, setOwnPreviewErr] = useState<string | null>(null);
+  const [ownProbeSec, setOwnProbeSec] = useState<number | null>(null);
   const [busy, setBusy] = useState(false);
   const [job, setJob] = useState<OnboardJob | null>(null);
   const [err, setErr] = useState<string | null>(null);
@@ -195,7 +207,7 @@ export function OnboardPage({ scope }: { scope: OnboardScope }) {
 
   // The server checks organization membership and reserves a capacity slot.
   useEffect(() => {
-    setProxyId("auto");
+    setProxyId((p) => (p === PROXY_OWN ? p : "auto")); // a supplied address survives a node switch
     setProxies(null);
     setProxiesErr(null);
     if (!nodeId) return;
@@ -328,10 +340,78 @@ export function OnboardPage({ scope }: { scope: OnboardScope }) {
     setCallbackUrl("");
   }
 
+  // Live preview of a supplied address (dry run: parse + pool lookup, nothing written).
+  useEffect(() => {
+    setOwnPreview(null);
+    setOwnPreviewErr(null);
+    const raw = ownProxy.trim();
+    if (proxyId !== PROXY_OWN || !raw || !nodeId) return;
+    let alive = true;
+    const timer = setTimeout(() => {
+      onboardSupplyProxy(scope, { nodeId, proxy: raw, dryRun: true, ...(effOrgUuid ? { orgUuid: effOrgUuid } : {}) })
+        .then((r) => alive && setOwnPreview(r))
+        .catch((e) => alive && setOwnPreviewErr(errMessage(e)));
+    }, 400);
+    return () => {
+      alive = false;
+      clearTimeout(timer);
+    };
+  }, [scope, nodeId, proxyId, ownProxy, effOrgUuid]);
+
+  const ownProxyHint = (() => {
+    if (ownProbeSec !== null) return t("onboard.proxyOwnProbing", { s: ownProbeSec });
+    if (ownPreviewErr) return ownPreviewErr;
+    if (!ownProxy.trim()) return t("onboard.proxyOwnHint");
+    if (!ownPreview) return t("onboard.proxyOwnHint");
+    const parsed = t("onboard.proxyOwnParsed", { url: ownPreview.parsed.display });
+    if (!ownPreview.existed) return `${parsed} · ${t("onboard.proxyOwnNew")}`;
+    const known = t("onboard.proxyOwnKnown", { node: ownPreview.nodeId ?? "?", status: t(`status.${ownPreview.status ?? "unknown"}`), n: ownPreview.boundAccounts + ownPreview.reservedAccounts });
+    const blocked = ownPreview.blocked && ownPreview.blocked !== "unprobed" && ownPreview.blocked !== "exit_unverified"
+      ? ` · ${t(`onboard.proxyBlocked.${ownPreview.blocked}`, { err: ownPreview.lastError ?? ownPreview.quarantineReason ?? "-" })}` : "";
+    return `${parsed} · ${known}${blocked}`;
+  })();
+
+  /**
+   * Turn the supplied address into a pool proxy id: register (or reuse) it, follow the
+   * pool's node when the proxy already lives elsewhere, then wait for the node to verify
+   * it. Throws a user-facing message when it cannot be assigned.
+   */
+  async function resolveOwnProxy(): Promise<{ nodeId: string; proxyId: string }> {
+    const raw = ownProxy.trim();
+    if (!raw) throw new Error(t("onboard.proxyOwnEmpty"));
+    const org = effOrgUuid ? { orgUuid: effOrgUuid } : {};
+    let useNode = nodeId;
+    let cur = await onboardSupplyProxy(scope, { nodeId: useNode, proxy: raw, ...org });
+    if (cur.nodeId && cur.nodeId !== useNode) {
+      useNode = cur.nodeId;
+      setNodeId(useNode);
+      toast.success(t("onboard.proxyOwnSwitched", { node: useNode }));
+    }
+    const started = Date.now();
+    try {
+      while (cur.blocked === "unprobed" || cur.blocked === "exit_unverified") {
+        const elapsed = Math.round((Date.now() - started) / 1000);
+        if (Date.now() - started > OWN_PROXY_WAIT_MS) {
+          throw new Error(t("onboard.proxyOwnTimeout", { s: Math.round(OWN_PROXY_WAIT_MS / 1000), err: cur.lastError ?? "-" }));
+        }
+        setOwnProbeSec(elapsed);
+        await sleep(3000);
+        cur = await onboardSupplyProxy(scope, { nodeId: useNode, proxy: raw, ...org });
+      }
+    } finally {
+      setOwnProbeSec(null);
+    }
+    setOwnPreview(cur);
+    if (cur.blocked || !cur.proxyId) {
+      throw new Error(t(`onboard.proxyBlocked.${cur.blocked ?? "not_in_pool"}`, { err: cur.lastError ?? cur.quarantineReason ?? "-" }));
+    }
+    return { nodeId: useNode, proxyId: cur.proxyId };
+  }
+
   function commonParams(): Record<string, unknown> {
     const body: Record<string, unknown> = {
       nodeId,
-      proxyId: proxyId === "auto" ? "auto" : proxyId,
+      proxyId: proxyId === "auto" || proxyId === PROXY_OWN ? "auto" : proxyId,
       concurrencyLimit: Number(concurrency) || 0,
       rpmLimit: Number(rpm) || 0,
     };
@@ -396,11 +476,13 @@ export function OnboardPage({ scope }: { scope: OnboardScope }) {
           setErr(t("onboard.errSessionKeyFormat"));
           return;
         }
-        setJob(await onboardStart(scope, { method, sessionKey: singleKey, ...commonParams() }));
+        const own = proxyId === PROXY_OWN ? await resolveOwnProxy() : {};
+        setJob(await onboardStart(scope, { method, sessionKey: singleKey, ...commonParams(), ...own }));
       } else {
         // Step 1: platform generates the authorize URL; user completes consent
         // in their own browser, then pastes the callback URL back (step 2).
-        const j = await onboardStart(scope, { method, ...commonParams() });
+        const own = proxyId === PROXY_OWN ? await resolveOwnProxy() : {};
+        const j = await onboardStart(scope, { method, ...commonParams(), ...own });
         setJob(j);
         if (j.authorizeUrl) toast.success(t("onboard.linkReady"));
       }
@@ -452,6 +534,15 @@ export function OnboardPage({ scope }: { scope: OnboardScope }) {
     if (!parsedValid.length || intervalBad) return;
     setErr(null);
     const params = commonParams();
+    if (proxyId === PROXY_OWN) {
+      // One supplied proxy for the whole batch: the exit's own limit (3) ends it after three.
+      try {
+        Object.assign(params, await resolveOwnProxy());
+      } catch (e) {
+        setErr(errMessage(e));
+        return;
+      }
+    }
     const lo = Math.max(0, Number(intervalMin)) * 1000;
     const hi = Math.max(lo, Number(intervalMax) * 1000);
     const items: BatchItem[] = parsedValid.map((p, i) => ({ idx: i + 1, key: p.key, status: "queued" }));
@@ -514,7 +605,7 @@ export function OnboardPage({ scope }: { scope: OnboardScope }) {
   const batchNextIn = batch?.nextAt ? Math.max(0, Math.ceil((batch.nextAt - Date.now()) / 1000)) : null;
 
   const proxyOptions = useMemo(() => {
-    const opts = [{ value: "auto", label: t("onboard.proxyAuto") }];
+    const opts = [{ value: "auto", label: t("onboard.proxyAuto") }, { value: PROXY_OWN, label: t("onboard.proxyOwn") }];
     for (const p of proxies ?? []) {
       const host = p.host ? `${p.host}${p.port ? `:${p.port}` : ""}` : p.id.slice(0, 12);
       opts.push({
@@ -863,6 +954,17 @@ export function OnboardPage({ scope }: { scope: OnboardScope }) {
                         disabled={!nodeId || (method === "session_key" && skMode === "batch")}
                       />
                     </Field>
+                    {proxyId === PROXY_OWN && (
+                      <Field label={t("onboard.proxyOwnLabel")} hint={ownProxyHint} className="sm:col-span-2">
+                        <Input
+                          value={ownProxy}
+                          maxLength={500}
+                          placeholder="host:port:user:pass / user:pass@host:port / socks5://…"
+                          spellCheck={false}
+                          onChange={(e) => setOwnProxy(e.target.value)}
+                        />
+                      </Field>
+                    )}
                     <Field label={t("onboard.concurrency")} hint={t("onboard.concurrencyHint")}>
                       <Input type="number" min={0} value={concurrency} placeholder={t("onboard.platformDefault")} onChange={(e) => setConcurrency(e.target.value)} />
                     </Field>

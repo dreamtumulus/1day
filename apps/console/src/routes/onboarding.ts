@@ -1,7 +1,8 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { all, newId, nowIso, one, run, tx, type AccountRow } from "@1dayapi/core";
 import { bad, body, notFound, num, oneOf, query, str, uuid, type Body } from "../http.js";
-import { listProxiesForPicker, resolveTeamProxy, ProxyInputError } from "../node/proxies.js";
+import { listProxiesForPicker, nodeProxyUrls, resolveSuppliedProxy, resolveTeamProxy, ProxyInputError } from "../node/proxies.js";
+import { pushProxies } from "../node/registry.js";
 import { requireAdmin, requireOps, requireProvider } from "../session.js";
 import {
   continueAuthUrlJob,
@@ -270,6 +271,43 @@ export function registerOnboardingRoutes(app: FastifyInstance): void {
           };
         }),
       };
+    });
+  }
+
+  // Operator-supplied proxy for one onboarding (docs/onboarding.md §4.1): parse any common
+  // shape into a socks5 URL, reuse the pool row when the endpoint is already known (never a
+  // failure), otherwise append it to the node's pool and push the pool so the node probes it.
+  // The response is a status snapshot; the form calls it again until the proxy is assignable.
+  // dryRun=true parses and looks up only (live preview while typing). Nothing is logged.
+  for (const scope of ["admin", "provider"] as const) {
+    app.post(`/api/${scope}/accounts/onboard/proxy`, scope === "admin" ? { preHandler: requireAdmin } : { preHandler: requireProvider }, async (req) => {
+      const b = body(req);
+      const raw = str(b, "proxy", { required: true, max: 500 })!;
+      const nodeId = str(b, "nodeId", { required: true, max: 120 })!;
+      const dryRun = b.dryRun === true;
+      const requesterId = req.user!.id;
+      const node = one<NodeRow>(
+        "SELECT n.provider_id, u.role, n.online, n.capacity FROM nodes n LEFT JOIN users u ON u.id = n.provider_id WHERE n.node_id = ?", nodeId);
+      if (!node || (scope === "provider" && node.provider_id !== requesterId)) notFound("node");
+      if (!dryRun && node.online !== 1) bad("node_offline", "Target node is not online");
+      const allowedNodes = scope === "provider"
+        ? new Set(all<{ node_id: string }>("SELECT node_id FROM nodes WHERE provider_id = ?", requesterId).map((n) => n.node_id))
+        : null;
+      try {
+        const res = tx(() => resolveSuppliedProxy(nodeId, raw, {
+          teamId: uuid(b, "orgUuid") ?? null, dryRun, allowedNodes,
+          label: `supplied:${req.user!.name ?? req.user!.id}`.slice(0, 120),
+          push: (id) => pushProxies(id, nodeProxyUrls(id)),
+        }));
+        if (res.added) console.info(`[onboard] ${scope} ${requesterId} supplied proxy ${res.proxyId} (${res.parsed.display}) to node ${nodeId}; pushed=${res.pushed}`);
+        return { data: res };
+      } catch (e) {
+        if (e instanceof ProxyInputError) {
+          const [code] = e.message.split(":");
+          bad(code === "proxy_unparseable" || code === "proxy_on_other_node" ? code : "invalid_request", e.message);
+        }
+        throw e;
+      }
     });
   }
 

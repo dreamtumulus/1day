@@ -201,6 +201,36 @@ POST /api/provider/accounts/onboard/precheck
 只做两件事：按 §3 的正则检查形态；从 key 第 13–35 位解出 account uuid（§2.1）查 `accounts.account_uuid`。
 不访问上游、不写库、不记日志。前端批量模式提交前先调它，已存在的 key 标「已存在，跳过」不再提交；单条模式在输入框下提示。
 
+### 4.1 自带代理（2026-10-28）
+
+上号时代理选择器多一项「自带代理」：操作者粘贴一条代理地址，平台解析、入池、等节点探活后再开任务。管理员与号商各自前缀。
+
+```
+POST /api/admin/accounts/onboard/proxy        body {nodeId, proxy, orgUuid?, dryRun?}
+POST /api/provider/accounts/onboard/proxy
+  → {data:{proxyId|null, nodeId|null, parsed:{scheme,host,port,username,display}, existed, added, pushed,
+            status, lastError, exitIp, country, quarantined, quarantineReason, boundAccounts, reservedAccounts,
+            blocked: null | legacy|dead|unprobed|exit_unverified|cooldown|quarantined|other_organization|needs_virgin_exit|reserved_by_other|full|not_in_pool}}
+```
+
+- **解析**（`node/proxy-parse.ts`）：接受 `socks5://u:p@h:port`、`socks5h://`、`http(s)://`、`u:p@h:port`、`h:port`、`h:port:u:p`、`u:p:h:port`，
+  以及空格 / 逗号 / Tab / `|` / `;` 分隔的 `h port u p`（或 `u p h port`）；无 scheme 一律按 socks5；IPv6 用 `[…]:port`。
+  规范化为 `scheme://user:pass@host:port`（userinfo 仅在含保留字符时百分号编码）；密码不出服务端，响应里只有 `display`（`user:***@host:port`）。
+- **复用而非失败**：先按规范化 URL 的 id（以及输入原样 URL 的 id）查 `node_proxies`，再按「host + port + 用户名 + 密码」指纹
+  （忽略 scheme：一个端口只说一种协议）解密比对全部池子。命中即复用该行，`existed=true`，`nodeId` 是它所在的节点——
+  若不是请求的节点，管理员端表单自动切到那个节点；号商只能命中自己节点上的行，命中别人的返回 400 `proxy_on_other_node`。
+- **未命中**：`addNodeProxies` 追加到 `nodeId` 的池（`label` = `supplied:<操作者>`，`isolation_version=1`，状态 `unknown`），
+  并立即向节点下发代理池；节点对新 URL 立刻探活并测出口（`replaceAll` 只对新增条目起一轮 `checkAll`），下一次心跳（10 s）回写
+  `live` + `exit_ip`。`dryRun=true` 只解析和查找，不写不推（表单输入时的实时预览）。节点离线时非 dryRun 返回 400 `node_offline`。
+- **容量规则不变**：`blocked` 由 `teamIncompatibleReason`（§6.1 的组织 / 隔离 / 冷却 / 封存条件）加占用数给出；同一出口常态 2 个账号、
+  最多 3 个。前端拿到 `unprobed` / `exit_unverified` 时每 3 秒重调本接口，最多等 90 秒，`blocked=null` 后用 `proxyId` 正常
+  `POST …/onboard`。其他 `blocked` 直接报原因，代理行留在池里。
+- 顺带修正：`resolveTeamProxy` 对**显式指定**的 `proxyId`（下拉手选或自带）只检查硬上限 3；此前只要别的出口还有常态名额，
+  手选一个已占 2 的代理会被拒为「无可用代理」。自动分配仍先填满常态 2 再用第 3 名额。显式指定的失败信息改为
+  `proxy_not_found` / `proxy_unassignable: <原因码>` / `proxy_full`。
+- 400 `proxy_unparseable`（解析失败）、`proxy_on_other_node`、`node_offline`、`invalid_request`；404 `node`。
+  测试：`test/proxy-parse.test.mjs`、`test/proxy-supplied.test.mjs`。
+
 解封代理（仅管理员）：
 
 ```
@@ -279,6 +309,11 @@ POST /api/admin/nodes/:id/proxies/:proxyId/unquarantine → {data:{ok:true, push
   标记「格式错误 / 重复」并只提交有效且去重后的条目；共用同一组织与参数（代理固定 `auto`）；相邻两条之间随机等待 5–7 秒
   （区间可改，0–600 秒）；每条 key 一个独立任务，进度表逐行显示排队 / 进行中 / 成功（邮箱）/ 失败（错误码）；
   「停止」只停止后续提交，已提交的任务照常跑完。批量编排在浏览器侧，关闭页面即停止提交，已创建的任务不受影响。
+
+**2026-10-28 自带代理**（§4.1）：代理下拉第二项「自带代理（手动填写）」，下方出现地址输入框；输入 400 ms 后以 `dryRun` 预览
+「解析为 socks5://user:***@host:port · 代理池已有（节点 X）· live · 已占 n/3」或「代理池中没有：上号时会先加入该节点并探测」。
+提交时先登记 / 复用，代理在别的节点上则自动切换节点并提示，新代理显示「等待节点验证…n 秒」（最多 90 秒），验证通过后再创建任务；
+不能分配时按 `blocked` 原因码给出中英文提示（`onboard.proxyBlocked.*`）。批量模式下也可用同一条自带代理（第 4 条起会因上限 3 失败）。
 
 ## 8. （已废弃）授权 bot 服务化
 

@@ -2,6 +2,7 @@ import { isIP } from "node:net";
 import { all, claimProxyResource, decryptString, encryptString, ensureUpstreamTeam, getSetting, isoIn, liftQuarantine, normalizeTeamId, nowIso, one, quarantineActive, quarantineResource, recordProxyTeamEvent, run, tx } from "@1dayapi/core";
 import { expireJobReservations, liveReservationSql } from "../onboard/reservations.js";
 import { proxyIdFromUrl } from "./registry.js";
+import { canonicalProxyUrl, describeProxy, parseProxyInput, proxyFingerprint, proxyUrlFingerprint } from "./proxy-parse.js";
 
 // Node proxy pool ledger (protocol v2). Plaintext proxy URLs only exist in
 // the PUT request body and the one-time WS proxies.set push; the DB stores
@@ -256,7 +257,7 @@ export interface IsolatedProxy {
   id: string; node_id: string; team_id: string | null; isolation_version: number;
   status: string; exit_ip: string | null; resource_key: string | null;
   cooldown_until: string | null; last_check_at: string | null;
-  exit_country?: string | null;
+  exit_country?: string | null; last_error?: string | null;
 }
 
 export function canonicalProxyResourceKey(ip: string): string | null {
@@ -314,40 +315,156 @@ export function proxyOccupancy(resourceKey: string, excludeJobId = ""): { bound:
   return { bound, reserved, total: bound + reserved };
 }
 
-function teamCompatible(p: IsolatedProxy, teamId: string | null): boolean {
-  if (p.isolation_version !== 1 || p.status !== "live" || !p.exit_ip || !p.resource_key ||
-      canonicalProxyResourceKey(p.exit_ip) !== p.resource_key || (p.cooldown_until && p.cooldown_until > nowIso())) return false;
+/**
+ * Why a proxy cannot carry an account of `teamId` right now (null = it can, capacity
+ * aside). Codes are stable: the onboarding form shows them for an operator-picked proxy.
+ *   legacy · dead · unprobed · exit_unverified · cooldown · quarantined ·
+ *   other_organization · needs_virgin_exit · reserved_by_other
+ */
+export type ProxyIncompatibility = "legacy" | "dead" | "unprobed" | "exit_unverified" | "cooldown" | "quarantined" |
+  "other_organization" | "needs_virgin_exit" | "reserved_by_other";
+
+export function teamIncompatibleReason(p: IsolatedProxy, teamId: string | null): ProxyIncompatibility | null {
+  if (p.isolation_version !== 1) return "legacy";
+  if (p.status === "dead") return "dead";
+  if (p.status !== "live") return "unprobed";
+  if (!p.exit_ip || !p.resource_key || canonicalProxyResourceKey(p.exit_ip) !== p.resource_key) return "exit_unverified";
+  if (p.cooldown_until && p.cooldown_until > nowIso()) return "cooldown";
   for (const key of [p.resource_key, `proxy:${p.id}`]) {
-    if (quarantineActive(key)) return false;
+    if (quarantineActive(key)) return "quarantined";
     const claim = one<{ team_id: string }>("SELECT team_id FROM proxy_team_claims WHERE resource_key=?", key);
-    if (claim && claim.team_id !== teamId) return false;
-    if (!teamId && claim) return false;
+    if (claim && claim.team_id !== teamId) return "other_organization";
+    if (!teamId && claim) return "needs_virgin_exit";
   }
-  if (p.team_id && p.team_id !== teamId) return false;
+  if (p.team_id && p.team_id !== teamId) return "other_organization";
   // An unidentified account must discover its organization on a virgin,
   // exclusive resource; it may not borrow another organization's exit.
-  if (!teamId && proxyOccupancy(p.resource_key).total !== 0) return false;
+  if (!teamId && proxyOccupancy(p.resource_key).total !== 0) return "needs_virgin_exit";
   const pending = all<{ team_id: string | null;proxy_resource_key:string|null }>(`SELECT team_id,proxy_resource_key FROM onboarding_jobs
     WHERE (proxy_resource_key=? OR proxy_id=?) AND ${liveReservationSql('onboarding_jobs')}`, p.resource_key,p.id);
-  return pending.every((j) => !!teamId && j.team_id === teamId && j.proxy_resource_key===p.resource_key);
+  return pending.every((j) => !!teamId && j.team_id === teamId && j.proxy_resource_key===p.resource_key) ? null : "reserved_by_other";
 }
 
-/** Caller reserves the returned resource inside the same BEGIN IMMEDIATE. */
+function teamCompatible(p: IsolatedProxy, teamId: string | null): boolean {
+  return teamIncompatibleReason(p, teamId) === null;
+}
+
+/**
+ * Caller reserves the returned resource inside the same BEGIN IMMEDIATE.
+ * Automatic picks fill the normal two slots per exit first and fall back to the third
+ * only when no exit has a normal slot left. An explicitly requested proxy (operator's
+ * pick or a self-supplied one) is accepted as long as the hard limit of 3 holds;
+ * before 2026-10-28 it was refused whenever some other exit still had a normal slot,
+ * which read as a failure for a proxy the operator had just chosen on purpose.
+ */
 export function resolveTeamProxy(nodeId: string, teamIdInput?: string | null, requested?: string, excludeJobId="", excludeProxyIds?: Set<string>): IsolatedProxy {
   expireJobReservations();
   const teamId = normalizeTeamId(teamIdInput);
   if (teamIdInput && !teamId) throw new ProxyInputError("team_identity_invalid");
+  if (requested && requested !== "auto") {
+    const p = one<IsolatedProxy>("SELECT * FROM node_proxies WHERE node_id=? AND id=?", nodeId, requested);
+    if (!p || excludeProxyIds?.has(p.id)) throw new ProxyInputError(`proxy_not_found: proxy ${requested} is not in this node's pool`);
+    const reason = teamIncompatibleReason(p, teamId);
+    if (reason) throw new ProxyInputError(`proxy_unassignable: ${reason}`);
+    const occ = proxyOccupancy(p.resource_key!, excludeJobId);
+    if (occ.total >= 3) throw new ProxyInputError(`proxy_full: exit already carries ${occ.total} accounts (maximum 3)`);
+    return p;
+  }
   const candidates = all<IsolatedProxy>("SELECT * FROM node_proxies WHERE node_id=? ORDER BY last_check_at,id", nodeId)
     .filter((p) => !excludeProxyIds?.has(p.id) && teamCompatible(p, teamId))
     .map((p) => ({ p, ...proxyOccupancy(p.resource_key!,excludeJobId),count:proxyOccupancy(p.resource_key!,excludeJobId).total }))
     .filter((x) => x.count < 3);
   const normal = candidates.filter((x) => x.count < 2);
   const allowed = normal.length ? normal : candidates;
-  const selected = requested && requested !== "auto" ? allowed.find((x) => x.p.id === requested) :
-    allowed.sort((a, b) => Number(b.bound===1) - Number(a.bound===1) ||
+  const selected = allowed.sort((a, b) => Number(b.bound===1) - Number(a.bound===1) ||
       Number(b.p.team_id === teamId && !!teamId) - Number(a.p.team_id === teamId && !!teamId) || a.count - b.count)[0];
   if (!selected) throw new ProxyInputError("No compatible verified proxy capacity (normal 2, maximum 3)");
   return selected.p;
+}
+
+export interface SuppliedProxyResult {
+  /** Pool row id (sha256 of the stored URL); null on a dry run when the proxy is not in any pool yet. */
+  proxyId: string | null;
+  /** Node whose pool holds the row (may differ from the requested node when the proxy already lived elsewhere). */
+  nodeId: string | null;
+  /** How the input was understood, without the password. */
+  parsed: { scheme: string; host: string; port: number; username: string | null; display: string };
+  /** The row existed before this call (matched by stored URL or by host/port/credentials). */
+  existed: boolean;
+  /** A row was inserted by this call. */
+  added: boolean;
+  /** The pool was pushed to the node (false: node offline or nothing inserted). */
+  pushed: boolean;
+  status: string | null;
+  lastError: string | null;
+  exitIp: string | null;
+  country: string | null;
+  quarantined: boolean;
+  quarantineReason: string | null;
+  boundAccounts: number;
+  reservedAccounts: number;
+  /** null = assignable to `teamId` right now (capacity included); otherwise the reason. */
+  blocked: ProxyIncompatibility | "full" | "not_in_pool" | null;
+}
+
+/**
+ * Operator-supplied proxy for one onboarding (docs/onboarding.md §4.1): parse any of the
+ * accepted shapes, reuse the pool row when the same endpoint is already known anywhere
+ * (never a failure), otherwise append it to `nodeId`'s pool and push the pool so the node
+ * probes it. `allowedNodes` restricts which pools may be matched/used (providers: own
+ * nodes); a hit on another allowed node is returned with that node's id so the caller can
+ * onboard there. `dryRun` only parses and looks up.
+ */
+export function resolveSuppliedProxy(nodeId: string, raw: string, opts: {
+  teamId?: string | null; label?: string; dryRun?: boolean; allowedNodes?: Set<string> | null;
+  push?: (nodeId: string) => boolean;
+}): SuppliedProxyResult {
+  const parsed = parseProxyInput(raw);
+  if (!parsed) throw new ProxyInputError("proxy_unparseable: expected host:port, host:port:user:pass, user:pass@host:port or a socks5:// / http:// URL");
+  const canonical = canonicalProxyUrl(parsed);
+  const fingerprint = proxyFingerprint(parsed);
+  const allowed = (id: string) => !opts.allowedNodes || opts.allowedNodes.has(id);
+  type Row = { id: string; node_id: string; url_enc: string };
+  // 1) exact stored URL (canonical form or the input verbatim when it already was a URL).
+  const direct = [canonical, raw.trim()].map((u) => proxyIdFromUrl(u));
+  let hit = one<Row>(`SELECT id, node_id, url_enc FROM node_proxies WHERE id IN (?, ?) ORDER BY (node_id = ?) DESC LIMIT 1`, direct[0], direct[1], nodeId);
+  // 2) same host/port/credentials written differently (this node first, then any other pool).
+  if (!hit) {
+    for (const r of all<Row>("SELECT id, node_id, url_enc FROM node_proxies ORDER BY (node_id = ?) DESC, created_at", nodeId)) {
+      let url: string;
+      try { url = decryptString(r.url_enc); } catch { continue; }
+      if (proxyUrlFingerprint(url) === fingerprint) { hit = r; break; }
+    }
+  }
+  if (hit && !allowed(hit.node_id)) throw new ProxyInputError(`proxy_on_other_node: this proxy is already in another node's pool`);
+  const teamId = normalizeTeamId(opts.teamId ?? null);
+  const display = describeProxy(parsed);
+  const base = { parsed: { scheme: parsed.scheme, host: parsed.host, port: parsed.port, username: parsed.username, display } };
+  const snapshot = (id: string, owner: string, existed: boolean, added: boolean, pushed: boolean): SuppliedProxyResult => {
+    const p = one<IsolatedProxy>("SELECT * FROM node_proxies WHERE id=? AND node_id=?", id, owner)!;
+    const q = proxyQuarantine(p.id, p.resource_key);
+    const occ = p.resource_key ? proxyOccupancy(p.resource_key) : { bound: 0, reserved: 0, total: 0 };
+    const reason = teamIncompatibleReason(p, teamId);
+    // Show the URL the pool actually holds (an existing row may be spelt differently from the input).
+    let shown = base.parsed;
+    try {
+      const stored = parseProxyInput(decryptString(one<{ url_enc: string }>("SELECT url_enc FROM node_proxies WHERE id=?", p.id)!.url_enc));
+      if (stored) shown = { scheme: stored.scheme, host: stored.host, port: stored.port, username: stored.username, display: describeProxy(stored) };
+    } catch { /* unreadable ciphertext: keep the input's reading */ }
+    return { ...base, parsed: shown, proxyId: p.id, nodeId: owner, existed, added, pushed, status: p.status, lastError: p.last_error ?? null,
+      exitIp: p.exit_ip, country: (p as IsolatedProxy & { exit_country?: string | null }).exit_country ?? null,
+      quarantined: q.quarantined, quarantineReason: q.reason, boundAccounts: occ.bound, reservedAccounts: occ.reserved,
+      blocked: reason ?? (occ.total >= 3 ? "full" : null) };
+  };
+  if (hit) return snapshot(hit.id, hit.node_id, true, false, false);
+  if (opts.dryRun) {
+    return { ...base, proxyId: null, nodeId: null, existed: false, added: false, pushed: false, status: null, lastError: null, exitIp: null,
+      country: null, quarantined: false, quarantineReason: null, boundAccounts: 0, reservedAccounts: 0, blocked: "not_in_pool" };
+  }
+  const res = addNodeProxies(nodeId, [{ url: canonical, label: opts.label ?? "supplied" }]);
+  const id = proxyIdFromUrl(canonical);
+  const pushed = res.added > 0 && !!opts.push?.(nodeId);
+  return snapshot(id, nodeId, res.added === 0, res.added > 0, pushed);
 }
 
 export function claimDiscoveredProxy(proxyId:string,teamId:string,jobId:string):void {

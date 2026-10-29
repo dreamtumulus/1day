@@ -603,6 +603,31 @@ export interface OnboardPrecheckItem {
 export const onboardPrecheck = (scope: OnboardScope, sessionKeys: string[]) =>
   api.post<OnboardPrecheckItem[]>(`/api/${scope}/accounts/onboard/precheck`, { sessionKeys });
 
+/**
+ * Operator-supplied proxy for one onboarding (docs/onboarding.md §4.1): any common shape is
+ * parsed into a socks5 URL; a proxy already in a pool is reused (that pool's node comes back in
+ * `nodeId`), otherwise it is appended to the node's pool and probed. Call again to poll `blocked`.
+ */
+export interface OnboardSuppliedProxy {
+  proxyId: string | null;
+  nodeId: string | null;
+  parsed: { scheme: string; host: string; port: number; username: string | null; display: string };
+  existed: boolean;
+  added: boolean;
+  pushed: boolean;
+  status: string | null;
+  lastError: string | null;
+  exitIp: string | null;
+  country: string | null;
+  quarantined: boolean;
+  quarantineReason: string | null;
+  boundAccounts: number;
+  reservedAccounts: number;
+  blocked: "legacy" | "dead" | "unprobed" | "exit_unverified" | "cooldown" | "quarantined" | "other_organization" | "needs_virgin_exit" | "reserved_by_other" | "full" | "not_in_pool" | null;
+}
+export const onboardSupplyProxy = (scope: OnboardScope, body: { nodeId: string; proxy: string; orgUuid?: string; dryRun?: boolean }) =>
+  api.post<OnboardSuppliedProxy>(`/api/${scope}/accounts/onboard/proxy`, body);
+
 export const nodeProxies = (scope: OnboardScope, nodeId: string, freeOnly = false) =>
   api.get<ProxyPickerItem[]>(`/api/${scope}/nodes/${nodeId}/proxies`, freeOnly ? { free: 1 } : undefined);
 
