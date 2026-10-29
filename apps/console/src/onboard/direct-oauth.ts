@@ -185,6 +185,11 @@ export async function authorizeWithSessionKey(target: EgressTarget, sessionKey: 
   if (authRes.status === 401 || authRes.status === 403) {
     throw new OnboardError("session_key_invalid", `authorize: ${upstreamSummary(authRes.status, authRes.text)}`);
   }
+  if (authRes.status === 404) {
+    // The authorize endpoint answers 404 when the sessionKey's account is not a member of
+    // `orgUuid` (wrong saved organization / typo), not when the proxy or key is bad.
+    throw new OnboardError("authorize_failed", `authorize: HTTP 404 — the account is not a member of organization ${orgUuid} (${upstreamSummary(authRes.status, authRes.text)})`);
+  }
   if (authRes.status !== 200 || !authRes.json) throw new OnboardError("authorize_failed", `authorize: ${upstreamSummary(authRes.status, authRes.text)}`);
   const redirect = authRes.json.redirect_uri;
   if (typeof redirect !== "string") throw new OnboardError("authorize_failed", "authorize: response has no redirect_uri");

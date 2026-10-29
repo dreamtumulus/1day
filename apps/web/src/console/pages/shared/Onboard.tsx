@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { useAuth } from "../../../lib/auth";
 import { ArrowRightIcon, CheckIcon, PlugIcon, RefreshIcon } from "../../../components/Icon";
@@ -33,6 +33,7 @@ import {
   CopyButton,
   Field,
   Input,
+  KV,
   Modal,
   PageHeader,
   Segmented,
@@ -59,7 +60,7 @@ import {
 //    are submitted one by one with a random 5–7 s pause (configurable).
 
 type Method = "session_key" | "auth_url";
-type SkMode = "single" | "batch";
+type ProxyMode = "auto" | "pool" | "own";
 
 const POLL_MS = 1500;
 
@@ -82,6 +83,7 @@ function errorHintKey(err: string | null | undefined): string | null {
   if (/account_exists/.test(err)) return "onboard.hint.exists";
   if (/team_mismatch|organization_mismatch|team_identity_invalid/.test(err)) return "onboard.hint.teamMismatch";
   if (/node_offline|no_proxy_available/.test(err) && !/proxy_pool_empty/.test(err)) return "onboard.hint.nodeOffline";
+  if (/authorize_failed: authorize: HTTP 404|not a member of organization/.test(err)) return "onboard.hint.orgNotFound";
   if (/proxy_pool_empty|No compatible verified proxy/.test(err)) return "onboard.hint.noProxy";
   if (/proxy_unassignable|proxy_full|proxy_not_found/.test(err)) return "onboard.hint.proxyPick";
   if (/job_expired|callback_expired/.test(err)) return "onboard.hint.expired";
@@ -132,6 +134,25 @@ interface BatchState {
   nextAt: number | null;
 }
 
+/** Numbered step card: the form reads top to bottom as ① credential → ② egress → ③ ownership. */
+function StepCard({ n, title, children }: { n: number; title: string; children: ReactNode }) {
+  return (
+    <Card
+      title={
+        <span className="flex items-center gap-2.5">
+          <span className="grid h-6 w-6 place-items-center rounded-full text-[12px] font-semibold" style={{ background: "var(--primary-container)", color: "var(--primary)" }}>
+            {n}
+          </span>
+          {title}
+        </span>
+      }
+      bodyClassName="space-y-4 p-5"
+    >
+      {children}
+    </Card>
+  );
+}
+
 export function OnboardPage({ scope }: { scope: OnboardScope }) {
   const { t } = useCT();
   const toast = useToast();
@@ -148,9 +169,7 @@ export function OnboardPage({ scope }: { scope: OnboardScope }) {
   const orgs = useAsync(() => (canSeeTeam ? onboardOrgs() : Promise.resolve([] as OnboardOrg[])), [canSeeTeam]);
 
   const [method, setMethod] = useState<Method>("session_key");
-  const [skMode, setSkMode] = useState<SkMode>("single");
   const [sessionKey, setSessionKey] = useState("");
-  const [batchText, setBatchText] = useState("");
   const [intervalMin, setIntervalMin] = useState("5");
   const [intervalMax, setIntervalMax] = useState("7");
   // Organization: "" = not specified, ORG_MANUAL = type it in, otherwise a saved org id.
@@ -423,8 +442,12 @@ export function OnboardPage({ scope }: { scope: OnboardScope }) {
     return body;
   }
 
-  const singleKey = sessionKey.trim().replace(/^["']+|["']+$/g, "");
-  const singleKeyBad = !!singleKey && !SESSION_KEY_RE.test(singleKey);
+  // One textarea for one or many keys: a single line is onboarded directly, two or more
+  // lines run as a batch (format check + de-duplication client-side, docs/onboarding.md §7).
+  const parsed = useMemo(() => parseBatch(sessionKey), [sessionKey]);
+  const isBatch = method === "session_key" && parsed.length >= 2;
+  const singleKey = parsed.length === 1 && parsed[0].kind === "valid" ? parsed[0].key : "";
+  const singleKeyBad = parsed.length === 1 && parsed[0].kind !== "valid";
 
   // Duplicate detection before submitting (precheck reads the account uuid embedded in the
   // key; no upstream call): a key already in the pool would only burn a reservation.
@@ -508,7 +531,6 @@ export function OnboardPage({ scope }: { scope: OnboardScope }) {
 
   // ---------- batch ----------
 
-  const parsed = useMemo(() => parseBatch(batchText), [batchText]);
   const parsedValid = parsed.filter((p) => p.kind === "valid");
   const parsedInvalid = parsed.filter((p) => p.kind === "invalid").length;
   const parsedDup = parsed.filter((p) => p.kind === "dup").length;
@@ -604,17 +626,26 @@ export function OnboardPage({ scope }: { scope: OnboardScope }) {
   const batchFinished = !!batch && !batch.running && batchCounts.working === 0;
   const batchNextIn = batch?.nextAt ? Math.max(0, Math.ceil((batch.nextAt - Date.now()) / 1000)) : null;
 
-  const proxyOptions = useMemo(() => {
-    const opts = [{ value: "auto", label: t("onboard.proxyAuto") }, { value: PROXY_OWN, label: t("onboard.proxyOwn") }];
-    for (const p of proxies ?? []) {
-      const host = p.host ? `${p.host}${p.port ? `:${p.port}` : ""}` : p.id.slice(0, 12);
-      opts.push({
-        value: p.id,
-        label: `${p.country ? `${p.country} · ` : ""}${p.label ?? host} · ${host} · ${t(`status.${p.status}`)}${p.boundAccounts !== undefined ? ` · ${t("team.proxyOccupied", { n: p.boundAccounts + (p.reservedAccounts ?? 0) })}` : ""}`,
-      });
-    }
-    return opts;
-  }, [proxies, t]);
+  // Proxy choice as three modes: automatic, a pool pick, or an operator-supplied address.
+  const proxyMode: ProxyMode = proxyId === "auto" ? "auto" : proxyId === PROXY_OWN ? "own" : "pool";
+  const poolOptions = useMemo(
+    () =>
+      (proxies ?? []).map((p) => {
+        const host = p.host ? `${p.host}${p.port ? `:${p.port}` : ""}` : p.id.slice(0, 12);
+        return {
+          value: p.id,
+          label: `${p.country ? `${p.country} · ` : ""}${p.label ? `${p.label} · ` : ""}${host} · ${t("team.proxyOccupied", { n: (p.boundAccounts ?? 0) + (p.reservedAccounts ?? 0) })}`,
+        };
+      }),
+    [proxies, t],
+  );
+  function setProxyMode(m: ProxyMode) {
+    if (m === "auto") setProxyId("auto");
+    else if (m === "own") setProxyId(PROXY_OWN);
+    else setProxyId(poolOptions[0]?.value ?? "");
+  }
+  const selectedNodeLabel = nodeOptions.find((o) => o.value === nodeId)?.label ?? "—";
+  const pendingJobs = (recentJobs.data ?? []).filter((j) => j.status === "pending_callback" || j.status === "working");
 
   const accountsPath = isAdmin ? "/console/admin/accounts" : "/console/accounts";
 
@@ -624,7 +655,7 @@ export function OnboardPage({ scope }: { scope: OnboardScope }) {
 
   const orgField = canSeeTeam && (
     <div className="space-y-3">
-      <Field label={`${t("onboard.org")} (${t("common.optional")})`} hint={t("onboard.orgUuidPick")}>
+      <Field label={`${t("onboard.org")} (${t("common.optional")})`} hint={selectedOrg ? undefined : t("onboard.orgUuidPick")}>
         <div className="flex items-start gap-2">
           <Select className="min-w-0 flex-1" value={orgChoice} onChange={(e) => setOrgChoice(e.target.value)} options={orgOptions} />
           <Button size="md" onClick={() => { setOrgForm(null); setOrgModal(true); }}>
@@ -641,9 +672,6 @@ export function OnboardPage({ scope }: { scope: OnboardScope }) {
       )}
       {orgChoice === ORG_MANUAL && (
         <div className="grid gap-4 sm:grid-cols-2">
-          <Field label={`${t("team.name")} (${t("common.optional")})`} hint={t("team.verifiedHint")}>
-            <Input value={teamName} maxLength={120} onChange={(e) => setTeamName(e.target.value)} />
-          </Field>
           <Field label={t("onboard.orgUuid")} hint={t("onboard.orgUuidHint")} error={orgUuidBad ? t("onboard.errOrgUuidFormat") : undefined}>
             <Input
               value={orgUuid}
@@ -652,6 +680,9 @@ export function OnboardPage({ scope }: { scope: OnboardScope }) {
               placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
               onChange={(e) => setOrgUuid(e.target.value)}
             />
+          </Field>
+          <Field label={`${t("team.name")} (${t("common.optional")})`} hint={t("team.verifiedHint")}>
+            <Input value={teamName} maxLength={120} onChange={(e) => setTeamName(e.target.value)} />
           </Field>
           <div className="sm:col-span-2">
             <Button disabled={!orgUuid.trim() || orgUuidBad} onClick={() => openOrgForm(undefined, { name: teamName.trim(), orgUuid: orgUuid.trim() })}>
@@ -663,11 +694,53 @@ export function OnboardPage({ scope }: { scope: OnboardScope }) {
     </div>
   );
 
+  // Per-key feedback under the textarea (one key: shape + duplicate; many: batch tallies).
+  const keyFeedback = (() => {
+    if (method !== "session_key" || parsed.length === 0) return <span className="text-on-surface-faint">{t("onboard.sessionKeyHint")}</span>;
+    if (parsed.length === 1) {
+      if (singleKeyBad) return <span className="text-error">{t("onboard.errSessionKeyFormat")}</span>;
+      if (singleExisting) return <span className="text-warning">{t("onboard.preExists", { email: singleExisting.email ?? "?", status: singleExisting.status })}</span>;
+      return <span className="text-success">{t("onboard.keyOk")}</span>;
+    }
+    const bad = parsed.filter((p) => p.kind !== "valid");
+    return (
+      <div className="space-y-1.5">
+        <div className="flex flex-wrap items-center gap-2">
+          <Badge tone={parsedValid.length ? "success" : "neutral"}>{t("onboard.batchSummary", { valid: parsedValid.length, invalid: parsedInvalid, dup: parsedDup })}</Badge>
+          <span className="text-on-surface-faint">{t("onboard.keysBatchNote", { n: parsedValid.length, min: intervalMin, max: intervalMax })}</span>
+        </div>
+        {bad.length > 0 && (
+          <ul className="space-y-0.5">
+            {bad.map((p, i) => (
+              <li key={i} className={p.kind === "invalid" ? "text-error" : "text-on-surface-variant"}>
+                {t("onboard.batchLine", { n: p.line })} · {p.kind === "invalid" ? t("onboard.invalidLine") : t("onboard.duplicateLine")} · <span className="font-mono">{maskKey(p.key)}</span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    );
+  })();
+
+  const ownTone: Tone = ownProbeSec !== null ? "info" : ownPreviewErr ? "error" : !ownPreview ? "neutral" : ownPreview.blocked && ownPreview.blocked !== "not_in_pool" && ownPreview.blocked !== "unprobed" && ownPreview.blocked !== "exit_unverified" ? "error" : ownPreview.existed ? "success" : "info";
+
+  const canSubmit =
+    !!nodeId &&
+    !orgUuidBad &&
+    (method === "auth_url" || (isBatch ? parsedValid.length > 0 && !intervalBad : !!singleKey && !singleKeyBad)) &&
+    (proxyMode !== "pool" || !!proxyId) &&
+    (proxyMode !== "own" || !!ownProxy.trim());
+
+  const summaryProxy =
+    proxyMode === "auto" ? t("onboard.proxyAuto") : proxyMode === "own" ? (ownPreview?.parsed.display ?? ownProxy.trim() ?? "—") || "—" : (poolOptions.find((o) => o.value === proxyId)?.label ?? "—");
+  const summaryKeys =
+    method === "auth_url" ? t("onboard.methodAuthUrl") : parsed.length === 0 ? t("onboard.sumNoKey") : parsed.length === 1 ? maskKey(parsed[0].key) : t("onboard.sumKeysN", { n: parsedValid.length });
+
   return (
     <div>
       <PageHeader title={t("onboard.title")} desc={t("onboard.desc")} />
       {scope === "admin" && <AccountTabs />}
-      <div className="max-w-3xl space-y-6">
+      <div className="max-w-5xl space-y-6">
         {/* batch progress */}
         {batch && (
           <Card title={t("onboard.batchTitle")} bodyClassName="space-y-3 p-5">
@@ -726,7 +799,7 @@ export function OnboardPage({ scope }: { scope: OnboardScope }) {
                     {t("onboard.viewAccounts")}
                     <ArrowRightIcon width={14} height={14} />
                   </Link>
-                  <Button onClick={() => { setBatch(null); setBatchText(""); void recentJobs.reload(); }}>{t("onboard.batchNewBatch")}</Button>
+                  <Button onClick={() => { setBatch(null); setSessionKey(""); void recentJobs.reload(); }}>{t("onboard.batchNewBatch")}</Button>
                 </>
               )}
             </div>
@@ -834,20 +907,27 @@ export function OnboardPage({ scope }: { scope: OnboardScope }) {
           </Card>
         )}
 
-        {/* form (hidden once a job or a batch is in flight) */}
+        {/* form (hidden once a job or a batch is in flight): three steps + a sticky summary */}
         {!job && !batch && (
-          <>
-          {(recentJobs.data ?? []).some((j) => j.status === "pending_callback" || j.status === "working") && <Card title="进行中的授权" bodyClassName="space-y-2 p-5">
-            {(recentJobs.data ?? []).filter((j) => j.status === "pending_callback" || j.status === "working").map((j) => <div key={j.jobId} className="flex items-center justify-between gap-3">
-              <span className="truncate text-sm">{j.accountName ?? j.jobId.slice(0, 12)} · {j.status === "working" ? "处理中" : "等待授权"}</span>
-              <Button size="sm" onClick={() => { setJob(j); setCallbackUrl(""); if (j.nodeId) setNodeId(j.nodeId); }}>继续</Button>
-            </div>)}
-          </Card>}
           <Async state={nodes} rows={4}>
             {() => (
-              <>
-                <Card title={t("onboard.method")} bodyClassName="space-y-4 p-5">
-                  <div className="flex flex-wrap items-center gap-3">
+              <div className="grid items-start gap-6 lg:grid-cols-[minmax(0,1fr)_300px]">
+                <div className="min-w-0 space-y-5">
+                  {pendingJobs.length > 0 && (
+                    <Card title={t("onboard.resumeTitle")} bodyClassName="space-y-2 p-5">
+                      {pendingJobs.map((j) => (
+                        <div key={j.jobId} className="flex items-center justify-between gap-3">
+                          <span className="truncate text-[13px]">
+                            {j.accountName ?? j.jobId.slice(0, 12)} · {j.status === "working" ? t("onboard.working") : t("onboard.resumeWaiting")}
+                          </span>
+                          <Button size="sm" onClick={() => { setJob(j); setCallbackUrl(""); if (j.nodeId) setNodeId(j.nodeId); }}>{t("onboard.resume")}</Button>
+                        </div>
+                      ))}
+                    </Card>
+                  )}
+
+                  {/* ① credential */}
+                  <StepCard n={1} title={t("onboard.stepCredential")}>
                     <Segmented<Method>
                       value={method}
                       onChange={setMethod}
@@ -856,169 +936,147 @@ export function OnboardPage({ scope }: { scope: OnboardScope }) {
                         { value: "auth_url", label: t("onboard.methodAuthUrl") },
                       ]}
                     />
-                    {method === "session_key" && (
-                      <Segmented<SkMode>
-                        value={skMode}
-                        onChange={setSkMode}
-                        options={[
-                          { value: "single", label: t("onboard.single") },
-                          { value: "batch", label: t("onboard.batch") },
-                        ]}
-                      />
-                    )}
-                  </div>
-                  {method === "session_key" && skMode === "single" && (
-                    <Field
-                      label="sessionKey"
-                      hint={t("onboard.sessionKeyHint")}
-                      error={singleKeyBad ? t("onboard.errSessionKeyFormat") : singleExisting ? t("onboard.preExists", { email: singleExisting.email ?? "?", status: singleExisting.status }) : undefined}
-                    >
-                      <Textarea
-                        value={sessionKey}
-                        onChange={(e) => setSessionKey(e.target.value)}
-                        rows={3}
-                        autoComplete="off"
-                        placeholder="sk-ant-sid01-…"
-                      />
-                    </Field>
-                  )}
-                  {method === "session_key" && skMode === "batch" && (
-                    <>
-                      <Field label={t("onboard.batchKeys")} hint={t("onboard.batchKeysHint")}>
+                    {method === "session_key" ? (
+                      <div>
                         <Textarea
-                          value={batchText}
-                          onChange={(e) => setBatchText(e.target.value)}
-                          rows={8}
+                          value={sessionKey}
+                          onChange={(e) => setSessionKey(e.target.value)}
+                          rows={isBatch ? 7 : 3}
                           autoComplete="off"
-                          placeholder={"sk-ant-sid01-…\nsk-ant-sid01-…"}
+                          spellCheck={false}
+                          placeholder={t("onboard.keysPlaceholder")}
                         />
-                      </Field>
-                      {parsed.length > 0 && (
-                        <div className="space-y-1.5">
-                          <div className="flex flex-wrap items-center gap-2 text-[13px]">
-                            <Badge tone={parsedValid.length ? "success" : "neutral"}>
-                              {t("onboard.batchSummary", { valid: parsedValid.length, invalid: parsedInvalid, dup: parsedDup })}
-                            </Badge>
-                          </div>
-                          {parsed.filter((p) => p.kind !== "valid").length > 0 && (
-                            <ul className="space-y-0.5 text-[12.5px]">
-                              {parsed
-                                .filter((p) => p.kind !== "valid")
-                                .map((p, i) => (
-                                  <li key={i} className={p.kind === "invalid" ? "text-error" : "text-on-surface-variant"}>
-                                    {t("onboard.batchLine", { n: p.line })} · {p.kind === "invalid" ? t("onboard.invalidLine") : t("onboard.duplicateLine")} ·{" "}
-                                    <span className="font-mono">{maskKey(p.key)}</span>
-                                  </li>
-                                ))}
-                            </ul>
-                          )}
-                        </div>
-                      )}
-                      <Field label={t("onboard.batchInterval")} hint={t("onboard.batchIntervalHint")} error={intervalBad ? "5 – 7" : undefined}>
-                        <div className="flex items-center gap-2">
-                          <Input type="number" min={0} max={600} className="w-24" value={intervalMin} onChange={(e) => setIntervalMin(e.target.value)} />
-                          <span className="text-on-surface-faint">–</span>
-                          <Input type="number" min={0} max={600} className="w-24" value={intervalMax} onChange={(e) => setIntervalMax(e.target.value)} />
-                        </div>
-                      </Field>
-                    </>
-                  )}
-                  {method === "auth_url" && (
-                    <p className="text-[13px] leading-relaxed text-on-surface-variant">{t("onboard.authUrlIntro")}</p>
-                  )}
-                  {orgField}
-                </Card>
+                        <div className="mt-1.5 text-[12.5px] leading-relaxed">{keyFeedback}</div>
+                      </div>
+                    ) : (
+                      <p className="text-[13px] leading-relaxed text-on-surface-variant">{t("onboard.authUrlIntro")}</p>
+                    )}
+                  </StepCard>
 
-                <Card title={t("onboard.params")} bodyClassName="space-y-4 p-5">
-                  {onlineNodes.length === 0 && (
-                    <p
-                      className="rounded-md p-3 text-[13px]"
-                      style={{ background: "var(--warning-container)", color: "var(--warning)" }}
-                    >
-                      {t("onboard.nodeEmpty")}
-                    </p>
-                  )}
-                  <div className="grid gap-4 sm:grid-cols-2">
-                    <Field label={t("onboard.node")} hint={t("onboard.nodeHint")} className="sm:col-span-2">
+                  {/* ② egress */}
+                  <StepCard n={2} title={t("onboard.stepEgress")}>
+                    {onlineNodes.length === 0 && (
+                      <p className="rounded-md p-3 text-[13px]" style={{ background: "var(--warning-container)", color: "var(--warning)" }}>
+                        {t("onboard.nodeEmpty")}
+                      </p>
+                    )}
+                    <Field label={t("onboard.node")} hint={t("onboard.nodeHint")}>
                       <Select value={nodeId} onChange={(e) => setNodeId(e.target.value)} options={nodeOptions} />
                     </Field>
-                    <Field
-                      label={t("onboard.proxy")}
-                      hint={proxiesErr ?? t("onboard.proxyHint")}
-                      className="sm:col-span-2"
-                    >
-                      <Select
-                        value={proxyId}
-                        onChange={(e) => setProxyId(e.target.value)}
-                        options={proxyOptions}
-                        disabled={!nodeId || (method === "session_key" && skMode === "batch")}
+                    <div>
+                      <span className="label">{t("onboard.proxy")}</span>
+                      <Segmented<ProxyMode>
+                        value={proxyMode}
+                        onChange={setProxyMode}
+                        options={[
+                          { value: "auto", label: t("onboard.proxyModeAuto") },
+                          { value: "pool", label: t("onboard.proxyModePool", { n: proxies ? proxies.length : "…" }) },
+                          { value: "own", label: t("onboard.proxyModeOwn") },
+                        ]}
                       />
-                    </Field>
-                    {proxyId === PROXY_OWN && (
-                      <Field label={t("onboard.proxyOwnLabel")} hint={ownProxyHint} className="sm:col-span-2">
-                        <Input
-                          value={ownProxy}
-                          maxLength={500}
-                          placeholder="host:port:user:pass / user:pass@host:port / socks5://…"
-                          spellCheck={false}
-                          onChange={(e) => setOwnProxy(e.target.value)}
-                        />
-                      </Field>
-                    )}
-                    <Field label={t("onboard.concurrency")} hint={t("onboard.concurrencyHint")}>
-                      <Input type="number" min={0} value={concurrency} placeholder={t("onboard.platformDefault")} onChange={(e) => setConcurrency(e.target.value)} />
-                    </Field>
-                    <Field label={t("onboard.rpm")} hint={t("onboard.rpmHint")}>
-                      <Input type="number" min={0} value={rpm} placeholder={t("onboard.platformDefault")} onChange={(e) => setRpm(e.target.value)} />
-                    </Field>
-                    <Field label={`${t("common.name")} (${t("common.optional")})`}>
-                      <Input value={name} maxLength={80} onChange={(e) => setName(e.target.value)} />
-                    </Field>
+                      {proxyMode === "auto" && <p className="mt-2 text-[12.5px] leading-relaxed text-on-surface-faint">{proxiesErr ?? t("onboard.proxyHint")}</p>}
+                      {proxyMode === "pool" && (
+                        <div className="mt-3">
+                          {poolOptions.length ? (
+                            <Select value={proxyId} onChange={(e) => setProxyId(e.target.value)} options={poolOptions} />
+                          ) : (
+                            <p className="text-[12.5px] text-warning">{proxiesErr ?? t("onboard.proxyPoolEmpty")}</p>
+                          )}
+                          <p className="mt-1.5 text-[12.5px] leading-relaxed text-on-surface-faint">{t("onboard.proxyHint")}</p>
+                        </div>
+                      )}
+                      {proxyMode === "own" && (
+                        <div className="mt-3">
+                          <Input
+                            value={ownProxy}
+                            maxLength={500}
+                            placeholder="host:port:user:pass · user:pass@host:port · socks5://…"
+                            spellCheck={false}
+                            autoComplete="off"
+                            onChange={(e) => setOwnProxy(e.target.value)}
+                          />
+                          <p className={`mt-1.5 flex items-start gap-1.5 text-[12.5px] leading-relaxed ${ownTone === "error" ? "text-error" : ownTone === "success" ? "text-success" : "text-on-surface-faint"}`}>
+                            {ownProbeSec !== null && <Spinner size={12} />}
+                            <span>{ownProxyHint}</span>
+                          </p>
+                        </div>
+                      )}
+                    </div>
+                  </StepCard>
+
+                  {/* ③ ownership & limits */}
+                  <StepCard n={3} title={t("onboard.stepOwner")}>
+                    {orgField}
                     {isAdmin && (
                       <Field label={t("common.group")}>
                         <Select
                           value={groupId}
                           onChange={(e) => setGroupId(e.target.value)}
-                          options={[
-                            { value: "", label: t("onboard.groupDefault") },
-                            ...(groups.data ?? []).map((g) => ({ value: g.id, label: g.name })),
-                          ]}
+                          options={[{ value: "", label: t("onboard.groupDefault") }, ...(groups.data ?? []).map((g) => ({ value: g.id, label: g.name }))]}
                         />
                       </Field>
                     )}
-                    <Field label={`${t("onboard.note")} (${t("common.optional")})`} className="sm:col-span-2">
-                      <Input value={note} maxLength={500} onChange={(e) => setNote(e.target.value)} />
-                    </Field>
-                  </div>
-                  {err && <p className="text-[13px] text-error">{err}</p>}
-                  <div className="flex items-center justify-between gap-3">
-                    <Badge tone="info">Claude</Badge>
-                    {method === "session_key" && skMode === "batch" ? (
-                      <Button
-                        variant="primary"
-                        disabled={!nodeId || !parsedValid.length || intervalBad || orgUuidBad}
-                        onClick={() => void startBatch()}
-                      >
-                        <PlugIcon width={15} height={15} />
-                        {t("onboard.batchStart", { n: parsedValid.length })}
-                      </Button>
-                    ) : (
-                      <Button
-                        variant="primary"
-                        loading={busy}
-                        disabled={!nodeId || orgUuidBad || (method === "session_key" && (!singleKey || singleKeyBad))}
-                        onClick={() => void submit()}
-                      >
-                        <PlugIcon width={15} height={15} />
-                        {method === "session_key" ? t("onboard.submit") : t("onboard.generateLink")}
-                      </Button>
-                    )}
-                  </div>
-                </Card>
-              </>
+                    <details className="rounded-md" style={{ border: "1px solid var(--outline-variant)" }}>
+                      <summary className="cursor-pointer select-none px-4 py-2.5 text-[13px] font-medium text-on-surface-variant">
+                        {t("onboard.advanced")} <span className="font-normal text-on-surface-faint">· {t("onboard.advancedHint")}</span>
+                      </summary>
+                      <div className="grid gap-4 px-4 pb-4 pt-1 sm:grid-cols-2">
+                        <Field label={`${t("common.name")} (${t("common.optional")})`}>
+                          <Input value={name} maxLength={80} onChange={(e) => setName(e.target.value)} />
+                        </Field>
+                        <Field label={`${t("onboard.note")} (${t("common.optional")})`}>
+                          <Input value={note} maxLength={500} onChange={(e) => setNote(e.target.value)} />
+                        </Field>
+                        <Field label={t("onboard.concurrency")} hint={t("onboard.concurrencyHint")}>
+                          <Input type="number" min={0} value={concurrency} placeholder={t("onboard.platformDefault")} onChange={(e) => setConcurrency(e.target.value)} />
+                        </Field>
+                        <Field label={t("onboard.rpm")} hint={t("onboard.rpmHint")}>
+                          <Input type="number" min={0} value={rpm} placeholder={t("onboard.platformDefault")} onChange={(e) => setRpm(e.target.value)} />
+                        </Field>
+                        <Field label={t("onboard.batchInterval")} hint={t("onboard.batchIntervalHint")} error={intervalBad ? "5 – 7" : undefined} className="sm:col-span-2">
+                          <div className="flex items-center gap-2">
+                            <Input type="number" min={0} max={600} className="w-24" value={intervalMin} onChange={(e) => setIntervalMin(e.target.value)} />
+                            <span className="text-on-surface-faint">–</span>
+                            <Input type="number" min={0} max={600} className="w-24" value={intervalMax} onChange={(e) => setIntervalMax(e.target.value)} />
+                            <span className="text-[12.5px] text-on-surface-faint">s</span>
+                          </div>
+                        </Field>
+                      </div>
+                    </details>
+                  </StepCard>
+                </div>
+
+                {/* summary + action */}
+                <aside className="space-y-4 lg:sticky lg:top-6">
+                  <Card title={t("onboard.summary")} bodyClassName="space-y-4 p-5">
+                    <KV
+                      items={[
+                        [t("onboard.sumMethod"), method === "session_key" ? t("onboard.methodSessionKey") : t("onboard.methodAuthUrl")],
+                        [t("onboard.sumKeys"), <span className="font-mono text-[12.5px]">{summaryKeys}</span>],
+                        [t("onboard.sumNode"), selectedNodeLabel],
+                        [t("onboard.sumProxy"), <span className="break-all">{summaryProxy}</span>],
+                        ...(canSeeTeam ? [[t("onboard.sumOrg"), effTeamName || (effOrgUuid ? `${effOrgUuid.slice(0, 8)}…` : t("onboard.orgNone"))] as [string, string]] : []),
+                        ...(isAdmin ? [[t("onboard.sumGroup"), (groups.data ?? []).find((g) => g.id === groupId)?.name ?? t("onboard.groupDefault")] as [string, string]] : []),
+                      ]}
+                    />
+                    {err && <p className="text-[13px] text-error">{err}</p>}
+                    <Button
+                      variant="primary"
+                      size="md"
+                      className="w-full justify-center"
+                      loading={busy}
+                      disabled={!canSubmit}
+                      onClick={() => void (isBatch ? startBatch() : submit())}
+                    >
+                      <PlugIcon width={15} height={15} />
+                      {method === "auth_url" ? t("onboard.generateLink") : isBatch ? t("onboard.batchStart", { n: parsedValid.length }) : t("onboard.submit")}
+                    </Button>
+                    <p className="text-[12px] leading-relaxed text-on-surface-faint">{t("onboard.summaryHint")}</p>
+                  </Card>
+                </aside>
+              </div>
             )}
           </Async>
-          </>
         )}
       </div>
 
