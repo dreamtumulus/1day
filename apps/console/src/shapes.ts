@@ -9,8 +9,7 @@ import {
   parseAllowlist,
   parseJsonArray,
   parseJsonMap,
-  type AccountRow,
-} from "@1dayapi/core";
+  type AccountRow, parseKeyPolicy } from "@1dayapi/core";
 
 // Row -> API shapes (camelCase) shared by the user / provider / admin routes.
 
@@ -31,6 +30,7 @@ export interface ApiKeyRow {
   last_used_at: string | null;
   created_at: string;
   user_name?: string | null;
+  policy_json?: string | null;
 }
 
 export const API_KEY_SELECT = `SELECT k.*, g.name AS group_name, u.name AS user_name
@@ -60,6 +60,7 @@ export function apiKeyShape(k: ApiKeyRow) {
     lastUsedAt: k.last_used_at,
     createdAt: k.created_at,
     revealable: !!k.key_enc,
+    policy: parseKeyPolicy(k.policy_json),
   };
 }
 

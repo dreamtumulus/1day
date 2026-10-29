@@ -91,6 +91,8 @@ export interface ApiKey {
   lastUsedAt: string | null;
   createdAt: string;
   revealable: boolean;
+  /** Routing policy (admin-only edit): history handling on upstream switch + direct-only. */
+  policy?: { historyPolicy: "reset" | "reject" | "passthrough"; directOnly: boolean };
 }
 
 export interface UsageRow {
@@ -702,6 +704,9 @@ export interface AdminUser {
   allowedGroupIds: string[];
   /** Provider role: the group its self-onboarded accounts join at once; null = default group. */
   onboardGroupId?: string | null;
+  /** Admission overrides; null = gateway defaults (USER_MAX_INFLIGHT / USER_MAX_INFLIGHT_USD). */
+  maxInflight?: number | null;
+  maxInflightUsd?: number | null;
 }
 
 export interface ModelPrices {

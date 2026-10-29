@@ -99,6 +99,8 @@ interface UserRow {
   credit_limit_usd: number;
   credit_used_usd: number;
   credit_settled_at: string | null;
+  max_inflight?: number | null;
+  max_inflight_usd?: number | null;
   note: string | null;
   last_login_at: string | null;
   created_at: string;
@@ -138,6 +140,9 @@ function userShape(u: UserRow) {
     creditUsedUsd: u.credit_used_usd,
     availableUsd: Math.round((u.credit_limit_usd - u.credit_used_usd + u.balance_usd) * 1e8) / 1e8,
     creditSettledAt: u.credit_settled_at,
+    // Admission overrides (migration 29): null = gateway defaults (USER_MAX_INFLIGHT / USER_MAX_INFLIGHT_USD).
+    maxInflight: u.max_inflight ?? null,
+    maxInflightUsd: u.max_inflight_usd ?? null,
     note: u.note,
     keyCount: u.key_count ?? 0,
     requests30d: u.requests30d ?? 0,
@@ -555,8 +560,14 @@ export function registerAdminRoutes(app: FastifyInstance): void {
     const onboardGroup = "onboardGroupId" in b ? (str(b, "onboardGroupId", { max: 64 }) ?? null) : undefined;
     if (onboardGroup !== undefined && u.role !== "provider") bad("invalid_request", "onboardGroupId applies to provider users only");
     if (onboardGroup) loadGroup(onboardGroup);
+    // Per-user admission limits (docs/gateway.md §2b): null / 0 = back to the gateway defaults.
+    const clearish = (v: unknown) => v === null || v === "" || v === 0;
+    const maxInflight = "maxInflight" in b ? (clearish(b.maxInflight) ? null : num(b, "maxInflight", { int: true, min: 1, max: 10000 }) ?? null) : undefined;
+    const maxInflightUsd = "maxInflightUsd" in b ? (clearish(b.maxInflightUsd) ? null : num(b, "maxInflightUsd", { min: 0.01, max: 1e6 }) ?? null) : undefined;
     tx(() => {
       if (name) run("UPDATE users SET name = ? WHERE id = ?", name, id);
+      if (maxInflight !== undefined) run("UPDATE users SET max_inflight = ? WHERE id = ?", maxInflight, id);
+      if (maxInflightUsd !== undefined) run("UPDATE users SET max_inflight_usd = ? WHERE id = ?", maxInflightUsd, id);
       if ("note" in b) run("UPDATE users SET note = ? WHERE id = ?", str(b, "note", { max: 500 }) ?? null, id);
       if (onboardGroup !== undefined) run("UPDATE users SET onboard_group_id = ? WHERE id = ?", onboardGroup, id);
       if (status) {

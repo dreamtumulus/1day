@@ -1,5 +1,5 @@
 import type { FastifyReply, FastifyRequest } from "fastify";
-import { nowIso, one, parseAllowlist, settleRequestDurably, settlementHealthy, sha256Hex, type ModelAllowlist } from "@1dayapi/core";
+import { nowIso, one, parseAllowlist, settleRequestDurably, settlementHealthy, sha256Hex, type ModelAllowlist, parseKeyPolicy, type KeyPolicy } from "@1dayapi/core";
 import { clientIp } from "./http.js";
 import { sendError } from "./http.js";
 import type { ClientFormat } from "./upstream.js";
@@ -18,6 +18,8 @@ export interface CallerContext {
   groupName: string;
   rateMultiplier: number;
   allowlist: ModelAllowlist;
+  /** Per-key routing policy (docs/gateway.md §2b). */
+  policy: KeyPolicy;
 }
 
 interface Row {
@@ -39,6 +41,7 @@ interface Row {
   rate_multiplier: number | null;
   model_allowlist: string | null;
   is_exclusive: number;
+  policy_json: string | null;
 }
 
 export function extractKey(req: FastifyRequest): string | null {
@@ -70,7 +73,7 @@ export function authenticate(
   const r = one<Row>(
     `SELECT k.id AS key_id, k.name AS key_name, k.status AS key_status, k.quota_usd, k.used_usd, k.expires_at,
             u.id AS user_id, u.role, u.status AS user_status, u.balance_usd, u.credit_limit_usd, u.credit_used_usd,
-            k.group_id, g.name AS group_name, g.status AS group_status, g.rate_multiplier, g.model_allowlist, g.is_exclusive
+            k.group_id, g.name AS group_name, g.status AS group_status, g.rate_multiplier, g.model_allowlist, g.is_exclusive, k.policy_json
      FROM api_keys k JOIN users u ON u.id = k.user_id LEFT JOIN groups g ON g.id = k.group_id
      WHERE k.key_hash = ?`,
     sha256Hex(key),
@@ -164,5 +167,6 @@ export function authenticate(
     groupName: r.group_name,
     rateMultiplier: r.rate_multiplier ?? 1,
     allowlist: parseAllowlist(r.model_allowlist),
+    policy: parseKeyPolicy(r.policy_json),
   };
 }

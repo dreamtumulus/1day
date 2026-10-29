@@ -569,11 +569,19 @@ async function switchTeam(scope: ConversationScope, nextTeam: string, format: Cl
 async function proxyRequest(req: FastifyRequest, reply: FastifyReply, format: ClientFormat, endpoint: string, caller: CallerContext, scope?: ConversationScope): Promise<void> {
   assertScope(scope);
   let body = scope ? scope.originalBody : (req.body && typeof req.body === "object" ? req.body : {}) as Json;
+  let rejectUnknownHistory = false;
   if (scope) {
     await lockScope(scope);
     const question = latestQuestion(body, format);
     const unknownInitialHistory = !scope.row.team_id && (!scope.reliable || requestMessages(body, format).filter((m) => m?.role && !["system", "developer"].includes(m.role)).length > 1 || !!body.previous_response_id);
-    if (unknownInitialHistory && !scope.row.reset_active) scope.row = saveConversationBoundary(scope.row.id, scope.token, scope.row.generation, question.anchor, question.prefix);
+    // Per-key history policy (docs/gateway.md §2b, customer report 2026-10-29): `reset` is the isolation
+    // default (boundary saved, only the latest question forwarded, x-1day-context-reset: 1); `reject`
+    // answers 409 so a multi-upstream client can route the turn elsewhere; `passthrough` forwards the
+    // history as-is and binds the conversation to whichever organization serves it.
+    if (unknownInitialHistory && !scope.row.reset_active) {
+      if (caller.policy.historyPolicy === "reject") rejectUnknownHistory = true;
+      else if (caller.policy.historyPolicy === "reset") scope.row = saveConversationBoundary(scope.row.id, scope.token, scope.row.generation, question.anchor, question.prefix);
+    }
     if (scope.row.reset_active) {
       scope.boundary = getConversationBoundary(scope.row.id, scope.row.generation, scope.branch);
       const prepared = scope.boundary ? applyResetBoundary(body, format, { ...scope.row, reset_anchor: scope.boundary.anchor, reset_prefix: scope.boundary.prefix }) : null;
@@ -624,6 +632,12 @@ async function proxyRequest(req: FastifyRequest, reply: FastifyReply, format: Cl
     }
     sendError(reply, format, status, code, message, type);
   };
+  if (rejectUnknownHistory) {
+    unlockScope(scope);
+    if (scope?.responseCtx) { stopEarlyKeepalive(scope.responseCtx); stopNonStreamHeartbeat(scope.responseCtx); }
+    reject(409, "history_unknown", "This conversation's earlier turns were not served by this platform and the key's history policy is 'reject'. Start the conversation here (a first turn without prior history) or route this turn back to the upstream that holds its context.", "invalid_request_error");
+    return;
+  }
   // Raw passthrough group (gateway.md §4a, user rule 2026-10-26 "直接透传，不做任何判断"): no admission
   // checks — a missing model / max_tokens or an unknown model id is the relay's call, not ours. The
   // group's own model allowlist (an operator rule, not a judgement about the request) still applies.
@@ -721,6 +735,15 @@ async function proxyRequest(req: FastifyRequest, reply: FastifyReply, format: Cl
     }
   }
 
+  // Direct-only key (docs/gateway.md §2b): nothing may fall back to the worker path. A request that is not
+  // a genuine Claude Code request is refused up front, naming the missing items, instead of being served
+  // by a worker whose output differs (system additions, identity line, token counts, 200-wrapped refusals).
+  if (caller.policy.directOnly && !rawGroup && !ccClient) {
+    unlockScope(scope);
+    const why = !shape || shape.verdict === "not_cc" ? "no Claude Code user-agent" : `missing: ${shape.missing.join(", ")}`;
+    fail(ctx, null, 400, "direct_only", `This key is direct-only: the request must be a genuine Claude Code request (${why}); it was not forwarded to the worker path.`, "invalid_request_error");
+    return;
+  }
   let all = listCandidates(caller.groupId, model);
   let usable = all.filter((a) => modeFor(format, a, ccClient) !== null);
   if (scope) {

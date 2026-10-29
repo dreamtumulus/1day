@@ -314,6 +314,7 @@ const MIGRATIONS: Array<{ version: number; up: (d: DatabaseSync, log: Log) => vo
   { version: 26, up: migration26 },
   { version: 27, up: migration27 },
   { version: 28, up: migration28 },
+  { version: 29, up: migration29 },
 ];
 
 // 上号员令牌（独立鉴权的上号站点 /onboard）：admin 签发，绑定目标节点；
@@ -877,4 +878,12 @@ function migration28(d: DatabaseSync, log: Log): void {
   addColumns(d, log, "onboard_orgs", [["domains_json", "TEXT"], ["routes_json", "TEXT"], ["status", "TEXT NOT NULL DEFAULT 'active'"]]);
   addColumns(d, log, "onboard_tokens", [["org_ids_json", "TEXT"]]);
   log("migration 28: onboard_orgs.domains_json/routes_json/status, onboard_tokens.org_ids_json");
+}
+
+// Per-key routing policy + per-user admission limits (2026-10-29, customer report: context reset on
+// upstream switch, worker fallback for direct-only traffic, fixed in-flight cap of 4). Additive.
+function migration29(d: DatabaseSync, log: Log): void {
+  addColumns(d, log, "api_keys", [["policy_json", "TEXT"]]);
+  addColumns(d, log, "users", [["max_inflight", "INTEGER"], ["max_inflight_usd", "REAL"]]);
+  log("migration 29: api_keys.policy_json, users.max_inflight / max_inflight_usd");
 }

@@ -21,3 +21,4 @@ export * from "./conversations.js";
 
 export * from "./settlement-journal.js";
 export * from "./request-budget.js";
+export * from "./key-policy.js";

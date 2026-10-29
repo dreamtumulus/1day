@@ -158,6 +158,8 @@ function EditKeyModal({
   const [quota, setQuota] = useState(String(apiKey.quotaUsd));
   const [expires, setExpires] = useState(toLocalInput(apiKey.expiresAt));
   const [status, setStatus] = useState(apiKey.status);
+  const [historyPolicy, setHistoryPolicy] = useState<"reset" | "reject" | "passthrough">(apiKey.policy?.historyPolicy ?? "reset");
+  const [directOnly, setDirectOnly] = useState(apiKey.policy?.directOnly ?? false);
   const [busy, setBusy] = useState(false);
 
   return (
@@ -181,6 +183,7 @@ function EditKeyModal({
                   quotaUsd: Number(quota) || 0,
                   expiresAt: expires ? new Date(expires).toISOString() : null,
                   status,
+                  policy: { historyPolicy, directOnly },
                 });
                 toast.success(t("admin.keys.updated"));
                 onSaved();
@@ -233,6 +236,29 @@ function EditKeyModal({
             ]}
           />
         </Field>
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+          <Field label={t("admin.keys.historyPolicy")} hint={t("admin.keys.historyPolicyHint")}>
+            <Select
+              value={historyPolicy}
+              onChange={(e) => setHistoryPolicy(e.target.value as "reset" | "reject" | "passthrough")}
+              options={[
+                { value: "reset", label: t("admin.keys.historyReset") },
+                { value: "reject", label: t("admin.keys.historyReject") },
+                { value: "passthrough", label: t("admin.keys.historyPassthrough") },
+              ]}
+            />
+          </Field>
+          <Field label={t("admin.keys.directOnly")} hint={t("admin.keys.directOnlyHint")}>
+            <Select
+              value={directOnly ? "1" : "0"}
+              onChange={(e) => setDirectOnly(e.target.value === "1")}
+              options={[
+                { value: "0", label: t("admin.keys.directOnlyOff") },
+                { value: "1", label: t("admin.keys.directOnlyOn") },
+              ]}
+            />
+          </Field>
+        </div>
       </div>
     </Modal>
   );

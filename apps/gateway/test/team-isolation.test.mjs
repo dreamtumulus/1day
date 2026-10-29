@@ -451,3 +451,47 @@ test("cloud streaming consumes only the current turn from complete event history
  const second=await request(f,payload([question("stream cloud root"),answer("cloud reply turn 1"),question("next stream turn")],{stream:true}));
  assert.match(second.body,/cloud reply turn 2/);assert.doesNotMatch(second.body,/cloud reply turn 1/);assert.match(second.body,/event: message_stop/);
 });
+
+
+// ---------- per-key routing policy (docs/gateway.md §2b, 2026-10-29) ----------
+test("history policy passthrough: unknown earlier turns are forwarded as-is, no context reset", async () => {
+  const f = seed([{ team: TEAM_A }]);
+  core.run("UPDATE api_keys SET policy_json=? WHERE id=?", JSON.stringify({ historyPolicy: "passthrough" }), f.id);
+  const history = [question("code word is FIG-1"), answer("Noted."), question("what was my code word?")];
+  const r = await request(f, payload(history, { system: "other upstream system" }));
+  assert.equal(r.statusCode, 200, r.body);
+  assert.equal(r.headers["x-1day-context-reset"], undefined);
+  assert.deepEqual(attempts.at(-1).body.messages, history);
+  assert.equal(attempts.at(-1).body.system, "other upstream system");
+  assert.equal(core.getConversation(attempts.at(-1).isolation.conversationId).reset_active, 0);
+});
+
+test("history policy reject: unknown earlier turns get 409 history_unknown and nothing reaches an account", async () => {
+  const f = seed([{ team: TEAM_A }]);
+  core.run("UPDATE api_keys SET policy_json=? WHERE id=?", JSON.stringify({ historyPolicy: "reject" }), f.id);
+  const start = attempts.length;
+  const r = await request(f, payload([question("old"), answer("old reply"), question("now")]));
+  assert.equal(r.statusCode, 409, r.body);
+  assert.equal(JSON.parse(r.body).error.code ?? JSON.parse(r.body).error.type, JSON.parse(r.body).error.code ?? "invalid_request_error");
+  assert.match(r.body, /history_unknown/);
+  assert.equal(attempts.length, start);
+  // A first turn without history is normal; the next turn with the history this platform produced is fine too.
+  const first = await request(f, payload([question("fresh start")]));
+  assert.equal(first.statusCode, 200, first.body);
+  const second = await request(f, payload([question("fresh start"), answer(`reply:${f.ids[0]}`), question("second turn")]));
+  assert.equal(second.statusCode, 200, second.body);
+  assert.equal(attempts.at(-1).body.messages.length, 3);
+});
+
+test("direct-only key: a request without Claude Code shape is refused with 400 direct_only, never the worker", async () => {
+  const f = seed([{ team: TEAM_A }]);
+  core.run("UPDATE accounts SET executor='ccr_worker' WHERE id=?", f.ids[0]);
+  core.run("UPDATE api_keys SET policy_json=? WHERE id=?", JSON.stringify({ directOnly: true }), f.id);
+  const start = attempts.length;
+  const r = await request(f, payload([question("plain client")]), { "user-agent": "curl/8.0" });
+  assert.equal(r.statusCode, 400, r.body);
+  assert.match(r.body, /direct_only/);
+  assert.equal(attempts.length, start, "no worker session opened");
+  const row = core.one("SELECT status_code, error_code FROM usage_logs WHERE api_key_id=? ORDER BY created_at DESC LIMIT 1", f.id);
+  assert.equal(row.error_code, "direct_only");
+});

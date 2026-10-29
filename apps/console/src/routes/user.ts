@@ -17,8 +17,7 @@ import {
   parseIsoInput,
   pendingCacheRefund,
   run,
-  tx,
-} from "@1dayapi/core";
+  tx, HISTORY_POLICIES, type HistoryPolicy } from "@1dayapi/core";
 import {
   Where,
   bad,
@@ -63,8 +62,8 @@ export function applyKeyFields(
   b: Body,
   ownerId: string,
   restrictGroups: boolean,
-): { name?: string; groupId?: string; quotaUsd?: number; expiresAt?: string | null; status?: string } {
-  const out: { name?: string; groupId?: string; quotaUsd?: number; expiresAt?: string | null; status?: string } = {};
+): { name?: string; groupId?: string; quotaUsd?: number; expiresAt?: string | null; status?: string; policyJson?: string | null } {
+  const out: { name?: string; groupId?: string; quotaUsd?: number; expiresAt?: string | null; status?: string; policyJson?: string | null } = {};
   const name = str(b, "name", { max: 64 });
   if (name !== undefined) out.name = name;
   const groupId = str(b, "groupId");
@@ -89,6 +88,17 @@ export function applyKeyFields(
     if (b.status !== "active" && b.status !== "disabled") bad("invalid_request", "status must be active | disabled");
     out.status = b.status;
   }
+  // Routing policy (docs/gateway.md §2b): admin-only; null clears it back to the defaults.
+  if (!restrictGroups && "policy" in b) {
+    const p = b.policy;
+    if (p === null) out.policyJson = null;
+    else if (p && typeof p === "object") {
+      const { historyPolicy, directOnly } = p as Record<string, unknown>;
+      if (historyPolicy !== undefined && !(HISTORY_POLICIES as readonly string[]).includes(String(historyPolicy))) bad("invalid_request", "policy.historyPolicy must be reset | reject | passthrough");
+      if (directOnly !== undefined && typeof directOnly !== "boolean") bad("invalid_request", "policy.directOnly must be a boolean");
+      out.policyJson = JSON.stringify({ historyPolicy: (historyPolicy as HistoryPolicy | undefined) ?? "reset", directOnly: directOnly === true });
+    } else bad("invalid_request", "policy must be an object or null");
+  }
   return out;
 }
 
@@ -100,6 +110,7 @@ export function updateKey(id: string, f: ReturnType<typeof applyKeyFields>): voi
   if (f.quotaUsd !== undefined) (sets.push("quota_usd = ?"), params.push(f.quotaUsd));
   if (f.expiresAt !== undefined) (sets.push("expires_at = ?"), params.push(f.expiresAt));
   if (f.status !== undefined) (sets.push("status = ?"), params.push(f.status));
+  if (f.policyJson !== undefined) (sets.push("policy_json = ?"), params.push(f.policyJson));
   if (sets.length) run(`UPDATE api_keys SET ${sets.join(", ")} WHERE id = ?`, ...params, id);
 }
 

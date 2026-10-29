@@ -861,7 +861,50 @@ function BalanceTab({ user, onChanged }: { user: UserDetail; onChanged: () => vo
           </div>
         </section>
       )}
+      <InflightLimits user={user} onChanged={onChanged} />
     </div>
+  );
+}
+
+/** Per-user admission overrides (docs/gateway.md §2b): concurrent requests and reserved spending; empty = gateway defaults. */
+function InflightLimits({ user, onChanged }: { user: UserDetail; onChanged: () => void }) {
+  const { t } = useCT();
+  const toast = useToast();
+  const [n, setN] = useState(user.maxInflight ? String(user.maxInflight) : "");
+  const [usd, setUsd] = useState(user.maxInflightUsd ? String(user.maxInflightUsd) : "");
+  const [busy, setBusy] = useState(false);
+  return (
+    <section className="space-y-3 pt-5" style={{ borderTop: "1px solid var(--outline-variant)" }}>
+      <h4 className="font-display text-[15px] font-semibold">{t("admin.users.inflightTitle")}</h4>
+      <p className="text-[13px] text-on-surface-faint">{t("admin.users.inflightHint")}</p>
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-[160px_160px_auto] sm:items-end">
+        <Field label={t("admin.users.maxInflight")}>
+          <Input type="number" min={0} step="1" value={n} placeholder="4" onChange={(e) => setN(e.target.value)} />
+        </Field>
+        <Field label={`${t("admin.users.maxInflightUsd")} (USD)`}>
+          <Input type="number" min={0} step="0.01" value={usd} placeholder="10" onChange={(e) => setUsd(e.target.value)} />
+        </Field>
+        <Button
+          variant="primary"
+          size="md"
+          loading={busy}
+          onClick={async () => {
+            setBusy(true);
+            try {
+              await api.patch(`/api/admin/users/${user.id}`, { maxInflight: n === "" ? null : Number(n), maxInflightUsd: usd === "" ? null : Number(usd) });
+              toast.success(t("admin.users.inflightSaved"));
+              onChanged();
+            } catch (err) {
+              toast.error(err);
+            } finally {
+              setBusy(false);
+            }
+          }}
+        >
+          {t("common.save")}
+        </Button>
+      </div>
+    </section>
   );
 }
 

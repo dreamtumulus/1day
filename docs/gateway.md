@@ -75,6 +75,23 @@ tools 字母序且无 `strict`、有 `thinking` / `context_management`。巡检�
 用量明细对 suspect 行打标。日志：`[cc-shape] <reqId> key=<keyId> ua=… suspect missing=a,b policy=…`；genuine 但有软漂移时打
 `[cc-shape] <reqId> genuine v<ver> soft=…`。误杀风险：硬检查只看结构不比对具体字符串，CC 升级改 beta 列表 / 工具数 / 主提示词不会被判 suspect。
 
+## 2b. 按 Key 的路由策略与按用户的并发上限（迁移 29，2026-10-29）
+
+客户复测报告（mirasim.ai，2026-10-29）催生：对话中途从别的上游切过来会被重置（200 + `x-1day-context-reset`）、不合形态的请求被转到 worker
+而不是 400、并发固定 4。三者都做成**后台可编辑**的设置，不再改代码。
+
+**`api_keys.policy_json`**（控制台 → API Keys → 编辑；`packages/core/src/key-policy.ts`）：
+
+| 字段 | 取值 | 行为 |
+|---|---|---|
+| `historyPolicy` | `reset`（默认） | 带着本平台没服务过的前几轮（`unknownInitialHistory`）时保存边界、只转发最后一个问题，响应 `x-1day-context-reset: 1`（team-isolation.md 对话归属） |
+| | `reject` | 同一情形返回 **409 `history_unknown`**，客户端可换上游 |
+| | `passthrough` | 历史原样转发，对话绑定到实际服务它的组织（运营方接受跨组织关联风险） |
+| `directOnly` | `false`（默认）/ `true` | 开启后非 genuine Claude Code 请求返回 **400 `direct_only`**（message 列出缺失项），不转 worker；原样透传分组（§4a）不受影响 |
+
+**`users.max_inflight` / `users.max_inflight_usd`**（控制台 → 用户 → 余额页「并发上限」）：覆盖 `USER_MAX_INFLIGHT`（默认 4）与
+`USER_MAX_INFLIGHT_USD`（默认 10）；空 / 0 = 用默认。超出返回 429 `user_inflight_limit`（`packages/core/src/request-budget.ts`）。
+
 ## 3. 选账户
 
 候选 = `listCandidates(groupId, model)`：Key 所在分组经 `account_groups` 挂入的账户中，`status=active`、`review_status=approved`、
