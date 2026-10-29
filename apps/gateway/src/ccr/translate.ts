@@ -43,6 +43,15 @@ const TOOL_FENCE = "tool_call";
 /** MCP server name the node registers the caller's tools under: tool names arrive as `mcp__caller__<name>`. */
 export const NATIVE_TOOL_PREFIX = "mcp__caller__";
 
+/**
+ * Claude Code's synthetic assistant text for an upstream failure: "API Error: …" (any status), the safety
+ * classifier sentence, or its own usage-limit sentence. Never real model output.
+ */
+export function isCcApiErrorText(text: string): boolean {
+  const t = text.trimStart();
+  return /^API Error:/i.test(t) || /safeguards flagged this|can't help with this\. Start a new session|anthropic\.com\/legal\/aup|hit your [\w-]+ limit/i.test(t.slice(0, 400));
+}
+
 /** JSON with sorted keys, for matching a tool_use input against the MCP call's arguments. */
 export function canonicalJson(v: unknown): string {
   if (v === null || typeof v !== "object") return JSON.stringify(v);
@@ -594,6 +603,8 @@ export class SessionTranslator {
   }
   private stopReason: string = "end_turn";
   private errorMessage: string | null = null;
+  /** A held "API Error: …" assistant text (see case "assistant"); surfaces as the session error at `result`. */
+  private heldApiError: string | null = null;
   /** The session's `result` event, condensed for logs (subtype / is_error / text head). */
   private resultInfo: { subtype: string; isError: boolean; text: string | null } | null = null;
 
@@ -1129,6 +1140,14 @@ export class SessionTranslator {
               continue;
             }
             if (b?.type !== "text" || typeof b.text !== "string" || !b.text) continue;
+            // Claude Code renders an upstream failure as a synthetic assistant message ("API Error: Opus 5.5's
+            // safeguards flagged this session …", "API Error: 529 overloaded", the 5-hour-limit sentence). That is
+            // not an answer: streaming it as text made clients take the refusal for content (customer report
+            // 2026-10-29). Hold it; the `result` turns it into the session's error, never into a text block.
+            if (isCcApiErrorText(b.text)) {
+              this.heldApiError ??= b.text.trim();
+              continue;
+            }
             out += this.closeBlock() + this.appendText(b.text) + this.closeBlock();
           }
         } else {
@@ -1157,13 +1176,14 @@ export class SessionTranslator {
           }
         }
         this.addUsage(r.usage, true);
-        const isError = r.is_error === true || (typeof r.subtype === "string" && r.subtype.startsWith("error"));
+        const held = this.heldApiError;
+        const isError = r.is_error === true || (typeof r.subtype === "string" && r.subtype.startsWith("error")) || held !== null;
         const produced = this.nonEmptyBlocks().length > 0 || this.blockText.length > 0;
         const subtype = String(r.subtype ?? (isError ? "error" : "success"));
-        const resultText = typeof r.result === "string" && r.result ? r.result : null;
+        const resultText = held ?? (typeof r.result === "string" && r.result ? r.result : null);
         this.resultInfo = { subtype, isError, text: resultText ? resultText.slice(0, 300) : null };
         // error_max_turns after real output is a legitimate (truncated) answer → stop_reason max_tokens below.
-        if (isError && (subtype !== "error_max_turns" || !produced)) {
+        if (isError && (subtype !== "error_max_turns" || !produced || held !== null)) {
           const text = resultText ?? `session ended with ${subtype}`;
           this.errorMessage = produced ? `${text} (after partial output)` : text;
         } else if (!produced && resultText) {

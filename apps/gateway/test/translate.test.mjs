@@ -723,3 +723,29 @@ test("messagesToBlocksWithRoles / isSuggestionRequest: system-role blocks are ma
   assert.equal(isSuggestionRequest(body), false);
   assert.equal(isSuggestionRequest({ messages: [] }), false);
 });
+
+test("Claude Code's synthetic 'API Error' assistant text is held and becomes the session error, never content (2026-10-29)", () => {
+  const refusal = "API Error: Opus 5.5's safeguards flagged this session (https://www.anthropic.com/legal/aup). Start a new session to continue.";
+  const t = new SessionTranslator({ model: "m", simulateTools: false });
+  const out = t.push({ type: "assistant", message: { id: "a1", role: "assistant", content: [{ type: "text", text: refusal }], usage: { input_tokens: 10, output_tokens: 1 } } });
+  assert.doesNotMatch(out, /text_delta/, "the refusal must not stream as assistant text");
+  t.push({ type: "result", subtype: "error_during_execution", is_error: true, result: refusal, modelUsage: {} });
+  assert.equal(t.finished, true);
+  assert.equal(t.error, refusal, "clean error, no '(after partial output)'");
+  assert.deepEqual(t.message().content, []);
+  // Even when the worker reports the turn as a success, an API Error text is never an answer.
+  const u = new SessionTranslator({ model: "m", simulateTools: false });
+  u.push({ type: "assistant", message: { id: "a2", role: "assistant", content: [{ type: "text", text: "API Error: 529 {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\"}}" }] } });
+  u.push({ type: "result", subtype: "success", is_error: false, result: "" });
+  assert.match(u.error ?? "", /^API Error: 529/);
+  // The 5-hour-limit sentence (after real partial output) is still an error, not content.
+  const v = new SessionTranslator({ model: "m", simulateTools: false });
+  v.push({ type: "assistant", message: { id: "a3", role: "assistant", content: [{ type: "text", text: "You've hit your 5-hour limit · resets 1:20pm (Europe/Berlin)" }] } });
+  v.push({ type: "result", subtype: "error_during_execution", is_error: true, result: "" });
+  assert.match(v.error ?? "", /hit your 5-hour limit/);
+  assert.deepEqual(v.message().content, []);
+  // A normal answer is untouched.
+  const w = new SessionTranslator({ model: "m", simulateTools: false });
+  const ok = w.push({ type: "assistant", message: { id: "a4", role: "assistant", content: [{ type: "text", text: "The API error handling guide says: retry." }] } });
+  assert.match(ok, /text_delta/);
+});

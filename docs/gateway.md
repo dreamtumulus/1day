@@ -270,6 +270,9 @@ Anthropic 订阅账户的每个上游响应（2xx 与 429）都读取 `anthropic
 
 ## 6. 流式与用量
 
+**worker 路径的 "API Error" 文本（2026-10-29）**：Claude Code 把上游失败（安全分类器拒答 `safeguards flagged`、`API Error: 529`、5 小时限额句）渲染成一条合成的 assistant 文本。
+翻译层（`ccr/translate.ts isCcApiErrorText`）不再把它当正文流出，而是扣住到 `result` 变成会话错误：非流式回 400/502 等（拒答为 400 `safeguards_refusal`，message 原样是 Claude Code 的句子），流式因 200 头已发出，只能以 `event: error` 结束且正文为空，不再出现"先当答案流出、再补错误"的情况。
+
 - 只有客户端 `stream=true` **且**上游返回 `text/event-stream` 时走流式管道，否则按非流式处理。
 - 响应头：`text/event-stream`、`cache-control: no-cache`、`x-accel-buffering: no`。
 - `passthrough-openai` 流式**强制注入** `stream_options.include_usage=true`；若客户端自己没要求，则剔除仅含 usage 的末块（`choices: []`），客户端看到的流与上游原生一致。
