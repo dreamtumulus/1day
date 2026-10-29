@@ -72,7 +72,9 @@ export function prepareSettlementPricing(p: SettleInput): SettlementPricing {
   const ok = p.statusCode >= 200 && p.statusCode < 300;
   const totalCost = ok ? q8(computeCost(p.model, p.usage)) : 0;
   const actualCost = q8(totalCost * p.rateMultiplier);
-  const providerEarning = p.providerId ? q8(totalCost * p.payoutRate) : 0;
+  // A free group (rate_multiplier 0) is a self-use pool — the provider consuming its own supply —
+  // so nothing was collected and nothing is shared (docs/data-model.md §3, 2026-10-29).
+  const providerEarning = p.providerId && p.rateMultiplier > 0 ? q8(totalCost * p.payoutRate) : 0;
   const prompt = p.usage.input_tokens + (p.usage.cache_read_tokens ?? 0) + (p.usage.cache_write_tokens ?? 0)
     + (p.usage.cache_write_5m_tokens ?? 0) + (p.usage.cache_write_1h_tokens ?? 0);
   const ideal = ok && p.accountSwitched ? computeCost(p.model, {

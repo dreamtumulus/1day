@@ -86,7 +86,7 @@
 ### usage_logs
 - 每次请求一行，`request_id` 唯一（结算幂等键）。失败请求 `status_code ≥ 300`、费用 0、`error_code` 有值。
 - `input_tokens` **不含**缓存读；`cache_read_tokens`、`cache_write_tokens` 单列。`usage_estimated=1` 表示上游未报告或报告非法 usage，按请求正文和已生成文本估算；图片/文档按媒体块估算，不按 base64 字节收费。计数必须为有限非负整数，每项及提示词合计最多十亿。
-- 费用三列：`total_cost`（标准价）、`actual_cost = q8(total × rate_multiplier)`（实扣）、`provider_earning = q8(total × payout_rate)`（仅号商账户）。
+- 费用三列：`total_cost`（标准价）、`actual_cost = q8(total × rate_multiplier)`（实扣）、`provider_earning = q8(total × payout_rate)`（仅号商账户；**倍率 0 的分组不记分成**——免费组即号商自用池，平台没收钱也不分钱，2026-10-29）。
 - `account_id` / `provider_id` 不设外键，账户删除后历史仍可查。
 - `account_switched`（迁移 15）：1 = 该请求命中了仍有效的粘性会话却被迫落到另一个账号（网关 ForceCacheBilling，gateway.md §6），
   提示词缓存被迫重建；`cache_refund_id` = 返还它的 `cache_refunds` 行（NULL = 尚未返还）。部分索引

@@ -148,3 +148,22 @@ test("stored alias overrides cannot advertise enabled access; unknown custom dot
     assert.equal(c.computeCost("claude-custom-123.4", { input_tokens: 1_000_000, output_tokens: 0 }), 2);
   } finally { c.run("DELETE FROM model_prices WHERE model_id IN (?,?,?)", model, "claude-opus-5.5", "claude-custom-123.4"); }
 });
+
+test("a free group (rate 0) charges nothing and shares nothing with the provider", () => {
+  const u = user();
+  const prov = c.newId();
+  c.run("INSERT INTO users(id,role,name,login_key_hash,login_key_preview,balance_usd) VALUES (?,'provider',?,?,'p',0)", prov, prov, prov);
+  const free = input(u, { rateMultiplier: 0, providerId: prov, payoutRate: 0.6 });
+  c.settleRequest(free);
+  const row = c.one("SELECT total_cost, actual_cost, provider_earning FROM usage_logs WHERE request_id=?", free.requestId);
+  assert.ok(row.total_cost > 0, "list price is still recorded");
+  assert.equal(row.actual_cost, 0);
+  assert.equal(row.provider_earning, 0, "self-use pool: nothing collected, nothing shared");
+  assert.equal(c.one("SELECT balance_usd FROM users WHERE id=?", prov).balance_usd, 0);
+  assert.equal(c.one("SELECT balance_usd FROM users WHERE id=?", u.id).balance_usd, 10);
+  const paid = input(u, { rateMultiplier: 1, providerId: prov, payoutRate: 0.6 });
+  c.settleRequest(paid);
+  const r2 = c.one("SELECT total_cost, provider_earning FROM usage_logs WHERE request_id=?", paid.requestId);
+  assert.equal(r2.provider_earning, c.q8 ? c.q8(r2.total_cost * 0.6) : Math.round(r2.total_cost * 0.6 * 1e8) / 1e8, "paid groups keep the payout");
+  assert.ok(c.one("SELECT balance_usd FROM users WHERE id=?", prov).balance_usd > 0);
+});

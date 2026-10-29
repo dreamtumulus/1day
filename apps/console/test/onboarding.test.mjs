@@ -19,7 +19,7 @@ process.on("exit", () => rmSync(dir, { recursive: true, force: true }));
 const core = await import("@1dayapi/core");
 const { buildApp } = await import("../dist/app.js");
 const { createUser } = await import("../dist/session.js");
-const { run, one } = core;
+const { run, one, all } = core;
 
 const app = await buildApp();
 await app.listen({ port: 0, host: "127.0.0.1" });
@@ -155,8 +155,29 @@ await test("auto picks the live proxy whose last_check_at is oldest", async () =
   assert.equal(a.bound_proxy_id, pOld, "oldest-probed free proxy wins over the fresher one");
   assert.equal(a.owner_id, provider.id, "a provider's node carries provider-owned accounts, whoever onboarded them (same rule as POST /api/admin/accounts)");
   assert.equal(a.review_status, "approved", "admin-onboarded accounts need no review");
+  assert.ok(one("SELECT 1 FROM account_groups WHERE account_id = ? AND group_id = 'default'", a.id), "no onboard group set on the provider → requested/default group");
   run("UPDATE node_proxies SET bound_account_id = NULL WHERE id = ?", pOld);
   run("DELETE FROM accounts WHERE id = ?", a.id);
+});
+
+await test("admin onboarding onto a provider's node lands in that provider's onboard group (docs/onboarding.md §1 原则 5, 2026-10-29)", async () => {
+  run("INSERT INTO groups (id, name, rate_multiplier, is_exclusive) VALUES ('selfuse', 'selfuse', 0, 1)");
+  run("UPDATE users SET onboard_group_id = 'selfuse' WHERE id = ?", provider.id);
+  try {
+    const r = await admin("POST", "/api/admin/accounts/onboard", { method: "session_key", sessionKey: "s", nodeId: "node-prov", groupId: "default" });
+    assert.equal(r.status, 200, JSON.stringify(r));
+    const done = await waitJob(admin, "/api/admin", r.data.jobId);
+    assert.equal(done.status, "done", JSON.stringify(done));
+    const a = one("SELECT * FROM accounts WHERE id = ?", done.accountId);
+    assert.equal(a.owner_id, provider.id);
+    assert.deepEqual(all("SELECT group_id FROM account_groups WHERE account_id = ?", a.id).map((g) => g.group_id), ["selfuse"], "the owner's onboard group wins over the requested group");
+    run("UPDATE node_proxies SET bound_account_id = NULL WHERE id = ?", a.bound_proxy_id);
+    run("DELETE FROM account_groups WHERE account_id = ?", a.id);
+    run("DELETE FROM accounts WHERE id = ?", a.id);
+  } finally {
+    run("UPDATE users SET onboard_group_id = NULL WHERE id = ?", provider.id);
+    run("DELETE FROM groups WHERE id = 'selfuse'");
+  }
 });
 
 await test("error paths: empty capacity / maximum-three slots / node_offline", async () => {

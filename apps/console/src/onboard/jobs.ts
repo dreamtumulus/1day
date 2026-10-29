@@ -567,13 +567,15 @@ async function finishJob(job: JobRow, res: AuthResult): Promise<void> {
       );
       if (cooldown) console.info(`[onboard] job ${job.id}: account ${accountId} in onboarding cooldown until ${cooldown.until} (${Math.round(cooldown.ms / 1000)}s)`);
       // Claim the proxy atomically: a concurrent job may have bound it meanwhile.
-      // admin 与上号员（onboarder）落平台池，进指定分组；号商（provider）自 2026-10-26 起不再审核，
-      // 直接进该号商的 users.onboard_group_id（未设则默认分组）。
-      const groupId =
-        job.scope === "provider"
-          ? (one<{ onboard_group_id: string | null }>("SELECT onboard_group_id FROM users WHERE id = ?", job.requester_id)?.onboard_group_id ??
-            getSetting("default_group_id"))
-          : (params.groupId ?? getSetting("default_group_id"));
+      // Group follows the owner, not the requester (docs/onboarding.md §1 原则 5, 2026-10-29): a
+      // provider-owned account (provider onboarding, or anyone onboarding onto that provider's node)
+      // lands in the provider's users.onboard_group_id — its self-use pool — so an admin cannot
+      // accidentally feed a provider's node into the public pool. Platform-owned accounts take the
+      // requested group or the default one.
+      const ownerGroup = ownerId
+        ? one<{ onboard_group_id: string | null }>("SELECT onboard_group_id FROM users WHERE id = ?", ownerId)?.onboard_group_id ?? null
+        : null;
+      const groupId = ownerGroup ?? params.groupId ?? getSetting("default_group_id");
       if (!one("SELECT 1 FROM groups WHERE id = ?", groupId)) throw new Error(`group_not_found: ${groupId}`);
       if (!one("SELECT 1 FROM account_groups WHERE account_id = ? AND group_id = ?", accountId, groupId)) {
         run("INSERT INTO account_groups (account_id, group_id, priority) VALUES (?, ?, 50)", accountId, groupId);

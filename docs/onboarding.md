@@ -23,7 +23,7 @@
    （2026-10-16 ～ 10-20 的旧行为是覆盖已有行并重绑代理，已按用户要求取消。）
    **例外（2026-10-22 起，§11）**：已有行处于 `error`（上游 401 吊销、on hold 等）且归属相同（同一号商，或都是平台池）时，
    再次上号**原地重授权**：换凭据、清错误与冷却，分组 / 优先级 / 限额 / 代理绑定不动，不插新行，作业返回 `reused: true`。健康行仍拒绝。
-5. **多人可上号**：管理员上号立即可调度（`approved`），归属随节点：平台节点 → 平台池（`owner_id=NULL`），号商节点 → 归该号商（与 `POST /api/admin/accounts` 的 `nodeId` 规则一致，号商按分成结算）；号商上号进自己名下。**2026-10-26 起号商上号不再审核**：授权完成即 `approved`、`payout_rate` 取 `provider_default_payout_rate`、挂入该号商的 `users.onboard_group_id`（控制台用户详情「上号自动挂组」，`PATCH /api/admin/users/:id {onboardGroupId}`；未设则默认分组），落库即参与调度（2026-10-20～10-25 期间的 `pending` + 管理员审核流程仅保留给手工 `POST /accounts` 的 API 账号）。
+5. **多人可上号**：管理员上号立即可调度（`approved`），归属随节点：平台节点 → 平台池（`owner_id=NULL`），号商节点 → 归该号商（与 `POST /api/admin/accounts` 的 `nodeId` 规则一致，号商按分成结算）；号商上号进自己名下。**分组随归属（2026-10-29）**：归号商的账号——不论是号商自己上的还是管理员/上号员上到该号商节点的——都落该号商的 `users.onboard_group_id`（未设则按请求的分组/默认分组），管理员上到 mirasim 节点的号因此自动进 `mirasim-01`（倍率 0，自用不计费也不记分成）；平台自有账号才进请求指定的分组。**2026-10-26 起号商上号不再审核**：授权完成即 `approved`、`payout_rate` 取 `provider_default_payout_rate`、挂入该号商的 `users.onboard_group_id`（控制台用户详情「上号自动挂组」，`PATCH /api/admin/users/:id {onboardGroupId}`；未设则默认分组），落库即参与调度（2026-10-20～10-25 期间的 `pending` + 管理员审核流程仅保留给手工 `POST /accounts` 的 API 账号）。
 6. **当前只接入 Claude（Anthropic）系列**：上号表单、模型选择、目录展示均只出现 Claude；其余平台隐藏（前端过滤，注册表不动）。
 7. **新号冷静期（2026-10-20 起；号商自己上的号不适用，2026-10-26）**：授权完成落库时写 `temp_unschedulable_until = now + random(onboard_cooldown_min_sec, onboard_cooldown_max_sec)`
    （默认 3720～4200 秒 = 62～70 分钟；2026-10-20 先定 15～20 分钟，同日加长），`error_message` 以 `onboard_cooldown:` 开头；期间调度器不选它（与临时冷却同一字段），
