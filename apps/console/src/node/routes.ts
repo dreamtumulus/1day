@@ -276,13 +276,11 @@ export function registerNodeRoutes(app: FastifyInstance): void {
       return sendError(reply, 400, "invalid_request", "accountId is required");
     }
     if (b.isolation !== undefined && !validIsolation(b.isolation)) return sendError(reply, 400, "invalid_isolation", "A valid team, conversation and generation are required");
-    // Protocol v2: kind "http_egress" runs the HTTP request on the node
-    // (no targetHost/targetPort); kind "cc_worker" spawns a real Claude Code
-    // process; anything else is the v1 byte relay.
-    const kind = b.kind === "http_egress" || b.kind === "cc_worker" ? b.kind : "official_exit";
-    if (kind === "official_exit" && (typeof b.targetHost !== "string" || !b.targetHost)) {
-      return sendError(reply, 400, "invalid_request", "targetHost is required for official_exit tunnels");
-    }
+    // Protocol v2 only: kind "http_egress" runs the HTTP request on the node (through its pinned
+    // proxy); kind "cc_worker" spawns a real Claude Code process. The v1 byte relay (official_exit,
+    // node-address egress without a proxy) is retired on both sides (2026-10-29).
+    const kind = b.kind === "http_egress" || b.kind === "cc_worker" ? b.kind : null;
+    if (!kind) return sendError(reply, 400, "invalid_request", "kind must be http_egress or cc_worker (official_exit is retired)");
     let worker: CcWorkerParams | undefined;
     if (kind === "cc_worker") {
       const acc = one<{ executor: string }>("SELECT executor FROM accounts WHERE id = ?", b.accountId);

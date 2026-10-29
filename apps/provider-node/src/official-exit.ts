@@ -6,6 +6,8 @@ import type {
 } from "./protocol.js";
 import { isHostAllowed } from "./whitelist.js";
 
+const OFFICIAL_EXIT_RETIRED = true;
+
 const DEFAULT_CONNECT_TIMEOUT_MS = 15_000;
 const MAX_PAYLOAD_BYTES = 4 * 1024 * 1024;
 
@@ -64,6 +66,9 @@ export class OfficialExitManager {
       this.log(`rejected ${msg.sessionId}: ${reasonCode} (${msg.targetHost}:${msg.targetPort})`);
     };
 
+    // Retired 2026-10-29: the v1 byte relay connected from the node's own address, bypassing the proxy
+    // pool. Every platform path is http_egress / cc_worker; nothing may fall back to direct egress.
+    if (OFFICIAL_EXIT_RETIRED) { reject("official_exit_retired"); return; }
     const identity = this.opts.identity();
     if (process.env.PROVIDER_TEAM_ID) { reject("team_runtime_requires_pinned_egress"); return; }
     if (msg.nodeId !== identity.nodeId || (identity.providerId && msg.providerId !== identity.providerId)) {

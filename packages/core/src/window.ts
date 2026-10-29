@@ -252,13 +252,13 @@ export function isCreditsRequired(body: string): boolean {
 /**
  * Claude Code's own limit message, as it reaches the worker path in the
  * `result` text instead of 429 headers: "You've hit your session limit ·
- * resets 8:50am (Europe/Berlin)" (5h) / "…weekly limit · resets Oct 21, 3pm
- * (Europe/Berlin)" (7d). Returns the window kind and the reset instant
+ * resets 8:50am (Europe/Berlin)" (5h; 2.1.312 says "5-hour limit") / "…weekly
+ * limit · resets Oct 21, 3pm (Europe/Berlin)" (7d). Returns the window kind and the reset instant
  * (wall time in the quoted zone → next occurrence ≥ now; null when the text
  * carries no parseable time), or null when the text is not a limit message.
  */
 export function ccLimitReset(text: string, now = new Date()): { window: string; resetAt: string | null } | null {
-  const hit = /hit your (\w+) limit/i.exec(text);
+  const hit = /hit your ([\w-]+) limit/i.exec(text);
   if (!hit) return null;
   const window = hit[1].toLowerCase();
   const m = /resets?\s+(?:([A-Z][a-z]{2})\s+(\d{1,2}),?\s+(?:at\s+)?)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)\s*(?:\(([^)]+)\))?/i.exec(text);

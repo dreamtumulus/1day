@@ -917,6 +917,14 @@ export class CcWorkerManager {
       // account owner's e-mail and make the model believe it works in /var/lib/1dayapi-cc-worker on Linux
       // (customer report 2026-10-19). The customer's own system prompt already carries their environment.
       env.CLAUDE_CODE_DISABLE_ATTACHMENTS = "1";
+      // Telemetry, error reporting and update checks off (the enterprise-style configuration, same as
+      // ops/cc-capture): Sentry events carry the node's hostname and process paths, Statsig the runtime
+      // environment — identical for every account on this node, i.e. a cross-account correlation key
+      // (audit 2026-10-29). All of it would leave on the account's proxy, so the IP was never the issue.
+      env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = "1";
+      env.DISABLE_TELEMETRY = "1";
+      env.DISABLE_ERROR_REPORTING = "1";
+      env.DISABLE_AUTOUPDATER = "1";
       // NOT CLAUDE_CODE_SIMPLE / --bare: both stop Claude Code from reading the OAuth credentials file
       // ("Not logged in · Please run /login", canary 2026-10-19 08:53 CEST).
       if (mcpConfigFile) {

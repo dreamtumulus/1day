@@ -166,7 +166,8 @@ CC 对非 SDK 线端点的调用**不走**不锈钢头集，而是 axios 辅助�
 配套实现约束：
 
 - console 巡检 `probeHeaders` 与刷新 `refreshOAuthCredential` 按上表发送（`CC_AUX_UA` / `CC_AUX_ACCEPT` / `refreshScopes` 常量）。
-- provider-node 出口的不锈钢指纹补齐**只作用于 `/v1/*` 路径**；`/api/oauth/*` 保持调用方原样，否则辅助调用会被"过度装扮"成异常指纹。
+- provider-node 出口的不锈钢指纹补齐**只作用于 `/v1/*` 路径（`/v1/oauth/*` 除外，2026-10-29）**；`/api/oauth/*` 与 `/v1/oauth/*` 保持调用方原样（调用方自带 `CC_AUX_UA`），否则辅助调用会被"过度装扮"成异常指纹。节点上没有 UA 的请求会带 Bun 默认 `Bun/x`：刷新（platform.claude.com 不在补齐范围）与代理健康探测都因此显式带 `CC_AUX_UA`（2026-10-29 审计）。
+- 节点 CC 进程关闭遥测/错误上报/自动升级（`CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`、`DISABLE_TELEMETRY`、`DISABLE_ERROR_REPORTING`、`DISABLE_AUTOUPDATER`）：Sentry 事件带主机名/路径，同节点所有账号同值，是跨账号关联键。
 - OAuth 订阅号的 `/v1/messages` 测试/探测必须带 §5 的计费头 system 块 + 身份句 + `metadata.user_id`（JSON 字符串），否则上游 429（2026-10-16 实测）：console 账号「测试」与 `/root/monitor/func.py` 的 `cc_dual_mode` 均已按此改造。
 
 ## 9. 版本升级 SOP

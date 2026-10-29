@@ -1,10 +1,15 @@
 import crypto from "node:crypto";
 import { isIP } from "node:net";
+import { setTimeout as wait } from "node:timers/promises";
+import { CC_AUX_ACCEPT, CC_AUX_UA } from "./fingerprint.js";
 import type { NodeConfigStore } from "./config.js";
 import type { ProxyStatusReport } from "./protocol.js";
 import { Socks5Bridge, isSocks5Url } from "./socks5-bridge.js";
 
 export const PROXY_HEALTHCHECK_INTERVAL_MS = 5 * 60_000;
+/** Scheduled passes start ±25 % around the interval and spread each probe by a random 0–PROBE_SPREAD_MS delay. */
+const PASS_JITTER = 0.25;
+const PROBE_SPREAD_MS = Math.max(0, Number(process.env.PROXY_PROBE_SPREAD_MS ?? 2_000) || 0);
 /** A measured exit is trusted this long before the probe asks the lookup service again. */
 export const EXIT_REMEASURE_MS = Number(process.env.PROXY_EXIT_REMEASURE_MS) > 0 ? Number(process.env.PROXY_EXIT_REMEASURE_MS) : 6 * 60 * 60_000;
 /**
@@ -369,13 +374,23 @@ export class ProxyPool {
 
   startHealthChecks(): void {
     if (this.timer) return;
-    this.timer = setInterval(() => void this.checkAll(), PROXY_HEALTHCHECK_INTERVAL_MS);
-    this.timer.unref?.();
-    void this.checkAll();
+    // Jittered, not a fixed setInterval: dozens of exits probing the same endpoint on the same
+    // 5-minute tick, in lockstep, is a behavioural fingerprint that ties the exits together (audit 2026-10-29).
+    const schedule = (): void => {
+      const delay = PROXY_HEALTHCHECK_INTERVAL_MS * (1 + PASS_JITTER * (Math.random() * 2 - 1));
+      this.timer = setTimeout(() => {
+        void this.checkAll(PROBE_SPREAD_MS).finally(() => {
+          if (this.timer) schedule();
+        });
+      }, delay);
+      this.timer.unref?.();
+    };
+    schedule();
+    void this.checkAll(PROBE_SPREAD_MS);
   }
 
   stopHealthChecks(): void {
-    if (this.timer) clearInterval(this.timer);
+    if (this.timer) clearTimeout(this.timer);
     this.timer = null;
     this.bridge.close();
   }
@@ -387,7 +402,8 @@ export class ProxyPool {
    * time; a pass requested while one is in flight (pool replaced) is
    * queued so the new URLs get probed right after.
    */
-  async checkAll(): Promise<void> {
+  /** `spreadMs` > 0 delays each probe by a random 0–spreadMs (scheduled passes); direct calls probe at once. */
+  async checkAll(spreadMs = 0): Promise<void> {
     if (this.checking) {
       this.recheckQueued = true;
       await this.inFlight;
@@ -403,6 +419,7 @@ export class ProxyPool {
           const [url] = entries[next++];
           const h = this.health.get(url);
           if (!h) continue; // pool replaced mid-pass: dropped URL
+          if (spreadMs > 0) await wait(Math.random() * spreadMs);
           await this.probe(target, url, h); // current entry, never the snapshot's object
         }
       };
@@ -452,6 +469,8 @@ export class ProxyPool {
       const proxy = await this.transportProxy(url);
       const res = await bunFetch(target, {
         method: "GET",
+        // Same shape as Claude Code's own auxiliary calls; without it Bun sent `Bun/x` from every exit.
+        headers: { "user-agent": CC_AUX_UA, accept: CC_AUX_ACCEPT },
         proxy,
         signal: AbortSignal.timeout(HEALTHCHECK_TIMEOUT_MS),
       });

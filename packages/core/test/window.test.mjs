@@ -138,6 +138,8 @@ test("ccLimitReset: Claude Code limit text → window + reset instant in the quo
   assert.deepEqual(ccLimitReset("You've hit your session limit · resets 8:50am (Europe/Berlin)", now), { window: "session", resetAt: "2026-10-17T06:50:00Z" });
   // Wall time already past today → tomorrow.
   assert.deepEqual(ccLimitReset("You've hit your session limit · resets 5:00am (Europe/Berlin)", now), { window: "session", resetAt: "2026-10-18T03:00:00Z" });
+  // Claude Code 2.1.312 wording ("5-hour limit"; unparsed until 2026-10-29 → only a 30 s pause, account re-picked 4× in 30 min).
+  assert.deepEqual(ccLimitReset("You've hit your 5-hour limit · resets 1:20pm (Europe/Berlin) (after partial output)", now), { window: "5-hour", resetAt: "2026-10-17T11:20:00Z" });
   // Weekly form with a date; 3pm Berlin = 13:00Z.
   assert.deepEqual(ccLimitReset("You've hit your weekly limit · resets Oct 21, 3pm (Europe/Berlin)", now), { window: "weekly", resetAt: "2026-10-21T13:00:00Z" });
   // No zone → UTC; no time → null reset (caller falls back to 1h).

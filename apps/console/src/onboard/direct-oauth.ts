@@ -68,7 +68,8 @@ export function newPkce(): Pkce {
   };
 }
 
-const JSON_HEADERS = { "content-type": "application/json", accept: CC_AUX_ACCEPT, "anthropic-version": CCR.anthropicVersion };
+// Explicit UA: the node no longer dresses /v1/oauth/* with the SDK fingerprint, and Bun's default would be `Bun/x`.
+const JSON_HEADERS = { "content-type": "application/json", accept: CC_AUX_ACCEPT, "user-agent": CC_AUX_UA, "anthropic-version": CCR.anthropicVersion };
 
 // claude.ai (unlike api.anthropic.com) sits behind Cloudflare bot management:
 // a cookie request that does not look like the web app's own XHR — e.g. the

@@ -10,6 +10,9 @@ export const CC_BUILD_SUFFIX = "6b4";
 export const CC_SDK_VERSION = "0.128.0";
 export const CC_RUNTIME_VERSION = "v26.12.1";
 export const CC_ANTHROPIC_VERSION = "2023-06-01";
+/** Auxiliary (axios) calls of Claude Code: `claude-code/<ver>` + axios default Accept (docs/claude-code-compat.md §8). */
+export const CC_AUX_UA = `claude-code/${CC_VERSION}`;
+export const CC_AUX_ACCEPT = "application/json, text/plain, */*";
 export const CC_BETAS = [
   "claude-code-20250219",
   "interleaved-thinking-2025-05-14",

@@ -333,7 +333,9 @@ export class HttpEgressManager {
     // brotli output until more input arrives (oven-sh/bun#41439), which turned every
     // direct SSE stream into "first byte = last byte" (measured 2026-10-16); the raw
     // relay keeps the request fingerprint identical to Claude Code's and streams.
-    const rawBody = isAnthropicHost(url.hostname) && url.pathname.startsWith("/v1/");
+    // /v1/oauth/* (authorize + token exchange during onboarding) is an axios-style auxiliary call in the
+    // real client, not an SDK-wire request: no x-stainless-*/x-app dressing there (audit 2026-10-29).
+    const rawBody = isAnthropicHost(url.hostname) && url.pathname.startsWith("/v1/") && !url.pathname.startsWith("/v1/oauth/");
     if (rawBody) {
       const fp = anthropicFingerprintHeaders(headers);
       for (const [k, v] of Object.entries(fp)) headers[k] = v;

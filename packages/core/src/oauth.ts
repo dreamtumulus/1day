@@ -7,7 +7,7 @@
 import { setTimeout as wait } from "node:timers/promises";
 import { readCredential, writeCredential, type AccountRow, type Credential } from "./accounts.js";
 import { one, run } from "./db.js";
-import { CC_AUX_ACCEPT } from "./fingerprint.js";
+import { CC_AUX_ACCEPT, CC_AUX_UA } from "./fingerprint.js";
 import { OAUTH_ENDPOINTS } from "./platforms.js";
 import { isoIn } from "./time.js";
 
@@ -142,7 +142,9 @@ async function refreshOAuthCredentialLocked(
     // 对齐 CC 真实刷新（bundle：axios POST，body 带 scope 回放，默认 Accept；docs/claude-code-compat.md §8）
     const headers: Record<string, string> =
       platform === "anthropic"
-        ? { "content-type": "application/json", accept: CC_AUX_ACCEPT }
+        // UA explicitly: the node only fills Claude Code headers on *.anthropic.com /v1/* — the refresh host
+        // (platform.claude.com) got Bun's default `Bun/x` UA otherwise (audit 2026-10-29).
+        ? { "content-type": "application/json", accept: CC_AUX_ACCEPT, "user-agent": CC_AUX_UA }
         : { "content-type": "application/x-www-form-urlencoded" };
     const body =
       platform === "anthropic"
