@@ -226,7 +226,7 @@ stream-json 消息族——`{type:"assistant", message:{id, content:[…], usage
   `markFailure({kind:"window_exhausted"})` 供翻译层在识别到窗口耗尽信号时调用（信号形态待附录 A）。
 - 巡检器：console `apps/console/src/ccr/window-poll.ts`。**被动优先（2026-10-16 用户要求：巡检别太频繁，贴近真实 Claude Code）**：
   每个上游响应头的被动采样是主数据源（同时刷新 `window_checked_at`）；tick 每 `window_poll_interval_sec`（默认 300）秒跑一次
-  令牌保活，但主动 `GET /api/oauth/usage` 只对超过 `window_passive_max_age_sec`（默认 21600 = 6h，最小 600）没有任何采样的账号发一次。
+  令牌保活（2026-10-29 起：到期前 15 分钟内刷新，有活跃会话时等到只剩 5 分钟；同一出口 IP 每 tick 只刷一个号、两次刷新间隔 2～5 秒；令牌端点 429 后按 Retry-After / 默认 10 分钟退避，期间不刷新，见 gateway.md §8），但主动 `GET /api/oauth/usage` 只对超过 `window_passive_max_age_sec`（默认 21600 = 6h，最小 600）没有任何采样的账号发一次。
   有流量的账号永远不会被主动探测；100 个账号的主动探测量 ≤ 100 次 / 6h。管理员仍可 `POST /api/admin/accounts/:id/window` 手动巡检；
   `status=active` 重新启用会清窗口冷却与模型族冷却但保留测量值。
 - **Fable 专属 7d 窗口**（`7d_oi` 头 / usage 体 `seven_day_fable`、`seven_day_overage_included`）单独采样进 `accounts.model_cooldowns.fable`

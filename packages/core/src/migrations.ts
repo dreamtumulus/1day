@@ -316,6 +316,7 @@ const MIGRATIONS: Array<{ version: number; up: (d: DatabaseSync, log: Log) => vo
   { version: 28, up: migration28 },
   { version: 29, up: migration29 },
   { version: 30, up: migration30 },
+  { version: 31, up: migration31 },
 ];
 
 // 上号员令牌（独立鉴权的上号站点 /onboard）：admin 签发，绑定目标节点；
@@ -894,4 +895,12 @@ function migration29(d: DatabaseSync, log: Log): void {
 function migration30(d: DatabaseSync, log: Log): void {
   addColumns(d, log, "usage_logs", [["team_id", "TEXT"], ["proxy_id", "TEXT"]]);
   log("migration 30: usage_logs.team_id / proxy_id");
+}
+
+// Token-endpoint back-off (2026-10-29, 9 accounts hammered platform.claude.com every 5 min for hours after a 429
+// and were then declared dead when their tokens expired): a 429 on refresh sets accounts.refresh_cooldown_until
+// (Retry-After or 10 min); no party refreshes before it ends and a 401 meanwhile is a cooldown, not a death.
+function migration31(d: DatabaseSync, log: Log): void {
+  addColumns(d, log, "accounts", [["refresh_cooldown_until", "TEXT"]]);
+  log("migration 31: accounts.refresh_cooldown_until");
 }

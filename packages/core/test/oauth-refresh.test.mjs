@@ -111,3 +111,40 @@ test("a received rotated credential is saved even when cancellation races JSON d
   } }), controller.signal), { name: "AbortError" });
   assert.equal(readCredential(one("SELECT credential_enc FROM accounts WHERE id=?", a.id)).refreshToken, "rt-new");
 });
+
+test("429 from the token endpoint parks the account: back-off persisted, next refresh skipped without a call, success clears it", async () => {
+  const { refreshCooldownUntil, parseRetryAfterMs, REFRESH_429_DEFAULT_COOLDOWN_MS } = core;
+  const cred = { accessToken: "at-0", refreshToken: "rt-0", expiresAt: new Date(Date.now() + 60_000).toISOString() };
+  const a = account(cred);
+  let calls = 0;
+  const r1 = await refreshOAuthCredential(a, cred, async () => { calls++; return new Response("rate limited", { status: 429 }); });
+  assert.equal(r1, null);
+  const until = refreshCooldownUntil(a.id);
+  assert.ok(until, "back-off recorded");
+  const ms = Date.parse(until) - Date.now();
+  assert.ok(ms > REFRESH_429_DEFAULT_COOLDOWN_MS - 5_000 && ms <= REFRESH_429_DEFAULT_COOLDOWN_MS, `default back-off ≈ 10 min, got ${ms}ms`);
+  assert.equal(one("SELECT COUNT(*) c FROM oauth_refresh_locks WHERE account_id = ?", a.id).c, 0, "lock released");
+  // While parked: no call to the token endpoint from any party.
+  const r2 = await refreshOAuthCredential(a, cred, async () => { calls++; return tokenResponse("never"); });
+  assert.equal(r2, null);
+  assert.equal(calls, 1, "no retry during the back-off");
+  // Back-off over: refresh goes through and clears the column.
+  run("UPDATE accounts SET refresh_cooldown_until = ? WHERE id = ?", new Date(Date.now() - 1000).toISOString(), a.id);
+  const r3 = await refreshOAuthCredential(a, cred, async () => { calls++; return tokenResponse("3"); });
+  assert.equal(r3?.accessToken, "at-3");
+  assert.equal(one("SELECT refresh_cooldown_until u FROM accounts WHERE id = ?", a.id).u, null, "cleared on success");
+  // Retry-After wins over the default and is clamped to [1 min, 2 h].
+  const b = account(cred);
+  await refreshOAuthCredential(b, cred, async () => new Response("", { status: 429, headers: { "retry-after": "1800" } }));
+  const msB = Date.parse(refreshCooldownUntil(b.id)) - Date.now();
+  assert.ok(msB > 1_795_000 && msB <= 1_800_000, `Retry-After honoured, got ${msB}ms`);
+  const c = account(cred);
+  await refreshOAuthCredential(c, cred, async () => new Response("", { status: 429, headers: { "retry-after": "5" } }));
+  const msC = Date.parse(refreshCooldownUntil(c.id)) - Date.now();
+  assert.ok(msC > 55_000 && msC <= 60_000, `clamped up to 1 min, got ${msC}ms`);
+  assert.equal(parseRetryAfterMs("120"), 120_000);
+  assert.equal(parseRetryAfterMs(null), null);
+  assert.equal(parseRetryAfterMs("garbage"), null);
+  assert.ok(core.isRevokedAuthText('{"message":"OAuth access token has been revoked."}'));
+  assert.ok(!core.isRevokedAuthText("OAuth session expired and could not be refreshed"));
+});

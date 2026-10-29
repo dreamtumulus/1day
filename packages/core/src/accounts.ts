@@ -96,6 +96,8 @@ export interface AccountRow {
   rate_limited_until: string | null;
   overload_until: string | null;
   temp_unschedulable_until: string | null;
+  /** Token-endpoint 429 back-off (migration 31): no refresh attempt before this; a 401 meanwhile is not a death. */
+  refresh_cooldown_until: string | null;
   account_email: string | null;
   subscription_type: string | null;
   last_used_at: string | null;

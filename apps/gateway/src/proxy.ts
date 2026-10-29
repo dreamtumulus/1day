@@ -53,6 +53,8 @@ import {
   saveDeviceBinding,
   saveStickyBinding,
   sweepAffinityBindings,
+  isRevokedAuthText,
+  refreshCooldownUntil,
 } from "@1dayapi/core";
 import { authenticate, type CallerContext } from "./auth.js";
 import { AUTH_FAILURE_COOLDOWN_MS, AuthFailureTracker, isCcAccountOnHold, isCcAuthFailure } from "./ccr/auth-failure.js";
@@ -1055,7 +1057,17 @@ async function proxyRequest(req: FastifyRequest, reply: FastifyReply, format: Cl
           continue; // retry once with a forced token refresh
         }
         if (status === 401 || status === 403) {
-          markFailure(account.id, { kind: "auth", message: `upstream ${status}: ${text.slice(0, 300)}` });
+          const authText = `upstream ${status}: ${text.slice(0, 300)}`;
+          // The token endpoint rate-limited our refresh (back-off running) and upstream does not say the
+          // grant is revoked: this is the expected expiry of a token we were not allowed to renew. Park the
+          // account until the back-off ends instead of retiring it (2026-10-29, docs/gateway.md §8).
+          const cooling = isRevokedAuthText(text) ? null : refreshCooldownUntil(account.id);
+          if (cooling) {
+            markFailure(account.id, { kind: "transient", message: `${authText} (refresh back-off until ${cooling})`, cooldownMs: Math.max(30_000, Date.parse(cooling) - Date.now()) });
+            console.warn(`[proxy] ${ctx.requestId} account ${account.name}: ${status} while the token endpoint back-off runs until ${cooling} → cooldown, not status error`);
+          } else {
+            markFailure(account.id, { kind: "auth", message: authText });
+          }
         } else if (status === 402) {
           markFailure(account.id, { kind: "payment" });
         } else if (status === 429) {
@@ -1176,12 +1188,17 @@ function markCcrFailure(ctx: Ctx, account: AccountRow, message: string): void {
     // Claude Code's "Failed to authenticate …" is the worker path's 401: one hit
     // may be a refresh race (2026-10-17), repeated hits mean the OAuth session is gone.
     const hit = authFailures.record(account.id);
-    if (hit.escalate) {
+    // "OAuth session expired and could not be refreshed" while our own refresh is parked by a token-endpoint
+    // 429 is the same blocked renewal seen from Claude Code, not a dead grant: never escalate on it
+    // (2026-10-29: three accounts retired this way). An explicit "revoked" still counts.
+    const cooling = isRevokedAuthText(message) ? null : refreshCooldownUntil(account.id);
+    if (hit.escalate && !cooling) {
       markFailure(account.id, { kind: "auth", message: `cc auth failure ×${hit.count}: ${message.slice(0, 400)}` });
       console.error(`[proxy] ${ctx.requestId} account ${account.name}: cc auth failure ×${hit.count} → status error (${message.slice(0, 160)})`);
     } else {
-      markFailure(account.id, { kind: "transient", message, cooldownMs: AUTH_FAILURE_COOLDOWN_MS });
-      console.warn(`[proxy] ${ctx.requestId} account ${account.name}: cc auth failure ×${hit.count} → cooldown ${AUTH_FAILURE_COOLDOWN_MS / 1000}s (${message.slice(0, 160)})`);
+      const cooldownMs = cooling ? Math.max(AUTH_FAILURE_COOLDOWN_MS, Date.parse(cooling) - Date.now()) : AUTH_FAILURE_COOLDOWN_MS;
+      markFailure(account.id, { kind: "transient", message, cooldownMs });
+      console.warn(`[proxy] ${ctx.requestId} account ${account.name}: cc auth failure ×${hit.count} → cooldown ${Math.round(cooldownMs / 1000)}s${cooling ? ` (token endpoint back-off until ${cooling})` : ""} (${message.slice(0, 160)})`);
     }
     return;
   }

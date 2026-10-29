@@ -67,7 +67,7 @@
 - `base_url` NULL = 平台默认（见 v3-design §5.1）。`models` JSON 数组（空 = 该平台全部注册模型），`model_mapping` JSON 对象。
 - `owner_id` NULL = 平台自有；非空 = 号商，`payout_rate` 为其分成。`route=node`：号商账户可用该号商任一在线节点或固定节点；平台自有账户（`owner_id` NULL）必须固定到**平台节点**（管理员部署、`nodes.provider_id` 为管理员的节点）。
 - `review_status`：号商提交 / 节点上传默认 `pending`，只有 `approved` 参与调度。
-- 冷却三个时间戳：`rate_limited_until`（429）、`overload_until`（529/503）、`temp_unschedulable_until`（402/5xx/网络）；
+- 冷却三个时间戳：`rate_limited_until`（429）、`overload_until`（529/503）、`temp_unschedulable_until`（402/5xx/网络）；另有 `refresh_cooldown_until`（迁移 31，令牌端点 429 退避，见 gateway.md §8）；
   `status=error` 表示鉴权失败，需管理员重新启用（启用即清空错误与全部冷却，含窗口冷却）。
 - 订阅窗口（迁移 3 + 4，`gateway.md` §3/§5.1）：`executor`（`direct | ccr | ccr_worker`，后两者只有 oauth+anthropic 可设；`ccr_worker` = 节点真 Claude Code worker 模式，见 `ccr-supply.md` §8.1）；`window_used`
   （绑定窗口已用比例 0..1，NULL = 未采样）、`window_reset_at`、`window_checked_at`、`window_exhausted_until`（窗口级冷却，

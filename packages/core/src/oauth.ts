@@ -9,9 +9,48 @@ import { readCredential, writeCredential, type AccountRow, type Credential } fro
 import { one, run } from "./db.js";
 import { CC_AUX_ACCEPT, CC_AUX_UA } from "./fingerprint.js";
 import { OAUTH_ENDPOINTS } from "./platforms.js";
-import { isoIn } from "./time.js";
+import { isoIn, nowIso } from "./time.js";
 
 export const OAUTH_REFRESH_MARGIN_MS = 5 * 60_000;
+
+/**
+ * Token-endpoint back-off (migration 31, 2026-10-29). platform.claude.com answered refreshes with 429 for hours;
+ * with no back-off the keep-alive retried every tick and the gateway on every request, which kept the limit
+ * tripped until the access tokens expired and nine accounts were declared dead. A 429 now parks the account:
+ * Retry-After when given, else 10 minutes, clamped to 1 min – 2 h; a successful refresh clears it.
+ */
+export const REFRESH_429_DEFAULT_COOLDOWN_MS = 10 * 60_000;
+const REFRESH_COOLDOWN_MIN_MS = 60_000;
+const REFRESH_COOLDOWN_MAX_MS = 2 * 3_600_000;
+
+/** Retry-After as milliseconds: delta-seconds or an HTTP date; null when absent or unparseable. */
+export function parseRetryAfterMs(value: string | null | undefined): number | null {
+  if (!value) return null;
+  const v = value.trim();
+  if (/^\d+$/.test(v)) return Number(v) * 1000;
+  const at = Date.parse(v);
+  return Number.isFinite(at) ? Math.max(0, at - Date.now()) : null;
+}
+
+/** The active refresh cooldown's end, or null when the account may refresh now. */
+export function refreshCooldownUntil(accountId: string): string | null {
+  try {
+    const r = one<{ refresh_cooldown_until: string | null }>("SELECT refresh_cooldown_until FROM accounts WHERE id = ?", accountId);
+    const until = r?.refresh_cooldown_until ?? null;
+    return until && until > nowIso() ? until : null;
+  } catch {
+    return null; // pre-migration dev DB
+  }
+}
+
+/**
+ * Upstream says the grant itself is gone — only a re-authorization helps. Any other
+ * authentication failure while the refresh is cooling down is the expected expiry of a
+ * token we were not allowed to renew, and must not retire the account.
+ */
+export function isRevokedAuthText(text: string): boolean {
+  return /revoked|invalid_grant/i.test(text);
+}
 
 /** fetch-shaped override for the refresh HTTP call; may return null on infrastructure failure. */
 export type OAuthTransport = (url: string, init: { headers: Record<string, string>; body: string; signal?: AbortSignal }) => Promise<Response | null>;
@@ -103,6 +142,11 @@ export async function refreshOAuthCredential(
     console.log(`[oauth] account ${account.id}: credential already rotated by another process, using the stored one`);
     return already;
   }
+  const cooling = refreshCooldownUntil(account.id);
+  if (cooling) {
+    console.log(`[oauth] account ${account.id}: token endpoint back-off until ${cooling}, not refreshing`);
+    return null;
+  }
   if (!acquireRefreshLock(account.id)) {
     // Another process is refreshing this account right now: wait for its result.
     const deadline = Date.now() + REFRESH_WAIT_MS;
@@ -165,6 +209,14 @@ async function refreshOAuthCredentialLocked(
       console.warn(`[oauth] refresh for account ${account.id} failed: transport unavailable`);
       return null;
     }
+    if (res.status === 429) {
+      const ra = parseRetryAfterMs(res.headers.get("retry-after"));
+      const ms = Math.min(Math.max(ra ?? REFRESH_429_DEFAULT_COOLDOWN_MS, REFRESH_COOLDOWN_MIN_MS), REFRESH_COOLDOWN_MAX_MS);
+      const until = isoIn(ms);
+      try { run("UPDATE accounts SET refresh_cooldown_until = ? WHERE id = ?", until, account.id); } catch { /* pre-migration dev DB */ }
+      console.warn(`[oauth] refresh for account ${account.id} failed: HTTP 429 → back-off until ${until}${ra !== null ? " (Retry-After)" : ""}`);
+      return null;
+    }
     if (!res.ok) {
       console.warn(`[oauth] refresh for account ${account.id} failed: HTTP ${res.status}`);
       return null;
@@ -180,6 +232,7 @@ async function refreshOAuthCredentialLocked(
     // Once the provider has rotated the grant, persist the returned credential
     // even if the client disconnected while the response was being decoded.
     writeCredential(account.id, next);
+    try { run("UPDATE accounts SET refresh_cooldown_until = NULL WHERE id = ? AND refresh_cooldown_until IS NOT NULL", account.id); } catch { /* pre-migration dev DB */ }
     signal?.throwIfAborted();
     console.log(`[oauth] refreshed access token for account ${account.id}`);
     return next;

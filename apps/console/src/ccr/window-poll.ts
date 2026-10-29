@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { setTimeout as wait } from "node:timers/promises";
 import {
   CC_AUX_ACCEPT,
   CC_AUX_UA,
@@ -11,9 +12,11 @@ import {
   hasSubscriptionWindow,
   markFailure,
   nowIso,
+  one,
   parseUsageSnapshot,
   readCredential,
   recordWindowUsage,
+  refreshCooldownUntil,
   refreshOAuthCredential,
   type AccountRow,
   type OAuthTransport,
@@ -33,9 +36,22 @@ import { sweepStaleJobs } from "../onboard/jobs.js";
 // accounts current; the probe covers idle ones.
 
 const PROBE_TIMEOUT_MS = 15_000;
-const KEEPALIVE_MARGIN_MS = 30 * 60_000;
+// Keep-alive margins (2026-10-29, user: 30 min was half a token's life and doubled the refresh rate):
+// refresh inside the last 15 minutes; under load wait for the account to go idle until 5 minutes remain.
+const KEEPALIVE_MARGIN_MS = 15 * 60_000;
 /** Under load the keep-alive waits for the account to go idle until this close to expiry. */
-const KEEPALIVE_BUSY_MARGIN_MS = 10 * 60_000;
+const KEEPALIVE_BUSY_MARGIN_MS = 5 * 60_000;
+/** Spacing between two refreshes in one tick (jittered), so a pool never hits the token endpoint as a burst. */
+const KEEPALIVE_GAP_MIN_MS = 2_000;
+const KEEPALIVE_GAP_MAX_MS = 5_000;
+const keepaliveGap = () => KEEPALIVE_GAP_MIN_MS + Math.random() * (KEEPALIVE_GAP_MAX_MS - KEEPALIVE_GAP_MIN_MS);
+
+/** Accounts sharing one exit IP are refreshed one per tick: the token endpoint limits by IP (2026-10-29). */
+function exitKey(a: AccountRow): string {
+  if (!a.bound_proxy_id) return `acct:${a.id}`;
+  const p = one<{ exit_ip: string | null }>("SELECT exit_ip FROM node_proxies WHERE id = ?", a.bound_proxy_id);
+  return p?.exit_ip ? `ip:${p.exit_ip}` : `proxy:${a.bound_proxy_id}`;
+}
 
 // 对齐真实 CC 的 usage 调用（bundle：axios 辅助函数，只有 Authorization + UA
 // claude-code/<ver> + axios 默认 Accept；不发不锈钢遥测头/anthropic-beta ——
@@ -151,11 +167,29 @@ function nodeTransport(a: AccountRow): OAuthTransport {
   };
 }
 
-/** Refresh OAuth tokens that expire within the keep-alive margin (docs/ccr-supply.md M1). */
-export async function refreshExpiringTokens(): Promise<void> {
+export interface KeepaliveSummary {
+  /** Refresh calls made this tick (successful or not). */
+  attempted: number;
+  refreshed: number;
+  /** Skipped: token endpoint back-off running (set by an earlier 429). */
+  coolingDown: number;
+  /** Skipped: another account on the same exit IP was refreshed this tick. */
+  deferredSameExit: number;
+  /** Skipped: live sessions and not yet urgent. */
+  deferredBusy: number;
+}
+
+/**
+ * Refresh OAuth tokens that expire within the keep-alive margin (docs/ccr-supply.md M1).
+ * One refresh per exit IP per tick, 2–5 s apart, none while a token-endpoint back-off runs;
+ * a token inside the busy margin (about to expire) is refreshed regardless of the exit rule.
+ */
+export async function refreshExpiringTokens(gapMs: () => number = keepaliveGap): Promise<KeepaliveSummary> {
+  const sum: KeepaliveSummary = { attempted: 0, refreshed: 0, coolingDown: 0, deferredSameExit: 0, deferredBusy: 0 };
   // Only accounts that can still be scheduled: a rejected or errored token is
   // not kept alive (and a dead refresh token is not retried every tick).
   const rows = all<AccountRow>("SELECT * FROM accounts WHERE type = 'oauth' AND status = 'active' AND review_status = 'approved' AND team_id IS NOT NULL");
+  const refreshedExits = new Set<string>();
   for (const a of rows) {
     if (!canRefresh(a)) continue;
     let cred;
@@ -165,19 +199,34 @@ export async function refreshExpiringTokens(): Promise<void> {
       continue;
     }
     if (!credentialNeedsRefresh(cred, KEEPALIVE_MARGIN_MS)) continue;
+    if (refreshCooldownUntil(a.id)) { sum.coolingDown++; continue; }
+    const urgent = credentialNeedsRefresh(cred, KEEPALIVE_BUSY_MARGIN_MS);
     // A refresh invalidates the access token in use: requests in flight on this account 401
     // and a live Claude Code process on the node then retries with a refresh token that is
     // already rotated (2026-10-22, "Failed to authenticate: OAuth session expired and could
     // not be refreshed"). Wait for the account to go idle; only refresh under load when the
     // token is about to expire anyway.
     const live = liveSessionsForAccount(a.id);
-    if (live > 0 && !credentialNeedsRefresh(cred, KEEPALIVE_BUSY_MARGIN_MS)) {
+    if (live > 0 && !urgent) {
       console.log(`[oauth] keep-alive: account ${a.id} has ${live} live session(s), deferring refresh (expires ${cred.expiresAt})`);
+      sum.deferredBusy++;
       continue;
     }
+    const exit = exitKey(a);
+    if (!urgent && refreshedExits.has(exit)) {
+      console.log(`[oauth] keep-alive: account ${a.id} shares ${exit} with an account refreshed this tick, deferring to the next tick (expires ${cred.expiresAt})`);
+      sum.deferredSameExit++;
+      continue;
+    }
+    if (sum.attempted > 0) await wait(gapMs());
+    refreshedExits.add(exit);
+    sum.attempted++;
     const next = await refreshOAuthCredential(a, cred, a.route === "node" ? nodeTransport(a) : undefined);
-    if (!next) console.warn(`[oauth] keep-alive refresh failed for account ${a.id}`);
+    if (next) sum.refreshed++;
+    else console.warn(`[oauth] keep-alive refresh failed for account ${a.id}`);
   }
+  if (sum.attempted || sum.coolingDown || sum.deferredSameExit) console.log(`[oauth] keep-alive tick: ${sum.refreshed}/${sum.attempted} refreshed, ${sum.coolingDown} in back-off, ${sum.deferredSameExit} deferred (same exit), ${sum.deferredBusy} deferred (busy)`);
+  return sum;
 }
 
 /** Periodic upkeep. Disabled with CCR_WINDOW_POLL=0 (e2e / dev). */

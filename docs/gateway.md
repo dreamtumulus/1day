@@ -328,7 +328,12 @@ Claude Code 一类客户端自己还有约 120 s 的首字节超时。网关在�
 
 `freshCredential()`：`type=oauth` 且有 `refreshToken`、`expiresAt` 距今不足 5 分钟（或 401/403 后强制）时刷新：
 Anthropic `POST https://platform.claude.com/v1/oauth/token`（JSON），OpenAI `POST https://auth.openai.com/oauth/token`（form）。
-同一账户并发刷新合并为一次；成功则加密回写凭证，失败沿用旧令牌（随后的 401 会把账户置 error）。
+同一账户并发刷新合并为一次；成功则加密回写凭证，失败沿用旧令牌。
+
+**令牌端点退避（迁移 31，2026-10-29）**：刷新收到 429 时写 `accounts.refresh_cooldown_until`（有 Retry-After 用它，否则默认 10 分钟，夹在 1 分钟～2 小时），
+期间 console 保活、网关强制刷新都不再调令牌端点；刷新成功即清除。此前没有退避：platform.claude.com 对 9 个号连续数小时回 429，保活每 5 分钟重试一次把限流一直续着，
+令牌到期后这些号被当成死号。**退避期内的 401/403 不是死号**：上游没有说 `revoked` / `invalid_grant` 的 401/403，以及 worker 路径的 "OAuth session expired and could not be refreshed"，
+只做到退避结束的临时冷却（`temp_unschedulable_until`），不置 `status=error`；上游明说 revoked 仍立即置 error（只有重新授权能救）。
 刷新实现在 `@1dayapi/core` `oauth.ts`，接受可选 transport：`route=node` 的账户由其节点（绑定 / 粘性代理）发出刷新请求
 （console 的保活循环已如此；网关侧按 `docs/onboarding.md` §6.2 接入中），其余账户直连。
 

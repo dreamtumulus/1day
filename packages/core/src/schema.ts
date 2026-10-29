@@ -86,6 +86,8 @@ CREATE TABLE accounts (
   rate_limited_until TEXT,
   overload_until TEXT,
   temp_unschedulable_until TEXT,
+  -- migration 31 (docs/gateway.md §8): token-endpoint 429 back-off; no refresh before it ends
+  refresh_cooldown_until TEXT,
   account_email TEXT,
   subscription_type TEXT,
   last_used_at TEXT,
