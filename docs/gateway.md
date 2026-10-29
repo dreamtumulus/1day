@@ -344,6 +344,9 @@ Claude Code 一类客户端自己还有约 120 s 的首字节超时。网关在�
 Anthropic `POST https://platform.claude.com/v1/oauth/token`（JSON），OpenAI `POST https://auth.openai.com/oauth/token`（form）。
 同一账户并发刷新合并为一次；成功则加密回写凭证，失败沿用旧令牌。
 
+**刷新 UA**：`OAUTH_REFRESH_UA` 未设 = `claude-code/<版本>`（2026-10-29 审计对齐）；设为空串 = 不带 UA（审计前形态，Bun 默认）；其他值原样发送。
+2026-10-29 09Z 起刷新一律 429 与加 UA 同时发生，用此开关做对照。
+
 **令牌端点退避（迁移 31，2026-10-29）**：刷新收到 429 时写 `accounts.refresh_cooldown_until`（有 Retry-After 用它，否则默认 10 分钟，夹在 1 分钟～2 小时），
 期间 console 保活、网关强制刷新都不再调令牌端点；刷新成功即清除。此前没有退避：platform.claude.com 对 9 个号连续数小时回 429，保活每 5 分钟重试一次把限流一直续着，
 令牌到期后这些号被当成死号。**退避期内的 401/403 不是死号**：退避运行期间的任何 401/403，以及 worker 路径的 "OAuth session expired and could not be refreshed"，

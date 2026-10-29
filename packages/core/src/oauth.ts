@@ -176,11 +176,14 @@ async function refreshOAuthCredentialLocked(
   const ep = OAUTH_ENDPOINTS[platform];
   try {
     // 对齐 CC 真实刷新（bundle：axios POST，body 带 scope 回放，默认 Accept；docs/claude-code-compat.md §8）
+    // UA (audit 2026-10-29): the node only fills Claude Code headers on *.anthropic.com /v1/*, so the refresh
+    // host (platform.claude.com) used to go out with Bun's default `Bun/x` UA. The explicit `claude-code/<ver>`
+    // UA coincided with every refresh answering 429 from 09Z that day, so it is env-controlled for diagnosis:
+    // OAUTH_REFRESH_UA unset = CC_AUX_UA; "" = send no UA (the pre-audit shape); any other value is sent as-is.
+    const refreshUa = process.env.OAUTH_REFRESH_UA === undefined ? CC_AUX_UA : process.env.OAUTH_REFRESH_UA;
     const headers: Record<string, string> =
       platform === "anthropic"
-        // UA explicitly: the node only fills Claude Code headers on *.anthropic.com /v1/* — the refresh host
-        // (platform.claude.com) got Bun's default `Bun/x` UA otherwise (audit 2026-10-29).
-        ? { "content-type": "application/json", accept: CC_AUX_ACCEPT, "user-agent": CC_AUX_UA }
+        ? { "content-type": "application/json", accept: CC_AUX_ACCEPT, ...(refreshUa ? { "user-agent": refreshUa } : {}) }
         : { "content-type": "application/x-www-form-urlencoded" };
     const body =
       platform === "anthropic"
