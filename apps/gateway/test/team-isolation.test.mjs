@@ -8,6 +8,7 @@ import Fastify from "fastify";
 
 const dataDir = mkdtempSync(join(tmpdir(), "1dayapi-team-route-"));
 process.env.DATA_DIR = dataDir;
+process.env.PROBE_INTERCEPT = "0"; // fixtures repeat identical tiny prompts on purpose (docs/gateway.md §2c)
 process.env.ACCOUNT_BUSY_WAIT_MS = "800";
 const sessions = new Map();
 const attempts = [];

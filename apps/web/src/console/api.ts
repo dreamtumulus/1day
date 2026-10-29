@@ -92,7 +92,7 @@ export interface ApiKey {
   createdAt: string;
   revealable: boolean;
   /** Routing policy (admin-only edit): history handling on upstream switch + direct-only. */
-  policy?: { historyPolicy: "reset" | "reject" | "passthrough"; directOnly: boolean };
+  policy?: { historyPolicy: "reset" | "reject" | "passthrough"; directOnly: boolean; probeIntercept?: boolean };
 }
 
 export interface UsageRow {

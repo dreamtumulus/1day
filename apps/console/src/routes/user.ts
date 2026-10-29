@@ -93,10 +93,11 @@ export function applyKeyFields(
     const p = b.policy;
     if (p === null) out.policyJson = null;
     else if (p && typeof p === "object") {
-      const { historyPolicy, directOnly } = p as Record<string, unknown>;
+      const { historyPolicy, directOnly, probeIntercept } = p as Record<string, unknown>;
       if (historyPolicy !== undefined && !(HISTORY_POLICIES as readonly string[]).includes(String(historyPolicy))) bad("invalid_request", "policy.historyPolicy must be reset | reject | passthrough");
       if (directOnly !== undefined && typeof directOnly !== "boolean") bad("invalid_request", "policy.directOnly must be a boolean");
-      out.policyJson = JSON.stringify({ historyPolicy: (historyPolicy as HistoryPolicy | undefined) ?? "reset", directOnly: directOnly === true });
+      if (probeIntercept !== undefined && typeof probeIntercept !== "boolean") bad("invalid_request", "policy.probeIntercept must be a boolean");
+      out.policyJson = JSON.stringify({ historyPolicy: (historyPolicy as HistoryPolicy | undefined) ?? "reset", directOnly: directOnly === true, probeIntercept: probeIntercept !== false });
     } else bad("invalid_request", "policy must be an object or null");
   }
   return out;

@@ -57,6 +57,7 @@ import {
   refreshCooldownUntil,
 } from "@1dayapi/core";
 import { authenticate, type CallerContext } from "./auth.js";
+import { PROBE_REPLY, PROBE_WINDOW_MS, detectProbe, poolHealth, type ProbeVerdict } from "./probe.js";
 import { AUTH_FAILURE_COOLDOWN_MS, AuthFailureTracker, isCcAccountOnHold, isCcAuthFailure } from "./ccr/auth-failure.js";
 import { classifyCcRequestError, isCcModelUnavailable } from "./ccr/model-unavailable.js";
 import { config } from "./config.js";
@@ -443,19 +444,24 @@ function assertScope(scope?: ConversationScope): void {
 }
 
 function sendResetNotice(reply: FastifyReply, format: ClientFormat, body: Json): void {
-  const id = crypto.randomUUID();
   if (!reply.raw.headersSent) reply.header("x-1day-context-reset", "1");
+  sendSyntheticMessage(reply, format, body, RESET_NOTICE);
+}
+
+/** A platform-authored assistant message in the client's wire format (zero usage), non-stream or stream. */
+function sendSyntheticMessage(reply: FastifyReply, format: ClientFormat, body: Json, text: string): void {
+  const id = crypto.randomUUID();
   const send = (payload: unknown) => reply.raw.headersSent ? reply.raw.end(typeof payload === "string" ? payload : JSON.stringify(payload)) : reply.send(payload);
-  const message = { id: `msg_${id}`, type: "message", role: "assistant", model: body.model ?? "", content: [{ type: "text", text: RESET_NOTICE }], stop_reason: "end_turn", stop_sequence: null, usage: { input_tokens: 0, output_tokens: 0 } };
-  const chat = { id: `chatcmpl_${id}`, object: "chat.completion", created: Math.floor(Date.now() / 1000), model: body.model ?? "", choices: [{ index: 0, message: { role: "assistant", content: RESET_NOTICE }, finish_reason: "stop" }], usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 } };
+  const message = { id: `msg_${id}`, type: "message", role: "assistant", model: body.model ?? "", content: [{ type: "text", text: text }], stop_reason: "end_turn", stop_sequence: null, usage: { input_tokens: 0, output_tokens: 0 } };
+  const chat = { id: `chatcmpl_${id}`, object: "chat.completion", created: Math.floor(Date.now() / 1000), model: body.model ?? "", choices: [{ index: 0, message: { role: "assistant", content: text }, finish_reason: "stop" }], usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 } };
   if (body.stream === true) {
     reply.header("content-type", "text/event-stream; charset=utf-8");
-    if (format === "anthropic") send(`event: message_start\ndata: ${JSON.stringify({ type: "message_start", message: { ...message, content: [], stop_reason: null } })}\n\nevent: content_block_start\ndata: ${JSON.stringify({ type: "content_block_start", index: 0, content_block: { type: "text", text: "" } })}\n\nevent: content_block_delta\ndata: ${JSON.stringify({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: RESET_NOTICE } })}\n\nevent: content_block_stop\ndata: {"type":"content_block_stop","index":0}\n\nevent: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":0}}\n\nevent: message_stop\ndata: {"type":"message_stop"}\n\n`);
-    else if (format === "openai-chat") send(`data: ${JSON.stringify({ ...chat, object: "chat.completion.chunk", choices: [{ index: 0, delta: { role: "assistant", content: RESET_NOTICE }, finish_reason: null }] })}\n\ndata: ${JSON.stringify({ ...chat, object: "chat.completion.chunk", choices: [{ index: 0, delta: {}, finish_reason: "stop" }] })}\n\ndata: [DONE]\n\n`);
-    else send(`event: response.completed\ndata: ${JSON.stringify({ type: "response.completed", response: { id: `resp_${id}`, object: "response", status: "completed", output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: RESET_NOTICE, annotations: [] }] }] } })}\n\n`);
+    if (format === "anthropic") send(`event: message_start\ndata: ${JSON.stringify({ type: "message_start", message: { ...message, content: [], stop_reason: null } })}\n\nevent: content_block_start\ndata: ${JSON.stringify({ type: "content_block_start", index: 0, content_block: { type: "text", text: "" } })}\n\nevent: content_block_delta\ndata: ${JSON.stringify({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: text } })}\n\nevent: content_block_stop\ndata: {"type":"content_block_stop","index":0}\n\nevent: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":0}}\n\nevent: message_stop\ndata: {"type":"message_stop"}\n\n`);
+    else if (format === "openai-chat") send(`data: ${JSON.stringify({ ...chat, object: "chat.completion.chunk", choices: [{ index: 0, delta: { role: "assistant", content: text }, finish_reason: null }] })}\n\ndata: ${JSON.stringify({ ...chat, object: "chat.completion.chunk", choices: [{ index: 0, delta: {}, finish_reason: "stop" }] })}\n\ndata: [DONE]\n\n`);
+    else send(`event: response.completed\ndata: ${JSON.stringify({ type: "response.completed", response: { id: `resp_${id}`, object: "response", status: "completed", output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: text, annotations: [] }] }] } })}\n\n`);
   } else if (format === "anthropic") send(message);
   else if (format === "openai-chat") send(chat);
-  else send({ id: `resp_${id}`, object: "response", status: "completed", output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: RESET_NOTICE, annotations: [] }] }], usage: { input_tokens: 0, output_tokens: 0, total_tokens: 0 } });
+  else send({ id: `resp_${id}`, object: "response", status: "completed", output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: text, annotations: [] }] }], usage: { input_tokens: 0, output_tokens: 0, total_tokens: 0 } });
 }
 
 /** Gateways take short metadata leases; normal execution remains parallel and epoch-fenced. */
@@ -493,8 +499,41 @@ export async function proxy(req: FastifyRequest, reply: FastifyReply, format: Cl
   }
 }
 
+/**
+ * Platform answer for a liveness probe (docs/gateway.md §2c): 200 "ok" when the key's group has an
+ * account ready for the model, 503 no_available_account otherwise; an unknown model is left to the
+ * normal path (its 404). Logged as a zero-cost usage row with mode "probe". Returns false when not handled.
+ */
+function answerProbe(req: FastifyRequest, reply: FastifyReply, format: ClientFormat, endpoint: string, caller: CallerContext, body: Json, verdict: ProbeVerdict): boolean {
+  const model = typeof body.model === "string" ? body.model.trim() : "";
+  if (!getModelEntry(model)) return false;
+  const health = poolHealth(caller.groupId, model);
+  const ok = health.ready > 0;
+  const why = verdict.reason === "header" ? "x-1day-probe header" : `identical tiny request ×${verdict.repeats} within ${Math.round(PROBE_WINDOW_MS / 60_000)} min`;
+  const summary = `probe answered by the platform (${why}): ${health.ready}/${health.total} accounts ready`;
+  try {
+    settleRequest({
+      requestId: crypto.randomUUID(), userId: caller.userId, apiKeyId: caller.apiKeyId, groupId: caller.groupId, rateMultiplier: caller.rateMultiplier,
+      accountId: null, providerId: null, payoutRate: 0, model, upstreamModel: null, endpoint, stream: body.stream === true,
+      statusCode: ok ? 200 : 503, errorCode: ok ? null : "no_available_account", usage: { input_tokens: 0, output_tokens: 0 }, usageEstimated: false,
+      durationMs: 0, clientIp: clientIp(req), errorMessage: summary, mode: "probe",
+    });
+  } catch (err) {
+    console.error("[probe] failed to log the probe:", err);
+  }
+  reply.header("x-1day-probe", "platform").header("x-1day-pool-ready", String(health.ready)).header("x-1day-pool-total", String(health.total));
+  if (!ok) { sendError(reply, format, 503, "no_available_account", `No upstream account is currently available for '${model}'.`, "upstream_error"); return true; }
+  sendSyntheticMessage(reply, format, body, PROBE_REPLY);
+  return true;
+}
+
 async function proxyAuthorized(req: FastifyRequest, reply: FastifyReply, format: ClientFormat, endpoint: string, caller: CallerContext): Promise<void> {
   const originalBody = (req.body && typeof req.body === "object" ? req.body : {}) as Json;
+  // Liveness probes are answered from pool state, never from an account (docs/gateway.md §2c).
+  if (caller.policy.probeIntercept) {
+    const verdict = detectProbe(caller.apiKeyId, originalBody, format, req.headers as Record<string, unknown>);
+    if (verdict && answerProbe(req, reply, format, endpoint, caller, originalBody, verdict)) return;
+  }
   const hasSubscriptions = !!one(`SELECT 1 FROM account_groups ag JOIN accounts a ON a.id = ag.account_id WHERE ag.group_id = ? AND a.type = 'oauth' AND a.platform = 'anthropic' LIMIT 1`, caller.groupId);
   let identity = resolveConversationIdentity(caller.apiKeyId, req.headers, originalBody, format);
   const returnedId = req.headers["x-1day-conversation-id"];

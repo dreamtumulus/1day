@@ -160,6 +160,7 @@ function EditKeyModal({
   const [status, setStatus] = useState(apiKey.status);
   const [historyPolicy, setHistoryPolicy] = useState<"reset" | "reject" | "passthrough">(apiKey.policy?.historyPolicy ?? "reset");
   const [directOnly, setDirectOnly] = useState(apiKey.policy?.directOnly ?? false);
+  const [probeIntercept, setProbeIntercept] = useState(apiKey.policy?.probeIntercept ?? true);
   const [busy, setBusy] = useState(false);
 
   return (
@@ -183,7 +184,7 @@ function EditKeyModal({
                   quotaUsd: Number(quota) || 0,
                   expiresAt: expires ? new Date(expires).toISOString() : null,
                   status,
-                  policy: { historyPolicy, directOnly },
+                  policy: { historyPolicy, directOnly, probeIntercept },
                 });
                 toast.success(t("admin.keys.updated"));
                 onSaved();
@@ -255,6 +256,16 @@ function EditKeyModal({
               options={[
                 { value: "0", label: t("admin.keys.directOnlyOff") },
                 { value: "1", label: t("admin.keys.directOnlyOn") },
+              ]}
+            />
+          </Field>
+          <Field label={t("admin.keys.probeIntercept")} hint={t("admin.keys.probeInterceptHint")}>
+            <Select
+              value={probeIntercept ? "1" : "0"}
+              onChange={(e) => setProbeIntercept(e.target.value === "1")}
+              options={[
+                { value: "1", label: t("admin.keys.probeInterceptOn") },
+                { value: "0", label: t("admin.keys.probeInterceptOff") },
               ]}
             />
           </Field>

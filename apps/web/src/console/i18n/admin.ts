@@ -157,6 +157,10 @@ const en = {
   "admin.keys.directOnlyHint": "On: a request that is not a genuine Claude Code request gets 400 direct_only instead of the worker path.",
   "admin.keys.directOnlyOff": "Off (worker fallback allowed)",
   "admin.keys.directOnlyOn": "On (400 instead of worker)",
+  "admin.keys.probeIntercept": "Liveness probes",
+  "admin.keys.probeInterceptHint": "On: an identical tiny request repeated within 10 minutes (or any request with x-1day-probe: 1) is answered by the platform from pool state — 200 \"ok\" or 503 — without touching an account.",
+  "admin.keys.probeInterceptOn": "Answered by the platform (default)",
+  "admin.keys.probeInterceptOff": "Off (probes reach accounts)",
   "admin.keys.updated": "Key updated",
 
   "admin.groups.title": "Groups",
@@ -573,6 +577,10 @@ const zh: typeof en = {
   "admin.keys.directOnlyHint": "开启后，不符合 Claude Code 形态的请求直接返回 400 direct_only，不再转 worker 路径。",
   "admin.keys.directOnlyOff": "关（允许转 worker）",
   "admin.keys.directOnlyOn": "开（400，不转 worker）",
+  "admin.keys.probeIntercept": "测活接管",
+  "admin.keys.probeInterceptHint": "开启后，10 分钟内重复出现的同一条极小请求（或带 x-1day-probe: 1 的请求）由平台按号池状态直接回复：有可用号回 200 \"ok\"，没有回 503，不再占用任何账号。",
+  "admin.keys.probeInterceptOn": "平台直接回复（默认）",
+  "admin.keys.probeInterceptOff": "关（探测请求打到账号）",
   "admin.keys.updated": "密钥已更新",
 
   "admin.groups.title": "分组",
