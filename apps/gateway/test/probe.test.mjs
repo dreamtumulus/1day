@@ -86,9 +86,10 @@ test("gateway: header probe answered 200 'ok' from the platform with pool header
   const r = await post(f, tiny("ping"), { "x-1day-probe": "1" });
   assert.equal(r.statusCode, 200, r.body);
   assert.equal(r.headers["x-1day-probe"], "platform");
-  assert.equal(r.headers["x-1day-pool-ready"], "2");
+  assert.equal(r.headers["x-1day-model-status"], "ok");
+  assert.equal(r.headers["x-1day-pool-ready"], undefined, "pool size is never disclosed");
   const j = r.json();
-  assert.equal(j.content[0].text, "ok");
+  assert.equal(j.content[0].text, `${MODEL}: ok`);
   assert.equal(j.usage.output_tokens, 0);
   const row = core.one("SELECT mode, status_code, actual_cost, account_id, error_code FROM usage_logs WHERE api_key_id = ? ORDER BY created_at DESC LIMIT 1", f.id);
   assert.equal(row.mode, "probe", JSON.stringify(row));
@@ -101,7 +102,7 @@ test("gateway: header probe answered 200 'ok' from the platform with pool header
   const s = await post(f, { ...tiny("ping"), stream: true }, { "x-1day-probe": "1" }, "/v1/chat/completions");
   assert.equal(s.statusCode, 200);
   assert.equal(s.headers["x-1day-probe"], "platform");
-  assert.match(s.body, /"content":"ok"/);
+  assert.match(s.body, /"content":"claude-sonnet-5: ok"/);
   assert.match(s.body, /\[DONE\]/);
 });
 
@@ -114,9 +115,13 @@ test("gateway: repeated tiny body is intercepted from the second sighting; empty
   const second = await post(f, tiny("hello"));
   assert.equal(second.statusCode, 503);
   assert.equal(second.headers["x-1day-probe"], "platform");
-  assert.equal(second.headers["x-1day-pool-ready"], "0");
+  assert.equal(second.headers["x-1day-model-status"], "unavailable");
+  assert.match(second.body, /currently unavailable/);
   assert.equal(second.json().error.code ?? second.json().error.type, second.json().error.code ?? "upstream_error");
-  assert.equal(core.one("SELECT mode, error_code FROM usage_logs WHERE api_key_id = ? ORDER BY created_at DESC LIMIT 1", f.id).mode, "probe");
+  const logged = core.one("SELECT mode, error_message FROM usage_logs WHERE api_key_id = ? ORDER BY created_at DESC LIMIT 1", f.id);
+  assert.equal(logged.mode, "probe");
+  assert.match(logged.error_message, /claude-sonnet-5: unavailable$/);
+  assert.doesNotMatch(logged.error_message, /accounts/);
   // a different tiny body starts its own count
   const other = await post(f, tiny("hey"));
   assert.equal(other.headers["x-1day-probe"], undefined);

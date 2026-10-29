@@ -98,10 +98,11 @@ tools 字母序且无 `strict`、有 `thinking` / `context_management`。巡检�
 - **识别**：请求头 `x-1day-probe: 1` 直接算探测；否则要求"极小"——去掉 system/developer 后 ≤2 条消息、纯文本、用户文本合计 ≤64 字符、无 tools、
   `max_tokens` ≤64——且**同一把 Key 在 10 分钟内第二次**发来同样的内容（模型 + 文本 + 是否流式的哈希）。第一次照常上游，之后的重复才接管，所以人类偶然的一句 "hi" 不受影响。
   窗口 / 次数 / 阈值由 `PROBE_INTERCEPT_WINDOW_MS`（600000）、`PROBE_INTERCEPT_MIN_REPEATS`（2）、`PROBE_INTERCEPT_MAX_CHARS`（64）、`PROBE_INTERCEPT_MAX_OUTPUT`（64）调整；按 Key 用 `policy.probeIntercept=false` 关闭，环境变量 `PROBE_INTERCEPT=0` 全局关闭（应急 / 测试）。
-- **回复**：按该 Key 分组对该模型的候选账号算健康度（排除临时冷却、窗口耗尽、过载、429 冷却）。有可用号 → **200**，正文固定为 `ok`（对应客户端格式的完整消息 / SSE，usage 全 0，id `msg_<uuid>`）；
-  没有 → **503 `no_available_account`**，与真实无号时一致。未知模型不接管，仍由正常路径返回 404。
-- **可见性**：响应头 `x-1day-probe: platform`、`x-1day-pool-ready: n`、`x-1day-pool-total: m`；用量日志写一行 `mode=probe`、费用为 0 的记录（503 时 `error_code=no_available_account`），
-  错误日志里能看到"probe answered by the platform (identical tiny request ×n …)"。
+- **回复**：按该 Key 分组对该模型的候选账号算健康度（排除临时冷却、窗口耗尽、过载、429 冷却），但**对外只说模型是否正常，不说有多少个号**（运营规则 2026-10-29）。
+  有可用号 → **200**，正文 `<model>: ok`（对应客户端格式的完整消息 / SSE，usage 全 0，id `msg_<uuid>`）；没有 → **503 `no_available_account`**，message
+  "Model '<model>' is currently unavailable on this platform; retry later."。未知模型不接管，仍由正常路径返回 404。
+- **可见性**：响应头 `x-1day-probe: platform`、`x-1day-model: <model>`、`x-1day-model-status: ok|unavailable`；用量日志写一行 `mode=probe`、费用为 0 的记录
+  （503 时 `error_code=no_available_account`），错误日志里是 "probe answered by the platform (identical tiny request ×n within 10 min): <model>: ok|unavailable"。
 
 **`users.max_inflight` / `users.max_inflight_usd`**（控制台 → 用户 → 余额页「并发上限」）：覆盖 `USER_MAX_INFLIGHT`（默认 4）与
 `USER_MAX_INFLIGHT_USD`（默认 10）；空 / 0 = 用默认。超出返回 429 `user_inflight_limit`（`packages/core/src/request-budget.ts`）。
@@ -345,7 +346,7 @@ Anthropic `POST https://platform.claude.com/v1/oauth/token`（JSON），OpenAI `
 同一账户并发刷新合并为一次；成功则加密回写凭证，失败沿用旧令牌。
 
 **刷新不带 UA**（2026-10-29）：审计曾按 compat.md §8 给刷新加 `claude-code/<版本>` UA，09:08Z 发布后全平台刷新一律 429、8 小时 0 次成功；16:27Z 去掉 UA 后下一轮保活即刷新成功。
-默认不发 UA（节点上 Bun 运行时会补 `Bun/<ver>`）；`OAUTH_REFRESH_UA` 可设为其他值原样发送。2026-10-29 16:34Z 实抓的真实客户端刷新用的是 **`axios/1.15.2`**（compat.md §8），是否对齐到它由运营决定。
+刷新请求头与实抓的真实客户端一致：`accept: application/json, text/plain, */*`、`content-type: application/json`、**`user-agent: axios/1.15.2`**（`REFRESH_UA`）、`accept-encoding: gzip, compress, deflate, br`（2026-10-29 晚对齐，compat.md §8）；`OAUTH_REFRESH_UA` 可覆盖（空串 = 不发）。
 另注：真实客户端只在令牌过期时懒刷新，没有后台保活；平台的 console 保活（到期前 15 分钟主动刷新、空闲号也刷）是为号池服务的偏离，属已知未对齐项。
 
 **令牌端点退避（迁移 31，2026-10-29）**：刷新收到 429 时写 `accounts.refresh_cooldown_until`（有 Retry-After 用它，否则默认 10 分钟，夹在 1 分钟～2 小时），

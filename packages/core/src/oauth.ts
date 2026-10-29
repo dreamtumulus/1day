@@ -12,6 +12,8 @@ import { OAUTH_ENDPOINTS } from "./platforms.js";
 import { isoIn, nowIso } from "./time.js";
 
 export const OAUTH_REFRESH_MARGIN_MS = 5 * 60_000;
+/** Token-endpoint user-agent of the real client (axios helper, captured 2026-10-29 from 2.1.312). */
+export const REFRESH_UA = "axios/1.15.2";
 
 /**
  * Token-endpoint back-off (migration 31, 2026-10-29). platform.claude.com answered refreshes with 429 for hours;
@@ -176,14 +178,14 @@ async function refreshOAuthCredentialLocked(
   const ep = OAUTH_ENDPOINTS[platform];
   try {
     // 对齐 CC 真实刷新（bundle：axios POST，body 带 scope 回放，默认 Accept；docs/claude-code-compat.md §8）
-    // UA: NO user-agent on the token endpoint. The 2026-10-29 audit added `claude-code/<ver>` here (the node
-    // only fills Claude Code headers on *.anthropic.com /v1/*, so platform.claude.com had gone out with Bun's
-    // default UA) and from that minute every refresh platform-wide answered 429 for eight hours; dropping the
-    // header restored refreshes at once (16:29Z). OAUTH_REFRESH_UA overrides for diagnosis (unset / "" = none).
-    const refreshUa = process.env.OAUTH_REFRESH_UA ?? "";
+    // Headers exactly as the real client sends them (captured 2026-10-29 16:34Z, docs/claude-code-compat.md §8):
+    // axios defaults — `axios/<ver>` UA, the axios Accept, accept-encoding — and nothing else. The audit had put
+    // `claude-code/<ver>` here (that is the UA of the api.anthropic.com helper calls, not of the token endpoint)
+    // and every refresh answered 429 for eight hours. OAUTH_REFRESH_UA overrides for diagnosis ("" = send none).
+    const refreshUa = process.env.OAUTH_REFRESH_UA ?? REFRESH_UA;
     const headers: Record<string, string> =
       platform === "anthropic"
-        ? { "content-type": "application/json", accept: CC_AUX_ACCEPT, ...(refreshUa ? { "user-agent": refreshUa } : {}) }
+        ? { accept: CC_AUX_ACCEPT, "content-type": "application/json", ...(refreshUa ? { "user-agent": refreshUa } : {}), "accept-encoding": "gzip, compress, deflate, br" }
         : { "content-type": "application/x-www-form-urlencoded" };
     const body =
       platform === "anthropic"

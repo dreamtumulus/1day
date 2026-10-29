@@ -56,7 +56,7 @@ import {
   refreshCooldownUntil,
 } from "@1dayapi/core";
 import { authenticate, type CallerContext } from "./auth.js";
-import { PROBE_REPLY, PROBE_WINDOW_MS, detectProbe, poolHealth, type ProbeVerdict } from "./probe.js";
+import { PROBE_WINDOW_MS, detectProbe, poolHealth, probeReply, type ProbeVerdict } from "./probe.js";
 import { AUTH_FAILURE_COOLDOWN_MS, AuthFailureTracker, isCcAccountOnHold, isCcAuthFailure } from "./ccr/auth-failure.js";
 import { classifyCcRequestError, isCcModelUnavailable } from "./ccr/model-unavailable.js";
 import { config } from "./config.js";
@@ -509,7 +509,8 @@ function answerProbe(req: FastifyRequest, reply: FastifyReply, format: ClientFor
   const health = poolHealth(caller.groupId, model);
   const ok = health.ready > 0;
   const why = verdict.reason === "header" ? "x-1day-probe header" : `identical tiny request ×${verdict.repeats} within ${Math.round(PROBE_WINDOW_MS / 60_000)} min`;
-  const summary = `probe answered by the platform (${why}): ${health.ready}/${health.total} accounts ready`;
+  // Outward and in the log: the model's status only — never how many accounts stand behind it (operator rule 2026-10-29).
+  const summary = `probe answered by the platform (${why}): ${probeReply(model, ok)}`;
   try {
     settleRequest({
       requestId: crypto.randomUUID(), userId: caller.userId, apiKeyId: caller.apiKeyId, groupId: caller.groupId, rateMultiplier: caller.rateMultiplier,
@@ -520,9 +521,9 @@ function answerProbe(req: FastifyRequest, reply: FastifyReply, format: ClientFor
   } catch (err) {
     console.error("[probe] failed to log the probe:", err);
   }
-  reply.header("x-1day-probe", "platform").header("x-1day-pool-ready", String(health.ready)).header("x-1day-pool-total", String(health.total));
-  if (!ok) { sendError(reply, format, 503, "no_available_account", `No upstream account is currently available for '${model}'.`, "upstream_error"); return true; }
-  sendSyntheticMessage(reply, format, body, PROBE_REPLY);
+  reply.header("x-1day-probe", "platform").header("x-1day-model", model).header("x-1day-model-status", ok ? "ok" : "unavailable");
+  if (!ok) { sendError(reply, format, 503, "no_available_account", `Model '${model}' is currently unavailable on this platform; retry later.`, "upstream_error"); return true; }
+  sendSyntheticMessage(reply, format, body, probeReply(model, ok));
   return true;
 }
 

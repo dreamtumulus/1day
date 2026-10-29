@@ -23,7 +23,8 @@ export const PROBE_MIN_REPEATS = envInt("PROBE_INTERCEPT_MIN_REPEATS", 2, 1, 100
 /** Tiny = at most this much user text and this small an output cap. */
 export const PROBE_MAX_CHARS = envInt("PROBE_INTERCEPT_MAX_CHARS", 64, 1, 4096);
 export const PROBE_MAX_OUTPUT = envInt("PROBE_INTERCEPT_MAX_OUTPUT", 64, 1, 100_000);
-export const PROBE_REPLY = "ok";
+/** Reply text: the probed model and whether it is serving; never the pool size. */
+export const probeReply = (model: string, ok: boolean): string => `${model}: ${ok ? "ok" : "unavailable"}`;
 
 export interface ProbeShape { hash: string; chars: number }
 
