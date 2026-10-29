@@ -140,7 +140,12 @@ export function usageQuery(
   return { where: w };
 }
 
-export const USAGE_SELECT = `SELECT l.*, k.name AS key_name, u.name AS user_name, a.name AS account_name, pu.name AS provider_name
+export const USAGE_SELECT = `SELECT l.*, k.name AS key_name, u.name AS user_name, a.name AS account_name, pu.name AS provider_name,
+  COALESCE(l.team_id, a.team_id) AS eff_team_id, COALESCE(l.proxy_id, a.bound_proxy_id) AS eff_proxy_id,
+  (SELECT ut.name FROM upstream_teams ut WHERE ut.id = COALESCE(l.team_id, a.team_id)) AS team_name,
+  (SELECT oo.name FROM onboard_orgs oo WHERE lower(oo.org_uuid) = lower(COALESCE(l.team_id, a.team_id)) LIMIT 1) AS org_name,
+  (SELECT np.group_name FROM node_proxies np WHERE np.id = COALESCE(l.proxy_id, a.bound_proxy_id)) AS proxy_group,
+  (SELECT np.exit_country FROM node_proxies np WHERE np.id = COALESCE(l.proxy_id, a.bound_proxy_id)) AS proxy_country
   FROM usage_logs l LEFT JOIN api_keys k ON k.id = l.api_key_id
   LEFT JOIN users u ON u.id = l.user_id LEFT JOIN accounts a ON a.id = l.account_id
   LEFT JOIN users pu ON pu.id = l.provider_id`;

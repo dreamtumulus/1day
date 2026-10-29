@@ -220,10 +220,15 @@ export function adminAccountShape(
   extra?: { usage?: AccountUsageStats; inFlight?: number | null; showTeam?:boolean },
 ) {
   const usage = extra?.usage ?? EMPTY_USAGE;
+  // Bound proxy facts shown on the account lists (user 2026-10-29: 所属组织 / IP 组 / IP 区域 on every account row).
+  const bp = a.bound_proxy_id ? one<{ c: string | null; g: string | null; ip: string | null }>("SELECT exit_country AS c, group_name AS g, exit_ip AS ip FROM node_proxies WHERE id = ?", a.bound_proxy_id) : null;
   return {
     ...providerAccountShape(a, stats ?? { requests: usage.d30.requests, cost: usage.d30.costUsd, earning: 0 }),
     ...(extra?.showTeam && a.type==="oauth" && a.platform==="anthropic" ? poolReasonFields(a) : {}),
-    ...(extra?.showTeam?{teamId:a.team_id,teamName:a.team_id?one<{name:string|null}>("SELECT name FROM upstream_teams WHERE id=?",a.team_id)?.name??null:null,errorMessage:a.error_message}:{}),
+    ...(extra?.showTeam?{teamId:a.team_id,teamName:a.team_id?one<{name:string|null}>("SELECT name FROM upstream_teams WHERE id=?",a.team_id)?.name??null:null,
+      /** Saved organization profile (onboard_orgs) matching the account's team, when one exists. */
+      orgName:a.team_id?one<{name:string}>("SELECT name FROM onboard_orgs WHERE lower(org_uuid)=lower(?) LIMIT 1",a.team_id)?.name??null:null,
+      errorMessage:a.error_message}:{}),
     ownerId: a.owner_id,
     ownerName: a.owner_name ?? null,
     priority: a.priority,
@@ -231,7 +236,9 @@ export function adminAccountShape(
     rpmLimit: a.rpm_limit,
     rawPassthrough: a.raw_passthrough === 1,
     boundProxyId: a.bound_proxy_id,
-    boundProxyCountry: a.bound_proxy_id ? one<{ c: string | null }>("SELECT exit_country AS c FROM node_proxies WHERE id = ?", a.bound_proxy_id)?.c ?? null : null,
+    boundProxyCountry: bp?.c ?? null,
+    boundProxyGroup: bp?.g ?? null,
+    boundProxyExitIp: bp?.ip ?? null,
     modelMapping: parseJsonMap(a.model_mapping),
     groups,
     rateLimitedUntil: a.rate_limited_until,
@@ -371,6 +378,13 @@ export interface UsageRowDb {
   node_id?: string | null;
   account_switched?: number | null;
   cache_refund_id?: string | null;
+  /** Provenance (migration 30 + fallbacks to the account's current binding), admin lists only. */
+  eff_team_id?: string | null;
+  eff_proxy_id?: string | null;
+  team_name?: string | null;
+  org_name?: string | null;
+  proxy_group?: string | null;
+  proxy_country?: string | null;
 }
 
 export function usageShape(u: UsageRowDb) {

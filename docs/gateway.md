@@ -314,6 +314,9 @@ Claude Code 一类客户端自己还有约 120 s 的首字节超时。网关在�
 
 ## 7. 结算
 
+**请求来源留痕（迁移 30，2026-10-29）**：`usage_logs.team_id / proxy_id` 在结算时写入服务账号当时的组织与绑定代理；控制台用量明细按
+`COALESCE(l.team_id, a.team_id)` 显示组织（优先 onboard_orgs 方案名，其次 upstream_teams 名）、IP 组与出口国家，账号重绑或删除后旧记录不变。
+
 调用 core 的 `settleRequest`（单事务，见 [`data-model.md`](./data-model.md) §4）：
 `total = computeCost(model, usage)`、`actual = q8(total × 分组倍率)`、号商账户 `earning = q8(total × payout_rate)`。
 流式请求**在结束客户端响应之前**结算，客户端看到流结束时扣费已落库；非流式在发送响应前结算。结算异常只打日志，不影响响应。

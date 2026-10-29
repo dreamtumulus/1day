@@ -1216,6 +1216,8 @@ function logFailure(ctx: Ctx, account: AccountRow | null, status: number, code: 
       mode: ctx.trace.mode,
       upstreamStatus: ctx.trace.upstreamStatus,
       nodeId: account?.node_id ?? ctx.trace.nodeId,
+      teamId: account?.team_id ?? null,
+      proxyId: account?.bound_proxy_id ?? null,
     });
   } catch (err) {
     console.error("[proxy] failed to log failed request:", err);
@@ -1338,6 +1340,8 @@ function settleSuccess(
       mode: ctx.trace.mode,
       nodeId: account.node_id,
       accountSwitched: ctx.forceCacheBilling,
+      teamId: account.team_id ?? null,
+      proxyId: account.bound_proxy_id ?? null,
     });
   } catch (err) {
     console.error(`[billing] settle failed for ${ctx.requestId}:`, err);

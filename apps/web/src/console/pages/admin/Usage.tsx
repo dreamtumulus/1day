@@ -207,6 +207,13 @@ export function AdminUsage() {
             {r.nodeId ? r.nodeId.slice(0, 13) : t("admin.usage.directBadge")}
             {r.clientIp ? ` · ${r.clientIp}` : ""}
           </div>
+          {(r.orgName || r.teamName || r.teamId || r.proxyGroup || r.proxyCountry) && (
+            <div className={`mt-0.5 truncate text-[11.5px] ${faint}`} title={[r.orgName ?? r.teamName ?? r.teamId, r.proxyGroup, r.proxyCountry].filter(Boolean).join(" · ")}>
+              {r.orgName ?? r.teamName ?? (r.teamId ? r.teamId.slice(0, 8) : "")}
+              {r.proxyGroup ? ` · ${r.proxyGroup}` : ""}
+              {r.proxyCountry ? ` · ${r.proxyCountry}` : ""}
+            </div>
+          )}
         </div>
       ),
     },
@@ -224,6 +231,8 @@ export function AdminUsage() {
         { label: t("admin.usage.dUpstreamModel"), value: <span className="font-mono text-[12.5px]">{r.upstreamModel ?? r.model}</span> },
         { label: t("admin.usage.dNode"), value: <span className="font-mono text-[12.5px]">{r.nodeId ?? "—"}</span> },
         { label: t("admin.usage.colProviderAccount"), value: `${r.providerName ?? t("admin.usage.directBadge")}${r.accountName ? ` · ${r.accountName}` : ""}` },
+        { label: t("team.name"), value: <span title={r.teamId ?? ""}>{r.orgName ?? r.teamName ?? "—"}{r.teamId ? <span className="ml-1 font-mono text-[11.5px] text-on-surface-faint">{r.teamId}</span> : null}</span>, wide: true },
+        { label: t("admin.usage.dProxyGroup"), value: `${r.proxyGroup ?? "—"}${r.proxyCountry ? ` · ${r.proxyCountry}` : ""}${r.proxyId ? ` · ${r.proxyId}` : ""}` },
         { label: t("admin.usage.colInput"), value: fmtNum(r.inputTokens) },
         { label: t("admin.usage.colOutput"), value: fmtNum(r.outputTokens) },
         { label: t("admin.usage.colCacheRW"), value: `${fmtNum(r.cacheReadTokens)} / ${fmtNum(r.cacheWriteTokens)}` },

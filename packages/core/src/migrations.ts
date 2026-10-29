@@ -315,6 +315,7 @@ const MIGRATIONS: Array<{ version: number; up: (d: DatabaseSync, log: Log) => vo
   { version: 27, up: migration27 },
   { version: 28, up: migration28 },
   { version: 29, up: migration29 },
+  { version: 30, up: migration30 },
 ];
 
 // 上号员令牌（独立鉴权的上号站点 /onboard）：admin 签发，绑定目标节点；
@@ -886,4 +887,11 @@ function migration29(d: DatabaseSync, log: Log): void {
   addColumns(d, log, "api_keys", [["policy_json", "TEXT"]]);
   addColumns(d, log, "users", [["max_inflight", "INTEGER"], ["max_inflight_usd", "REAL"]]);
   log("migration 29: api_keys.policy_json, users.max_inflight / max_inflight_usd");
+}
+
+// Request provenance (2026-10-29, user: 每个请求应能看到最终账号、TEAM 组织、IP 组): the organization and the
+// bound proxy of the serving account at request time, so the record survives rebinding and deletion.
+function migration30(d: DatabaseSync, log: Log): void {
+  addColumns(d, log, "usage_logs", [["team_id", "TEXT"], ["proxy_id", "TEXT"]]);
+  log("migration 30: usage_logs.team_id / proxy_id");
 }

@@ -471,7 +471,10 @@ export function AdminAccounts() {
         </div>
         {me?.role === "admin" && a.type === "oauth" && (
           <div className="mt-1 pl-[22px] text-[11px] text-on-surface-variant">
-            <div className="truncate" title={a.teamName ?? undefined}>{t("team.name")}: {a.teamName ?? (a.teamId ? t("team.unnamed") : t("team.unassigned"))}</div>
+            <div className="truncate" title={[a.orgName, a.teamName].filter(Boolean).join(" / ") || undefined}>
+              {t("team.name")}: {a.orgName ?? a.teamName ?? (a.teamId ? t("team.unnamed") : t("team.unassigned"))}
+              {a.orgName && a.teamName && a.teamName !== a.orgName ? <span className="text-on-surface-faint"> ({a.teamName})</span> : null}
+            </div>
             {a.teamId && <div className="truncate font-mono text-on-surface-faint" title={a.teamId}>{a.teamId}</div>}
           </div>
         )}
@@ -666,12 +669,17 @@ export function AdminAccounts() {
     const proxyHost = a.boundProxyId ? (proxyHosts.get(a.boundProxyId) ?? `${a.boundProxyId.slice(0, 10)}…`) : t("admin.accounts.proxyAuto");
     const proxy = a.boundProxyId && a.boundProxyCountry ? `${a.boundProxyCountry} · ${proxyHost}` : proxyHost;
     return (
-      <div className="max-w-[108px] text-[12px]">
+      <div className="max-w-[160px] text-[12px]">
         <div className="truncate font-medium text-info" title={a.nodeId ?? ""}>
           {node}
         </div>
-        <div className={`truncate font-mono text-[11px] ${a.boundProxyId ? "text-on-surface-variant" : "text-on-surface-faint"}`} title={a.boundProxyId ?? ""}>
-          {proxy}
+        {a.boundProxyId && (
+          <div className="truncate text-[11px] text-on-surface-variant" title={a.boundProxyGroup ?? t("admin.accounts.groupNone")}>
+            {t("admin.accounts.colGroup")}: {a.boundProxyGroup ?? t("admin.accounts.groupNone")}
+          </div>
+        )}
+        <div className={`truncate font-mono text-[11px] ${a.boundProxyId ? "text-on-surface-variant" : "text-on-surface-faint"}`} title={[a.boundProxyId, a.boundProxyExitIp].filter(Boolean).join(" · ")}>
+          {proxy}{a.boundProxyExitIp ? ` · ${a.boundProxyExitIp}` : ""}
         </div>
       </div>
     );

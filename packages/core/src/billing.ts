@@ -40,6 +40,9 @@ export interface SettleInput {
    * client. Marked for the periodic cache refund (cache-refund.ts).
    */
   accountSwitched?: boolean;
+  /** Provenance (migration 30): the serving account's organization and bound proxy at request time. */
+  teamId?: string | null;
+  proxyId?: string | null;
 }
 
 export interface SettleResult {
@@ -104,8 +107,8 @@ export function settlePreparedRequest(p: SettleInput, price: SettlementPricing):
            (id, request_id, user_id, api_key_id, group_id, account_id, provider_id, model, upstream_model,
             endpoint, stream, status_code, error_code, input_tokens, output_tokens, cache_read_tokens,
             cache_write_tokens, usage_estimated, total_cost, rate_multiplier, actual_cost, provider_earning,
-            duration_ms, first_token_ms, client_ip, cc_shape, error_message, mode, upstream_status, node_id, account_switched, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            duration_ms, first_token_ms, client_ip, cc_shape, error_message, mode, upstream_status, node_id, account_switched, team_id, proxy_id, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(request_id) DO NOTHING`,
       )
       .run(
@@ -140,6 +143,8 @@ export function settlePreparedRequest(p: SettleInput, price: SettlementPricing):
         p.upstreamStatus ?? null,
         p.nodeId ?? null,
         p.accountSwitched && ok ? 1 : 0,
+        p.teamId ?? null,
+        p.proxyId ?? null,
         now,
       );
     if (Number(ins.changes) === 0) {

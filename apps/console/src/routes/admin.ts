@@ -1186,6 +1186,13 @@ export function registerAdminRoutes(app: FastifyInstance): void {
           providerName: r.provider_name ?? null,
           totalCost: r.total_cost,
           providerEarning: r.provider_earning,
+          // Provenance: organization / IP group of the serving account (migration 30; older rows fall back to the current binding).
+          teamId: r.eff_team_id ?? null,
+          teamName: r.team_name ?? null,
+          orgName: r.org_name ?? null,
+          proxyId: r.eff_proxy_id ?? null,
+          proxyGroup: r.proxy_group ?? null,
+          proxyCountry: r.proxy_country ?? null,
         })),
         total,
         p,
@@ -1407,6 +1414,33 @@ export function registerAdminRoutes(app: FastifyInstance): void {
     try { group = normalizeProxyGroup(b.group); } catch (err) { bad("invalid_request", (err as Error).message); }
     const changed = tx(() => setNodeProxyGroup(id, ids!, group));
     return { data: { changed, group, groups: listNodeProxyGroups(id) } };
+  });
+
+  // Rename an IP group on a node (user 2026-10-29): every member moves to the new name and the organization
+  // profiles' recommended routes that named the old group on this node follow, so the onboard site keeps working.
+  app.post("/api/admin/nodes/:id/proxy-groups/rename", pre, async (req) => {
+    const { id } = req.params as { id: string };
+    if (!nodeExists(id)) notFound("node");
+    const b = body(req);
+    let from: string | null; let to: string | null;
+    try { from = normalizeProxyGroup(b.from); to = normalizeProxyGroup(b.to); } catch (err) { bad("invalid_request", (err as Error).message); }
+    if (!from || !to) bad("invalid_request", "from and to are required");
+    if (from === to) return { data: { changed: 0, routesUpdated: 0, groups: listNodeProxyGroups(id) } };
+    if (!listNodeProxyGroups(id).some((g) => g.group === from)) bad("group_not_found", `Node has no IP group '${from}'`);
+    const result = tx(() => {
+      const changed = run("UPDATE node_proxies SET group_name = ? WHERE node_id = ? AND group_name = ?", to, id, from).changes;
+      let routesUpdated = 0;
+      for (const o of all<{ id: string; routes_json: string | null }>("SELECT id, routes_json FROM onboard_orgs WHERE routes_json IS NOT NULL")) {
+        let routes: Array<{ nodeId?: unknown; group?: unknown }>;
+        try { routes = JSON.parse(o.routes_json ?? "[]"); } catch { continue; }
+        if (!Array.isArray(routes)) continue;
+        let hit = false;
+        for (const r of routes) if (r && r.nodeId === id && r.group === from) { r.group = to; hit = true; }
+        if (hit) { run("UPDATE onboard_orgs SET routes_json = ? WHERE id = ?", JSON.stringify(routes), o.id); routesUpdated += 1; }
+      }
+      return { changed: Number(changed), routesUpdated };
+    });
+    return { data: { ...result, from, to, groups: listNodeProxyGroups(id) } };
   });
 
   // Remove proxies by id (bound / reserved ones are reported, not removed); the pool is re-pushed.

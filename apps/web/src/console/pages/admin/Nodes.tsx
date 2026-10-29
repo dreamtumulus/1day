@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { useAuth } from "../../../lib/auth";
-import { api, nodeProxiesRegroup, nodeProxiesRemove, nodeProxyUnquarantine, type AdminUser, type DeployOutcome, type Group, type NodeProxy, type NodeRow, type Paged, type TeamEvent } from "../../api";
+import { api, nodeProxiesRegroup, nodeProxiesRemove, nodeProxyGroupRename, nodeProxyUnquarantine, type AdminUser, type DeployOutcome, type Group, type NodeProxy, type NodeRow, type Paged, type TeamEvent } from "../../api";
 import { useCT } from "../../i18n";
 
 /** Nodes · Node monitor share one sidebar entry; this strip links the two. */
@@ -76,6 +77,7 @@ export function AdminNodes() {
   const [deployOpen, setDeployOpen] = useState(false);
   const [localOpen, setLocalOpen] = useState(false);
   const [poolNode, setPoolNode] = useState<NodeRow | null>(null);
+  const navigate = useNavigate();
   const [capNode, setCapNode] = useState<NodeRow | null>(null);
   const [accountNode, setAccountNode] = useState<NodeRow | null>(null);
   const nodes = list.data ?? [];
@@ -144,6 +146,9 @@ export function AdminNodes() {
                         </Button>
                         <Button size="sm" onClick={() => setPoolNode(n)}>
                           {t("admin.nodes.proxies")} · {fmtNum(n.proxyCount)}
+                        </Button>
+                        <Button size="sm" onClick={() => navigate(`/console/admin/accounts?nodeId=${encodeURIComponent(n.nodeId)}`)}>
+                          {t("admin.nodes.accountsList")} · {fmtNum(n.accountCount)}
                         </Button>
                         <Button size="sm" variant="primary" onClick={() => setAccountNode(n)}>
                           {t("admin.nodes.addAccount")}
@@ -556,6 +561,7 @@ function ProxyPoolModal({ node, onClose }: { node: NodeRow; onClose: () => void 
   const [statusFilter, setStatusFilter] = useState<"all" | "live" | "dead" | "unknown">("all");
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [targetGroup, setTargetGroup] = useState("");
+  const [renameTo, setRenameTo] = useState<string | null>(null); // non-null = rename box open for the active group
   const { proxies, bad } = parseProxyLines(text);
 
   const rows = pool.data ?? [];
@@ -619,6 +625,38 @@ function ProxyPoolModal({ node, onClose }: { node: NodeRow; onClose: () => void 
               t("admin.nodes.groupChipTitle", { live: g.live, dead: g.dead, bound: g.bound, assignable: g.assignable }),
               g.live === 0 && g.total > 0 ? "error" : undefined,
             ),
+          )}
+          {isAdmin && groupFilter !== ALL && groupFilter !== NONE && (
+            renameTo === null ? (
+              <Button size="sm" onClick={() => setRenameTo(groupFilter)}>{t("admin.nodes.renameGroup")}</Button>
+            ) : (
+              <span className="inline-flex items-center gap-1">
+                <Input value={renameTo} maxLength={60} className="w-[200px]" onChange={(e) => setRenameTo(e.target.value)} />
+                <Button
+                  size="sm"
+                  variant="primary"
+                  loading={busy}
+                  disabled={!renameTo.trim() || renameTo.trim() === groupFilter}
+                  onClick={async () => {
+                    setBusy(true);
+                    try {
+                      const r = await nodeProxyGroupRename(node.nodeId, groupFilter, renameTo.trim());
+                      toast.success(t("admin.nodes.groupRenamed", { n: r.changed, routes: r.routesUpdated }));
+                      setGroupFilter(renameTo.trim());
+                      setRenameTo(null);
+                      pool.reload();
+                    } catch (err) {
+                      toast.error(err);
+                    } finally {
+                      setBusy(false);
+                    }
+                  }}
+                >
+                  {t("common.save")}
+                </Button>
+                <Button size="sm" onClick={() => setRenameTo(null)}>{t("common.cancel")}</Button>
+              </span>
+            )
           )}
           <span className="mx-1 h-5 w-px" style={{ background: "var(--outline-variant)" }} />
           <Segmented

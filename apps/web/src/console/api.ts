@@ -129,6 +129,13 @@ export interface UsageRow {
   accountName?: string | null;
   providerId?: string | null;
   providerName?: string | null;
+  /** Provenance of the serving account (migration 30): organization / IP group / exit country. */
+  teamId?: string | null;
+  teamName?: string | null;
+  orgName?: string | null;
+  proxyId?: string | null;
+  proxyGroup?: string | null;
+  proxyCountry?: string | null;
   totalCost?: number;
   providerEarning?: number;
 }
@@ -454,6 +461,10 @@ export interface AdminAccount extends ProviderAccount {
   poolReason?: string | null;
   /** Country of the bound proxy's measured exit (alpha-2). */
   boundProxyCountry?: string | null;
+  /** IP group and measured exit of the bound proxy; saved organization profile name for the team (admin lists). */
+  boundProxyGroup?: string | null;
+  boundProxyExitIp?: string | null;
+  orgName?: string | null;
   tempUnschedulableUntil: string | null;
   /** CCR subscription window (null until the first probe). 0..1. */
   windowUsed: number | null;
@@ -632,6 +643,8 @@ export const nodeProxyGroups = (scope: OnboardScope, nodeId: string) =>
   api.get<ProxyGroupSummary[]>(`/api/${scope}/nodes/${encodeURIComponent(nodeId)}/proxy-groups`);
 export const nodeProxiesRegroup = (nodeId: string, proxyIds: string[], group: string | null) =>
   api.post<{ changed: number; group: string | null; groups: ProxyGroupSummary[] }>(`/api/admin/nodes/${encodeURIComponent(nodeId)}/proxies/group`, { proxyIds, group });
+export const nodeProxyGroupRename = (nodeId: string, from: string, to: string) =>
+  api.post<{ changed: number; routesUpdated: number; groups: ProxyGroupSummary[] }>(`/api/admin/nodes/${encodeURIComponent(nodeId)}/proxy-groups/rename`, { from, to });
 export const nodeProxiesRemove = (nodeId: string, proxyIds: string[]) =>
   api.post<{ removed: string[]; bound: string[]; reserved: string[]; notFound: string[]; pushed: boolean; remaining: number }>(`/api/admin/nodes/${encodeURIComponent(nodeId)}/proxies/remove`, { proxyIds });
 
