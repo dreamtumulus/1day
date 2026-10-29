@@ -348,6 +348,8 @@ export interface NodeProxy {
   id: string;
   url: string | null;
   label: string | null;
+  /** Operator group (provider / batch / purpose); null = ungrouped. */
+  group?: string | null;
   /** ISO 3166-1 alpha-2 of the measured exit (node heartbeat), null until measured. */
   country?: string | null;
   status: "live" | "dead" | "unknown" | string;
@@ -518,6 +520,7 @@ export type OnboardScope = "admin" | "provider";
 export interface ProxyPickerItem {
   id: string;
   label: string | null;
+  group?: string | null;
   country?: string | null;
   host: string | null;
   port: number | null;
@@ -588,6 +591,22 @@ export const onboardOrgCreate = (body: { name: string; orgUuid: string; note?: s
 export const onboardOrgUpdate = (id: string, body: { name?: string; orgUuid?: string; note?: string | null }) =>
   api.patch<OnboardOrg>(`/api/admin/onboard/orgs/${id}`, body);
 export const onboardOrgDelete = (id: string) => api.del(`/api/admin/onboard/orgs/${id}`);
+
+/** Proxy groups (docs/onboarding.md §4.2): per-group tallies of a node's pool; null group = ungrouped rows. */
+export interface ProxyGroupSummary {
+  group: string | null;
+  total: number;
+  live: number;
+  dead: number;
+  bound: number;
+  assignable: number;
+}
+export const nodeProxyGroups = (scope: OnboardScope, nodeId: string) =>
+  api.get<ProxyGroupSummary[]>(`/api/${scope}/nodes/${encodeURIComponent(nodeId)}/proxy-groups`);
+export const nodeProxiesRegroup = (nodeId: string, proxyIds: string[], group: string | null) =>
+  api.post<{ changed: number; group: string | null; groups: ProxyGroupSummary[] }>(`/api/admin/nodes/${encodeURIComponent(nodeId)}/proxies/group`, { proxyIds, group });
+export const nodeProxiesRemove = (nodeId: string, proxyIds: string[]) =>
+  api.post<{ removed: string[]; bound: string[]; reserved: string[]; notFound: string[]; pushed: boolean; remaining: number }>(`/api/admin/nodes/${encodeURIComponent(nodeId)}/proxies/remove`, { proxyIds });
 
 /** Lift a proxy quarantine (admin): the node re-verifies the exit on its next heartbeat. */
 export const nodeProxyUnquarantine = (nodeId: string, proxyId: string) =>

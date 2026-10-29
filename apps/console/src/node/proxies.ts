@@ -11,12 +11,24 @@ import { canonicalProxyUrl, describeProxy, parseProxyInput, proxyFingerprint, pr
 export interface ProxyInput {
   url: string;
   label?: string;
+  /** Operator group (provider / batch / purpose); undefined = leave as is, null = ungroup. */
+  group?: string | null;
+}
+
+/** Group names are short free text; empty → null (ungrouped). */
+export function normalizeProxyGroup(v: unknown): string | null {
+  if (v === null || v === undefined) return null;
+  if (typeof v !== "string") throw new ProxyInputError("group must be a string");
+  const g = v.trim().replace(/\s+/g, " ");
+  if (g.length > 60) throw new ProxyInputError("group must be at most 60 chars");
+  return g || null;
 }
 
 const PROXY_URL_RE = /^(https?|socks5h?):\/\/\S+$/;
 
-export function validateProxies(input: unknown): ProxyInput[] {
+export function validateProxies(input: unknown, defaultGroup?: unknown): ProxyInput[] {
   if (!Array.isArray(input)) throw new ProxyInputError("proxies must be an array");
+  const batchGroup = defaultGroup === undefined ? undefined : normalizeProxyGroup(defaultGroup);
   if (input.length > 500) throw new ProxyInputError("at most 500 proxies per node");
   const out: ProxyInput[] = [];
   for (const p of input) {
@@ -35,7 +47,11 @@ export function validateProxies(input: unknown): ProxyInput[] {
     if (label !== undefined && (typeof label !== "string" || label.length > 120)) {
       throw new ProxyInputError("proxy label must be a string of at most 120 chars");
     }
-    out.push({ url: normalized, label: typeof label === "string" && label.trim() ? label.trim() : undefined });
+    const group = (p as Record<string, unknown>).group;
+    const item: ProxyInput = { url: normalized, label: typeof label === "string" && label.trim() ? label.trim() : undefined };
+    if (group !== undefined) item.group = normalizeProxyGroup(group);
+    else if (batchGroup !== undefined) item.group = batchGroup;
+    out.push(item);
   }
   return out;
 }
@@ -53,6 +69,8 @@ export interface ProxySkips {
 
 export interface AddProxiesResult {
   added: number;
+  /** Rows already in this node's pool that the batch moved into its group (user rule 2026-10-29). */
+  regrouped: number;
   skipped: ProxySkips;
   /** Masked URLs of every skipped line, in input order (for the operator's result message). */
   skippedUrls: string[];
@@ -67,9 +85,10 @@ const totalSkipped = (s: ProxySkips): number => s.duplicateInBatch + s.alreadyIn
  * `acceptInPool` = true keeps lines already in this node's pool (replace mode
  * re-saves them); false drops them (append mode leaves existing rows alone).
  */
-function dedupeBatch(nodeId: string, proxies: ProxyInput[], acceptInPool: boolean): { keep: ProxyInput[]; skipped: ProxySkips; skippedUrls: string[] } {
+function dedupeBatch(nodeId: string, proxies: ProxyInput[], acceptInPool: boolean): { keep: ProxyInput[]; inPool: ProxyInput[]; skipped: ProxySkips; skippedUrls: string[] } {
   const seen = new Set<string>();
   const keep: ProxyInput[] = [];
+  const inPool: ProxyInput[] = [];
   const skipped = noSkips();
   const skippedUrls: string[] = [];
   for (const p of proxies) {
@@ -87,13 +106,18 @@ function dedupeBatch(nodeId: string, proxies: ProxyInput[], acceptInPool: boolea
       continue;
     }
     if (owner && !acceptInPool) {
-      skipped.alreadyInPool++;
-      skippedUrls.push(maskProxyUrl(p.url));
+      // Already here: with a group in the batch the row is filed into that group instead
+      // of being dropped (pasting a provider's list under a group moves known lines too).
+      if (p.group !== undefined) inPool.push(p);
+      else {
+        skipped.alreadyInPool++;
+        skippedUrls.push(maskProxyUrl(p.url));
+      }
       continue;
     }
     keep.push(p);
   }
-  return { keep, skipped, skippedUrls };
+  return { keep, inPool, skipped, skippedUrls };
 }
 
 /**
@@ -103,21 +127,26 @@ function dedupeBatch(nodeId: string, proxies: ProxyInput[], acceptInPool: boolea
  */
 export function addNodeProxies(nodeId: string, proxies: ProxyInput[]): AddProxiesResult {
   const existing = one<{ n: number }>("SELECT COUNT(*) AS n FROM node_proxies WHERE node_id = ?", nodeId)?.n ?? 0;
-  const { keep, skipped, skippedUrls } = dedupeBatch(nodeId, proxies, false);
+  const { keep, inPool, skipped, skippedUrls } = dedupeBatch(nodeId, proxies, false);
   if (existing + keep.length > 500) throw new ProxyInputError(`at most 500 proxies per node (has ${existing}, adding ${keep.length})`);
   for (const p of keep) {
     run(
-      "INSERT INTO node_proxies (id, node_id, url_enc, label, status,isolation_version) VALUES (?, ?, ?, ?, 'unknown',1)",
+      "INSERT INTO node_proxies (id, node_id, url_enc, label, status,isolation_version, group_name) VALUES (?, ?, ?, ?, 'unknown',1, ?)",
       proxyIdFromUrl(p.url),
       nodeId,
       encryptString(p.url),
       p.label ?? null,
+      p.group ?? null,
     );
   }
-  if (totalSkipped(skipped) > 0) {
-    console.info(`[proxies] node ${nodeId}: added ${keep.length}, skipped ${totalSkipped(skipped)} (batch dup ${skipped.duplicateInBatch}, in pool ${skipped.alreadyInPool}, other node ${skipped.onOtherNode})`);
+  let regrouped = 0;
+  for (const p of inPool) {
+    regrouped += run("UPDATE node_proxies SET group_name = ? WHERE id = ? AND node_id = ? AND group_name IS NOT ?", p.group ?? null, proxyIdFromUrl(p.url), nodeId, p.group ?? null).changes;
   }
-  return { added: keep.length, skipped, skippedUrls };
+  if (totalSkipped(skipped) > 0 || regrouped > 0) {
+    console.info(`[proxies] node ${nodeId}: added ${keep.length}, regrouped ${regrouped}, skipped ${totalSkipped(skipped)} (batch dup ${skipped.duplicateInBatch}, in pool ${skipped.alreadyInPool}, other node ${skipped.onOtherNode})`);
+  }
+  return { added: keep.length, regrouped, skipped, skippedUrls };
 }
 
 export interface ReplaceProxiesResult {
@@ -154,13 +183,15 @@ export function replaceNodeProxies(nodeId: string, proxies: ProxyInput[]): Repla
     const id = proxyIdFromUrl(p.url);
     if (one("SELECT 1 FROM node_proxies WHERE id = ? AND node_id = ?", id, nodeId)) {
       run("UPDATE node_proxies SET url_enc = ?, label = ? WHERE id = ? AND node_id = ?", encryptString(p.url), p.label ?? null, id, nodeId);
+      if (p.group !== undefined) run("UPDATE node_proxies SET group_name = ? WHERE id = ? AND node_id = ?", p.group, id, nodeId);
     } else {
       run(
-        "INSERT INTO node_proxies (id, node_id, url_enc, label, status,isolation_version) VALUES (?, ?, ?, ?, 'unknown',1)",
+        "INSERT INTO node_proxies (id, node_id, url_enc, label, status,isolation_version, group_name) VALUES (?, ?, ?, ?, 'unknown',1, ?)",
         id,
         nodeId,
         encryptString(p.url),
         p.label ?? null,
+        p.group ?? null,
       );
     }
   }
@@ -263,7 +294,48 @@ export interface IsolatedProxy {
   id: string; node_id: string; team_id: string | null; isolation_version: number;
   status: string; exit_ip: string | null; resource_key: string | null;
   cooldown_until: string | null; last_check_at: string | null;
-  exit_country?: string | null; last_error?: string | null;
+  exit_country?: string | null; last_error?: string | null; group_name?: string | null;
+}
+
+/** Move pool rows into a group (null = ungroup). Ids not on this node are ignored; returns the count changed. */
+export function setNodeProxyGroup(nodeId: string, proxyIds: string[], group: string | null): number {
+  let n = 0;
+  for (const raw of new Set(proxyIds)) {
+    const id = raw.slice(0, 40);
+    n += run("UPDATE node_proxies SET group_name = ? WHERE id = ? AND node_id = ? AND group_name IS NOT ?", group, id, nodeId, group).changes;
+  }
+  return n;
+}
+
+export interface ProxyGroupSummary {
+  /** null = ungrouped rows. */
+  group: string | null;
+  total: number;
+  live: number;
+  dead: number;
+  /** Rows carrying at least one bound account. */
+  bound: number;
+  /** Live, verified, unquarantined rows with a free slot (what "auto within this group" can draw from). */
+  assignable: number;
+}
+
+/** Per-group tallies of a node's pool, ungrouped last. */
+export function listNodeProxyGroups(nodeId: string): ProxyGroupSummary[] {
+  const rows = all<IsolatedProxy & { group_name: string | null }>("SELECT * FROM node_proxies WHERE node_id=?", nodeId);
+  const by = new Map<string | null, ProxyGroupSummary>();
+  const now = nowIso();
+  for (const p of rows) {
+    const g = by.get(p.group_name ?? null) ?? { group: p.group_name ?? null, total: 0, live: 0, dead: 0, bound: 0, assignable: 0 };
+    g.total += 1;
+    if (p.status === "live") g.live += 1;
+    if (p.status === "dead") g.dead += 1;
+    const occ = p.resource_key ? proxyOccupancy(p.resource_key) : { bound: 0, reserved: 0, total: 0 };
+    if (occ.bound > 0 || one("SELECT 1 FROM accounts WHERE bound_proxy_id=?", p.id)) g.bound += 1;
+    if (p.isolation_version === 1 && p.status === "live" && p.resource_key && !quarantineActive(p.resource_key, `proxy:${p.id}`) &&
+        (!p.cooldown_until || p.cooldown_until <= now) && occ.total < 3) g.assignable += 1;
+    by.set(p.group_name ?? null, g);
+  }
+  return [...by.values()].sort((a, b) => (a.group === null ? 1 : b.group === null ? -1 : a.group.localeCompare(b.group)));
 }
 
 export function canonicalProxyResourceKey(ip: string): string | null {
@@ -363,7 +435,7 @@ function teamCompatible(p: IsolatedProxy, teamId: string | null): boolean {
  * before 2026-10-28 it was refused whenever some other exit still had a normal slot,
  * which read as a failure for a proxy the operator had just chosen on purpose.
  */
-export function resolveTeamProxy(nodeId: string, teamIdInput?: string | null, requested?: string, excludeJobId="", excludeProxyIds?: Set<string>): IsolatedProxy {
+export function resolveTeamProxy(nodeId: string, teamIdInput?: string | null, requested?: string, excludeJobId="", excludeProxyIds?: Set<string>, groupName?: string | null): IsolatedProxy {
   expireJobReservations();
   const teamId = normalizeTeamId(teamIdInput);
   if (teamIdInput && !teamId) throw new ProxyInputError("team_identity_invalid");
@@ -376,15 +448,17 @@ export function resolveTeamProxy(nodeId: string, teamIdInput?: string | null, re
     if (occ.total >= 3) throw new ProxyInputError(`proxy_full: exit already carries ${occ.total} accounts (maximum 3)`);
     return p;
   }
+  // "auto within a group" (2026-10-29): only rows of that group are candidates.
+  const group = groupName === undefined ? undefined : normalizeProxyGroup(groupName);
   const candidates = all<IsolatedProxy>("SELECT * FROM node_proxies WHERE node_id=? ORDER BY last_check_at,id", nodeId)
-    .filter((p) => !excludeProxyIds?.has(p.id) && teamCompatible(p, teamId))
+    .filter((p) => (group === undefined || (p.group_name ?? null) === group) && !excludeProxyIds?.has(p.id) && teamCompatible(p, teamId))
     .map((p) => ({ p, ...proxyOccupancy(p.resource_key!,excludeJobId),count:proxyOccupancy(p.resource_key!,excludeJobId).total }))
     .filter((x) => x.count < 3);
   const normal = candidates.filter((x) => x.count < 2);
   const allowed = normal.length ? normal : candidates;
   const selected = allowed.sort((a, b) => Number(b.bound===1) - Number(a.bound===1) ||
       Number(b.p.team_id === teamId && !!teamId) - Number(a.p.team_id === teamId && !!teamId) || a.count - b.count)[0];
-  if (!selected) throw new ProxyInputError("No compatible verified proxy capacity (normal 2, maximum 3)");
+  if (!selected) throw new ProxyInputError(group !== undefined ? `No compatible verified proxy capacity in group ${group ?? "(ungrouped)"} (normal 2, maximum 3)` : "No compatible verified proxy capacity (normal 2, maximum 3)");
   return selected.p;
 }
 
@@ -428,7 +502,7 @@ export interface SuppliedProxyResult {
  * onboard there. `dryRun` only parses and looks up.
  */
 export function resolveSuppliedProxy(nodeId: string, raw: string, opts: {
-  teamId?: string | null; label?: string; dryRun?: boolean; allowedNodes?: Set<string> | null;
+  teamId?: string | null; label?: string; group?: string | null; dryRun?: boolean; allowedNodes?: Set<string> | null;
   push?: (nodeId: string) => boolean;
 }): SuppliedProxyResult {
   const parsed = parseProxyInput(raw);
@@ -505,7 +579,7 @@ export function resolveSuppliedProxy(nodeId: string, raw: string, opts: {
     return { ...base, proxyId: null, nodeId: null, existed: false, added: false, pushed: false, reset: false, status: null, lastError: null, exitIp: null,
       country: null, quarantined: false, quarantineReason: null, boundAccounts: 0, reservedAccounts: 0, blocked: "not_in_pool" };
   }
-  const res = addNodeProxies(nodeId, [{ url: canonical, label: opts.label ?? "supplied" }]);
+  const res = addNodeProxies(nodeId, [{ url: canonical, label: opts.label ?? "supplied", group: opts.group ?? "supplied" }]);
   const id = proxyIdFromUrl(canonical);
   const pushed = res.added > 0 && !!opts.push?.(nodeId);
   return snapshot(id, nodeId, res.added === 0, res.added > 0, pushed);
@@ -660,12 +734,12 @@ export function listNodeProxies(nodeId: string) {
     last_check_at: string | null;
     last_error: string | null;
     created_at: string;
-    team_id: string|null; exit_ip:string|null; resource_key:string|null; exit_country: string | null;
+    team_id: string|null; exit_ip:string|null; resource_key:string|null; exit_country: string | null; group_name: string | null;
     assigned: number;
     cooldown_until: string | null;
     cooldown_reason: string | null;
   }>(
-    `SELECT p.id, p.url_enc, p.label, p.status, p.last_check_at, p.last_error, p.created_at, p.cooldown_until, p.cooldown_reason,p.team_id,p.exit_ip,p.resource_key,p.exit_country,
+    `SELECT p.id, p.url_enc, p.label, p.status, p.last_check_at, p.last_error, p.created_at, p.cooldown_until, p.cooldown_reason,p.team_id,p.exit_ip,p.resource_key,p.exit_country,p.group_name,
             (SELECT COUNT(*) FROM node_proxy_assignments a WHERE a.node_id = p.node_id AND a.proxy_id = p.id) AS assigned
      FROM node_proxies p WHERE p.node_id = ? ORDER BY p.created_at, p.id`,
     nodeId,
@@ -684,6 +758,7 @@ export function listNodeProxies(nodeId: string) {
       quarantineReason: proxyQuarantine(r.id, r.resource_key).reason,
       url: masked,
       label: r.label,
+      group: r.group_name,
       country: r.exit_country,
       status: r.status,
       lastCheckAt: r.last_check_at,
@@ -751,7 +826,7 @@ export function listProxiesForPicker(nodeId: string, freeOnly: boolean) {
       let host:string|null=null;let port:number|null=null;
       try { const u=new URL(decryptString(p.url_enc));host=u.hostname;port=u.port?Number(u.port):null; } catch {}
       const q=proxyQuarantine(p.id,p.resource_key);
-      return {id:p.id,label:p.label,host,port,status:p.status,bound:slots.bound>0,quarantined:q.quarantined,quarantineReason:q.reason,
+      return {id:p.id,label:p.label,group:p.group_name??null,host,port,status:p.status,bound:slots.bound>0,quarantined:q.quarantined,quarantineReason:q.reason,
         boundAccounts:slots.bound,reservedAccounts:slots.reserved,
         normalSlots:Math.max(0,2-slots.total),overflowSlots:Math.max(0,3-slots.total),
         exitIp:p.exit_ip,resourceKey:p.resource_key,country:p.exit_country??null,

@@ -237,6 +237,25 @@ POST /api/provider/accounts/onboard/proxy
 - 400 `proxy_unparseable`（解析失败）、`proxy_on_other_node`、`node_offline`、`invalid_request`；404 `node`。
   测试：`test/proxy-parse.test.mjs`、`test/proxy-supplied.test.mjs`。
 
+### 4.2 代理分组（2026-10-29）
+
+`node_proxies.group_name`（迁移 27，自由文本，NULL = 未分组）。用途：大池子按代理商 / 批次 / 用途归档，以及上号时「节点 → 分组 → 组内自动分配」。
+
+```
+POST/PUT /api/admin/nodes/:id/proxies   body {proxies:[{url,label?,group?}], group?}
+  → 追加结果多一个 regrouped：本批里池中已有的行被移入 group 的条数（有 group 时不再按「已在池中」跳过）
+GET  /api/admin/nodes/:id/proxy-groups  → {data:[{group|null,total,live,dead,bound,assignable}]}（未分组排最后）
+GET  /api/provider/nodes/:id/proxy-groups（号商只看自己的节点）
+POST /api/admin/nodes/:id/proxies/group body {proxyIds[], group|null} → {data:{changed, group, groups}}（null = 移出分组）
+POST /api/{admin,provider}/accounts/onboard  多一个可选 proxyGroup：proxyId=auto 时只在该分组内挑选；
+     无可用时 400 proxy_pool_empty，信息带 "in group <名>"。显式 proxyId 不受分组限制。
+```
+
+规则：单条的 `group` 优先于批量的 `group`；空串 = 未分组；名称去首尾空白、最长 60。`GET …/proxies` 与选择器视图多一个 `group`。
+自带代理（§4.1）新入池的行归入 `supplied` 组。前端：节点页「代理池」顶部是分组筛选片（存活/总数，整组失效标红）+ 状态筛选，
+行首复选框，批量「移到分组」「删除所选」；追加表单多一个「本批分组」。上号页自动分配 / 从池中选时若节点有分组，多一个「分组」下拉。
+测试：`test/proxy-groups.test.mjs`。
+
 解封代理（仅管理员）：
 
 ```

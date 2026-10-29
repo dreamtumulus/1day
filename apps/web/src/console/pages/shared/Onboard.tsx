@@ -5,6 +5,7 @@ import { ArrowRightIcon, CheckIcon, PlugIcon, RefreshIcon } from "../../../compo
 import {
   api,
   nodeProxies,
+  nodeProxyGroups,
   onboardJob,
   onboardCancel,
   onboardOrgCreate,
@@ -20,6 +21,7 @@ import {
   type OnboardOrg,
   type OnboardScope,
   type OnboardSuppliedProxy,
+  type ProxyGroupSummary,
   type ProxyPickerItem,
 } from "../../api";
 import { useCT } from "../../i18n";
@@ -187,6 +189,9 @@ export function OnboardPage({ scope }: { scope: OnboardScope }) {
 
   const [proxies, setProxies] = useState<ProxyPickerItem[] | null>(null);
   const [proxiesErr, setProxiesErr] = useState<string | null>(null);
+  // Proxy groups of the selected node (§4.2); "" = any group.
+  const [proxyGroups, setProxyGroups] = useState<ProxyGroupSummary[]>([]);
+  const [proxyGroup, setProxyGroup] = useState("");
   // Operator-supplied proxy (§4.1): the address, its live preview and the probe countdown.
   const [ownProxy, setOwnProxy] = useState("");
   const [ownPreview, setOwnPreview] = useState<OnboardSuppliedProxy | null>(null);
@@ -229,11 +234,16 @@ export function OnboardPage({ scope }: { scope: OnboardScope }) {
     setProxyId((p) => (p === PROXY_OWN ? p : "auto")); // a supplied address survives a node switch
     setProxies(null);
     setProxiesErr(null);
+    setProxyGroups([]);
+    setProxyGroup("");
     if (!nodeId) return;
     let alive = true;
     nodeProxies(scope, nodeId, true)
       .then((list) => alive && setProxies(list))
       .catch((e) => alive && setProxiesErr(errMessage(e)));
+    nodeProxyGroups(scope, nodeId)
+      .then((gs) => alive && setProxyGroups(gs))
+      .catch(() => {});
     return () => {
       alive = false;
     };
@@ -435,6 +445,7 @@ export function OnboardPage({ scope }: { scope: OnboardScope }) {
       concurrencyLimit: Number(concurrency) || 0,
       rpmLimit: Number(rpm) || 0,
     };
+    if (proxyId === "auto" && proxyGroup) body.proxyGroup = proxyGroup;
     if (name.trim()) body.name = name.trim();
     if (note.trim()) body.note = note.trim();
     if (isAdmin && groupId) body.groupId = groupId;
@@ -631,14 +642,21 @@ export function OnboardPage({ scope }: { scope: OnboardScope }) {
   const proxyMode: ProxyMode = proxyId === "auto" ? "auto" : proxyId === PROXY_OWN ? "own" : "pool";
   const poolOptions = useMemo(
     () =>
-      (proxies ?? []).map((p) => {
-        const host = p.host ? `${p.host}${p.port ? `:${p.port}` : ""}` : p.id.slice(0, 12);
-        return {
-          value: p.id,
-          label: `${p.country ? `${p.country} · ` : ""}${p.label ? `${p.label} · ` : ""}${host} · ${t("team.proxyOccupied", { n: (p.boundAccounts ?? 0) + (p.reservedAccounts ?? 0) })}`,
-        };
-      }),
-    [proxies, t],
+      (proxies ?? [])
+        .filter((p) => !proxyGroup || (p.group ?? "") === proxyGroup)
+        .map((p) => {
+          const host = p.host ? `${p.host}${p.port ? `:${p.port}` : ""}` : p.id.slice(0, 12);
+          return {
+            value: p.id,
+            label: `${p.group ? `[${p.group}] ` : ""}${p.country ? `${p.country} · ` : ""}${p.label ? `${p.label} · ` : ""}${host} · ${t("team.proxyOccupied", { n: (p.boundAccounts ?? 0) + (p.reservedAccounts ?? 0) })}`,
+          };
+        }),
+    [proxies, proxyGroup, t],
+  );
+  const namedGroups = proxyGroups.filter((g): g is ProxyGroupSummary & { group: string } => !!g.group);
+  const groupOptions = useMemo(
+    () => [{ value: "", label: t("onboard.proxyGroupAll") }, ...namedGroups.map((g) => ({ value: g.group, label: t("onboard.proxyGroupOpt", { group: g.group, n: g.assignable }) }))],
+    [namedGroups, t],
   );
   function setProxyMode(m: ProxyMode) {
     if (m === "auto") setProxyId("auto");
@@ -733,7 +751,7 @@ export function OnboardPage({ scope }: { scope: OnboardScope }) {
     (proxyMode !== "own" || !!ownProxy.trim());
 
   const summaryProxy =
-    proxyMode === "auto" ? t("onboard.proxyAuto") : proxyMode === "own" ? (ownPreview?.parsed.display ?? ownProxy.trim() ?? "—") || "—" : (poolOptions.find((o) => o.value === proxyId)?.label ?? "—");
+    proxyMode === "auto" ? (proxyGroup ? t("onboard.sumProxyGroup", { group: proxyGroup }) : t("onboard.proxyAuto")) : proxyMode === "own" ? (ownPreview?.parsed.display ?? ownProxy.trim() ?? "—") || "—" : (poolOptions.find((o) => o.value === proxyId)?.label ?? "—");
   const summaryKeys =
     method === "auth_url" ? t("onboard.methodAuthUrl") : parsed.length === 0 ? t("onboard.sumNoKey") : parsed.length === 1 ? maskKey(parsed[0].key) : t("onboard.sumKeysN", { n: parsedValid.length });
 
@@ -975,6 +993,13 @@ export function OnboardPage({ scope }: { scope: OnboardScope }) {
                           { value: "own", label: t("onboard.proxyModeOwn") },
                         ]}
                       />
+                      {(proxyMode === "auto" || proxyMode === "pool") && namedGroups.length > 0 && (
+                        <div className="mt-3">
+                          <Field label={t("onboard.proxyGroup")}>
+                            <Select value={proxyGroup} onChange={(e) => { setProxyGroup(e.target.value); if (proxyMode === "pool") setProxyId(""); }} options={groupOptions} />
+                          </Field>
+                        </div>
+                      )}
                       {proxyMode === "auto" && <p className="mt-2 text-[12.5px] leading-relaxed text-on-surface-faint">{proxiesErr ?? t("onboard.proxyHint")}</p>}
                       {proxyMode === "pool" && (
                         <div className="mt-3">

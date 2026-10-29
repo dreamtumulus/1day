@@ -312,6 +312,7 @@ const MIGRATIONS: Array<{ version: number; up: (d: DatabaseSync, log: Log) => vo
   { version: 24, up: migration24 },
   { version: 25, up: migration25 },
   { version: 26, up: migration26 },
+  { version: 27, up: migration27 },
 ];
 
 // 上号员令牌（独立鉴权的上号站点 /onboard）：admin 签发，绑定目标节点；
@@ -858,4 +859,12 @@ function migration25(d: DatabaseSync, log: Log): void {
 function migration26(d: DatabaseSync, log: Log): void {
   addColumns(d, log, "node_proxies", [["exit_country", "TEXT"]]);
   log("migration 26: node_proxies.exit_country");
+}
+
+// Proxy groups (2026-10-29): operators file proxies into named groups (provider / batch / purpose)
+// to manage big pools and to onboard "within a group". Free text, null = ungrouped. Additive.
+function migration27(d: DatabaseSync, log: Log): void {
+  addColumns(d, log, "node_proxies", [["group_name", "TEXT"]]);
+  d.exec("CREATE INDEX IF NOT EXISTS idx_node_proxies_group ON node_proxies(node_id, group_name)");
+  log("migration 27: node_proxies.group_name");
 }

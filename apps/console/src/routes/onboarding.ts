@@ -1,7 +1,7 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { all, newId, nowIso, one, run, tx, type AccountRow } from "@1dayapi/core";
 import { bad, body, notFound, num, oneOf, query, str, uuid, type Body } from "../http.js";
-import { listProxiesForPicker, nodeProxyUrls, resolveSuppliedProxy, resolveTeamProxy, ProxyInputError } from "../node/proxies.js";
+import { listNodeProxyGroups, listProxiesForPicker, nodeProxyUrls, resolveSuppliedProxy, resolveTeamProxy, ProxyInputError } from "../node/proxies.js";
 import { pushProxies } from "../node/registry.js";
 import { requireAdmin, requireOps, requireProvider } from "../session.js";
 import {
@@ -71,9 +71,9 @@ function ownerForNode(node: NodeRow, scope: OnboardScope, requesterId: string): 
   return node.role === "provider" ? node.provider_id : null;
 }
 
-/** Resolve proxyId ("auto" or explicit) to a concrete free live proxy on the node. */
-function resolveProxy(nodeId:string,proxyIdInput:string|undefined,teamId?:string):string {
-  try{return resolveTeamProxy(nodeId,teamId,proxyIdInput).id;}
+/** Resolve proxyId ("auto" or explicit) to a concrete free live proxy on the node; "auto" may be limited to a proxy group. */
+function resolveProxy(nodeId:string,proxyIdInput:string|undefined,teamId?:string,proxyGroup?:string):string {
+  try{return resolveTeamProxy(nodeId,teamId,proxyIdInput,"",undefined,proxyGroup===undefined?undefined:proxyGroup).id;}
   catch(e){if(e instanceof ProxyInputError)bad("proxy_pool_empty",e.message);throw e;}
 }
 
@@ -134,6 +134,7 @@ async function onboard(req: FastifyRequest, scope: OnboardScope) {
   const params = parseParams(req, scope);
   params.ownerId = ownerForNode(node, scope, requesterId);
   const proxyIdInput = str(b, "proxyId", { max: 60 });
+  const proxyGroup = str(b, "proxyGroup", { max: 60 }); // auto-assign within this group only (docs/onboarding.md §4.2)
 
   if (method === "session_key") {
     const sessionKey = str(b, "sessionKey", { required: true, max: 8000 })!;
@@ -141,11 +142,11 @@ async function onboard(req: FastifyRequest, scope: OnboardScope) {
     const orgUuid = uuid(b, "orgUuid");
     // Pick + reserve in one transaction: two concurrent jobs must never leave
     // with the same proxy (the loser would only find out after a real consent).
-    const jobId = tx(() => startSessionKeyJob(scope, requesterId, nodeId, resolveProxy(nodeId, proxyIdInput,params.expectedTeamId), sessionKey, params, orgUuid));
+    const jobId = tx(() => startSessionKeyJob(scope, requesterId, nodeId, resolveProxy(nodeId, proxyIdInput,params.expectedTeamId, proxyGroup), sessionKey, params, orgUuid));
     return { data: { jobId, status: "working" } };
   }
 
-  const { jobId, authorizeUrl } = tx(() => startAuthUrlJob(scope, requesterId, nodeId, resolveProxy(nodeId, proxyIdInput,params.expectedTeamId), params));
+  const { jobId, authorizeUrl } = tx(() => startAuthUrlJob(scope, requesterId, nodeId, resolveProxy(nodeId, proxyIdInput,params.expectedTeamId, proxyGroup), params));
   return { data: { jobId, status: "pending_callback", authorizeUrl } };
 }
 
@@ -364,5 +365,11 @@ export function registerOnboardingRoutes(app: FastifyInstance): void {
     const node = one<{ provider_id: string }>("SELECT provider_id FROM nodes WHERE node_id = ?", id);
     if (!node || node.provider_id !== req.user!.id) notFound("node");
     return { data: listProxiesForPicker(id, query(req).free === "1") };
+  });
+  app.get("/api/provider/nodes/:id/proxy-groups", preProvider, async (req) => {
+    const { id } = req.params as { id: string };
+    const node = one<{ provider_id: string }>("SELECT provider_id FROM nodes WHERE node_id = ?", id);
+    if (!node || node.provider_id !== req.user!.id) notFound("node");
+    return { data: listNodeProxyGroups(id) };
   });
 }

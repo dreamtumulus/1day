@@ -60,7 +60,7 @@ import {
   strArray,
 } from "../http.js";
 import { deployNodeLocal, deployNodeViaSsh } from "../node/deploy.js";
-import { ProxyInputError, addNodeProxies, removeNodeProxies, listNodeProxies, listProxiesForPicker, nodeExists, nodeProxyUrls, releaseAccountProxies, releaseNodeResources, replaceNodeProxies, unquarantineProxy, validateProxies, type AddProxiesResult, type ProxyInput, type ReplaceProxiesResult } from "../node/proxies.js";
+import { ProxyInputError, addNodeProxies, removeNodeProxies, listNodeProxies, listNodeProxyGroups, listProxiesForPicker, nodeExists, nodeProxyUrls, normalizeProxyGroup, releaseAccountProxies, releaseNodeResources, replaceNodeProxies, setNodeProxyGroup, unquarantineProxy, validateProxies, type AddProxiesResult, type ProxyInput, type ReplaceProxiesResult } from "../node/proxies.js";
 import { requestViaNode } from "../node/egress-request.js";
 import { disconnectNode, pushProxies } from "../node/registry.js";
 import { createUser, dropSessions, requireAdmin, requireOps, resetLoginKey } from "../session.js";
@@ -1342,7 +1342,7 @@ export function registerAdminRoutes(app: FastifyInstance): void {
     if (!nodeExists(id)) notFound("node");
     let proxies: ProxyInput[];
     try {
-      proxies = validateProxies(body(req).proxies);
+      proxies = validateProxies(body(req).proxies, body(req).group);
     } catch (err) {
       bad("invalid_request", (err as Error).message);
     }
@@ -1364,7 +1364,7 @@ export function registerAdminRoutes(app: FastifyInstance): void {
     if (!nodeExists(id)) notFound("node");
     let proxies: ProxyInput[];
     try {
-      proxies = validateProxies(body(req).proxies);
+      proxies = validateProxies(body(req).proxies, body(req).group);
     } catch (err) {
       bad("invalid_request", (err as Error).message);
     }
@@ -1376,7 +1376,26 @@ export function registerAdminRoutes(app: FastifyInstance): void {
       throw err;
     }
     const pushed = pushProxies(id, nodeProxyUrls(id));
-    return { data: { pushed, added: res.added, skipped: res.skipped, skippedUrls: res.skippedUrls, proxies: listNodeProxies(id) } };
+    return { data: { pushed, added: res.added, regrouped: res.regrouped, skipped: res.skipped, skippedUrls: res.skippedUrls, proxies: listNodeProxies(id) } };
+  });
+
+  // Proxy groups (2026-10-29): per-group tallies, and moving rows between groups (null = ungroup).
+  app.get("/api/admin/nodes/:id/proxy-groups", pre, async (req) => {
+    const { id } = req.params as { id: string };
+    if (!nodeExists(id)) notFound("node");
+    return { data: listNodeProxyGroups(id) };
+  });
+  app.post("/api/admin/nodes/:id/proxies/group", pre, async (req) => {
+    const { id } = req.params as { id: string };
+    if (!nodeExists(id)) notFound("node");
+    const b = body(req);
+    const ids = strArray(b, "proxyIds");
+    if (!ids || ids.length === 0) bad("invalid_request", "proxyIds is required");
+    if (ids.length > 1000) bad("invalid_request", "at most 1000 proxyIds per call");
+    let group: string | null;
+    try { group = normalizeProxyGroup(b.group); } catch (err) { bad("invalid_request", (err as Error).message); }
+    const changed = tx(() => setNodeProxyGroup(id, ids!, group));
+    return { data: { changed, group, groups: listNodeProxyGroups(id) } };
   });
 
   // Remove proxies by id (bound / reserved ones are reported, not removed); the pool is re-pushed.
