@@ -95,15 +95,21 @@ test("token limited to organizations; /me lists them without UUIDs", async () =>
   await admin("PATCH", `/api/admin/onboard-tokens/${r.data.id}`, { orgIds: [orgId] });
 });
 
-test("job validation: organization required, domain and route must belong to it, proxy stays in the group", async () => {
+test("job validation: organization required, domain must belong to it, node / group are free but the group must exist, proxy stays in the group", async () => {
   let r = await onb("POST", "/api/onboard/jobs", { method: "auth_url", nodeId: "oo-a" });
   assert.equal(r.error?.code, "org_required");
   r = await onb("POST", "/api/onboard/jobs", { method: "auth_url", nodeId: "oo-a", orgId: otherOrgId, domain: "other.org", proxyGroup: "g2" });
   assert.equal(r.error?.code, "org_not_allowed");
   r = await onb("POST", "/api/onboard/jobs", { method: "auth_url", nodeId: "oo-a", orgId, domain: "wrong.org", proxyGroup: "g1" });
   assert.equal(r.error?.code, "domain_invalid");
+  r = await onb("POST", "/api/onboard/jobs", { method: "auth_url", nodeId: "oo-a", orgId, domain: "evenld.org", proxyGroup: "nope" });
+  assert.equal(r.error?.code, "group_invalid", JSON.stringify(r));
+  // g2 is not one of Camp's routes but exists on oo-a: allowed (routes are recommendations, user rule 2026-10-29)
   r = await onb("POST", "/api/onboard/jobs", { method: "auth_url", nodeId: "oo-a", orgId, domain: "evenld.org", proxyGroup: "g2" });
-  assert.equal(r.error?.code, "route_invalid", JSON.stringify(r));
+  assert.equal(r.status, 200, JSON.stringify(r));
+  assert.equal(one("SELECT proxy_id FROM onboarding_jobs WHERE id=?", r.data.jobId).proxy_id, id(urls.a2), "off-route pick still limited to the named group");
+  r = await onb("GET", "/api/onboard/node-groups?nodeId=oo-a");
+  assert.deepEqual(r.data.map((g) => g.group).sort(), ["g1", "g2"]);
   r = await onb("POST", "/api/onboard/jobs", { method: "auth_url", nodeId: "oo-a", orgId, domain: "Evenld.org", proxyGroup: "g1" });
   assert.equal(r.status, 200, JSON.stringify(r));
   const job = one("SELECT * FROM onboarding_jobs WHERE id=?", r.data.jobId);

@@ -8,6 +8,8 @@ import { useT } from "../i18n";
 // 令牌还没有组织方案时退回老流程（选节点、选代理）。
 
 const TOKEN_KEY = "onboarder-token";
+const GROUP_KEY = "onboard.group";
+const LAST_KEY = "onboard.lastChoice";
 const NODE_KEY = "onboarder-node";
 const ORG_KEY = "onboarder-org";
 
@@ -41,6 +43,7 @@ interface OrgRoute {
   groupExists: boolean;
 }
 
+type GroupInfo = { group: string | null; total: number; live: number; dead: number; bound: number; assignable: number };
 interface OrgInfo {
   id: string;
   name: string;
@@ -333,7 +336,12 @@ export function OnboardSite() {
   // selections
   const [orgId, setOrgId] = useState(() => localStorage.getItem(ORG_KEY) ?? "");
   const [domain, setDomain] = useState("");
-  const [routeKey, setRouteKey] = useState("");
+  const [selGroup, setSelGroup] = useState<string | null>(() => localStorage.getItem(GROUP_KEY) || null); // null = any group
+  const [groups, setGroups] = useState<GroupInfo[]>([]);
+  const [routeDone, setRouteDone] = useState(false);
+  // Pre-flight check (user rule 2026-10-29): an off-route node / group, or a combination that differs from
+  // the previous submission, is shown once more and must be confirmed before the job starts.
+  const [pendingConfirm, setPendingConfirm] = useState<string[] | null>(null);
   const [method, setMethod] = useState<"sk" | "link">("sk");
   const [skText, setSkText] = useState("");
   const [name, setName] = useState("");
@@ -392,20 +400,31 @@ export function OnboardSite() {
   const org = useMemo(() => orgs.find((o) => o.id === orgId) ?? null, [orgs, orgId]);
   const domains = org?.domains ?? [];
   const routes = org?.routes ?? [];
-  const route = useMemo(() => routes.find((r) => `${r.nodeId}|${r.group ?? ""}` === routeKey) ?? null, [routes, routeKey]);
+  // The node is always the operator's own pick (user rule 2026-10-29); the profile's routes are presets.
   const legacyNode = useMemo(() => nodes.find((n) => n.nodeId === legacyNodeId) ?? null, [nodes, legacyNodeId]);
-  const targetNodeId = legacy ? legacyNode?.nodeId : routes.length ? route?.nodeId : legacyNode?.nodeId;
-  const targetNode = nodes.find((n) => n.nodeId === targetNodeId) ?? null;
+  const targetNodeId = legacyNode?.nodeId;
+  const targetNode = legacyNode;
+  const selLabel = legacyNode ? `${legacyNode.name ?? legacyNode.nodeId.slice(0, 14)} · ${selGroup ?? t("onboardSite.anyGroup")}` : undefined;
 
   useEffect(() => { if (orgId) localStorage.setItem(ORG_KEY, orgId); }, [orgId]);
   useEffect(() => { if (legacyNodeId) localStorage.setItem(NODE_KEY, legacyNodeId); }, [legacyNodeId]);
   // keep single-choice steps pre-filled
   useEffect(() => { if (org && domains.length === 1) setDomain(domains[0]); }, [org, domains]);
+  useEffect(() => { if (selGroup) localStorage.setItem(GROUP_KEY, selGroup); else localStorage.removeItem(GROUP_KEY); }, [selGroup]);
+  useEffect(() => { setPendingConfirm(null); }, [orgId, domain, legacyNodeId, selGroup]);
+  // IP groups of the picked node (profile mode); a remembered group that the node lacks falls back to "any".
   useEffect(() => {
-    if (!org) return;
-    if (routes.length === 1) setRouteKey(`${routes[0].nodeId}|${routes[0].group ?? ""}`);
-    else if (routeKey && !routes.some((r) => `${r.nodeId}|${r.group ?? ""}` === routeKey)) setRouteKey("");
-  }, [org, routes, routeKey]);
+    if (!token || legacy || !legacyNode) return;
+    authFetch<GroupInfo[]>(token, `/api/onboard/node-groups?nodeId=${encodeURIComponent(legacyNode.nodeId)}`)
+      .then((g) => { setGroups(g); setSelGroup((cur) => (cur && !g.some((x) => x.group === cur) ? null : cur)); })
+      .catch(() => setGroups([]));
+  }, [token, legacy, legacyNode?.nodeId]);
+  // Switching organization reopens the route step; its first online recommended route becomes the preset.
+  useEffect(() => {
+    setRouteDone(false);
+    const first = routes.find((r) => r.nodeOnline && r.assignable > 0 && nodes.some((n) => n.nodeId === r.nodeId));
+    if (first) { setLegacyNodeId(first.nodeId); setSelGroup(first.group ?? null); }
+  }, [org?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // legacy: proxies of the picked node
   useEffect(() => {
@@ -437,7 +456,7 @@ export function OnboardSite() {
 
   const stepOrgDone = legacy || !!org;
   const stepDomainDone = legacy || (!!org && (domains.length === 0 || !!domain));
-  const stepRouteDone = legacy ? !!legacyNode : !!org && (routes.length === 0 ? !!legacyNode : !!route);
+  const stepRouteDone = legacy ? !!legacyNode : !!org && !!legacyNode && routeDone;
   const nodeOk = !!targetNode && targetNode.online && targetNode.used < targetNode.capacity;
   const canStart = stepOrgDone && stepDomainDone && stepRouteDone && nodeOk && (method === "link" || validRows.length >= 1) && !batchActive && !busy;
 
@@ -447,7 +466,7 @@ export function OnboardSite() {
     else {
       p.orgId = org!.id;
       if (domain) p.domain = domain;
-      if (route?.group) p.proxyGroup = route.group;
+      if (selGroup) p.proxyGroup = selGroup;
       p.proxyId = "auto";
     }
     if (name.trim()) p.name = name.trim();
@@ -473,8 +492,31 @@ export function OnboardSite() {
     setJobs([]);
   }
 
-  async function start() {
+  function preflightWarnings(): string[] {
+    if (legacy) return [];
+    const out: string[] = [];
+    if (routes.length > 0 && !routes.some((r) => r.nodeId === legacyNodeId && (r.group ?? null) === selGroup)) out.push(t("onboardSite.confirmOffRoute"));
+    try {
+      const last = JSON.parse(localStorage.getItem(LAST_KEY) ?? "null") as { orgId: string; nodeId: string; group: string | null; orgName?: string; label?: string } | null;
+      if (last && (last.orgId !== orgId || last.nodeId !== legacyNodeId || (last.group ?? null) !== selGroup)) {
+        out.push(t("onboardSite.confirmChanged", { last: `${last.orgName ?? last.orgId} · ${last.label ?? last.nodeId}` }));
+      }
+    } catch { /* ignore */ }
+    return out;
+  }
+  function rememberChoice() {
+    if (legacy) return;
+    try { localStorage.setItem(LAST_KEY, JSON.stringify({ orgId, orgName: org?.name, nodeId: legacyNodeId, group: selGroup, label: selLabel })); } catch { /* ignore */ }
+  }
+
+  async function start(confirmed = false) {
     setErr("");
+    if (!confirmed) {
+      const warn = preflightWarnings();
+      if (warn.length) { setPendingConfirm(warn); return; }
+    }
+    setPendingConfirm(null);
+    rememberChoice();
     if (method === "sk" && isBatch) {
       setBatch({ rows: validRows, params: params() });
       setSkText("");
@@ -576,11 +618,11 @@ export function OnboardSite() {
           ) : (
             <>
               {/* ① 组织 */}
-              <Step n={1} title={t("onboardSite.stepOrg")} done={!!org} summary={org?.name} onChange={() => { setOrgId(""); setDomain(""); setRouteKey(""); }} changeLabel={t("onboardSite.change")}>
+              <Step n={1} title={t("onboardSite.stepOrg")} done={!!org} summary={org?.name} onChange={() => { setOrgId(""); setDomain(""); setRouteDone(false); }} changeLabel={t("onboardSite.change")}>
                 <p className="text-[13px] text-on-surface-variant">{t("onboardSite.orgHint")}</p>
                 <div className="mt-3 grid gap-2 sm:grid-cols-2">
                   {orgs.map((o) => (
-                    <Chip key={o.id} active={o.id === orgId} onClick={() => { setOrgId(o.id); setDomain(""); setRouteKey(""); }} disabled={batchActive || inFlight}>
+                    <Chip key={o.id} active={o.id === orgId} onClick={() => { setOrgId(o.id); setDomain(""); setRouteDone(false); }} disabled={batchActive || inFlight}>
                       <div className="font-semibold">{o.name}</div>
                       <div className="mt-0.5 text-[12px] opacity-80">
                         {o.domains.length ? o.domains.map((d) => `@${d}`).join(" · ") : t("onboardSite.noDomains")} · {o.routes.length} {t("onboardSite.stepRoute")}
@@ -605,37 +647,61 @@ export function OnboardSite() {
 
               {/* ③ 节点 · IP 分组 */}
               {org && stepDomainDone && (
-                <Step n={domains.length ? 3 : 2} title={t("onboardSite.stepRoute")} done={stepRouteDone} summary={route ? routeLabel(route) : legacyNode ? (legacyNode.name ?? legacyNode.nodeId.slice(0, 14)) : undefined} onChange={() => setRouteKey("")} changeLabel={t("onboardSite.change")}>
+                <Step n={domains.length ? 3 : 2} title={t("onboardSite.stepRoute")} done={stepRouteDone} summary={selLabel} onChange={() => setRouteDone(false)} changeLabel={t("onboardSite.change")}>
                   <p className="text-[13px] text-on-surface-variant">{t("onboardSite.routeHint")}</p>
-                  {routes.length === 0 ? (
+                  {routes.length > 0 && (
                     <div className="mt-3">
-                      <p className="text-[13px]" style={{ color: "var(--warning)" }}>{t("onboardSite.noRoutes")}</p>
-                      <select className="input mt-2 font-mono text-[13px]" value={legacyNodeId} onChange={(e) => setLegacyNodeId(e.target.value)}>
-                        {nodes.map((n) => (
-                          <option key={n.nodeId} value={n.nodeId}>{n.name ? `${n.name} · ` : ""}{n.nodeId.slice(0, 16)}… · {n.online ? t("onboardSite.nodeOnline") : t("onboardSite.nodeOffline")}</option>
-                        ))}
-                      </select>
-                    </div>
-                  ) : (
-                    <div className="mt-3 grid gap-2 sm:grid-cols-2">
-                      {routes.map((r) => {
-                        const k = `${r.nodeId}|${r.group ?? ""}`;
-                        const bad = !r.nodeOnline || r.assignable === 0 || !r.groupExists;
-                        return (
-                          <Chip key={k} active={k === routeKey} onClick={() => setRouteKey(k)} disabled={batchActive || inFlight}>
-                            <div className="flex items-center gap-2 font-semibold">
-                              <span className="h-[8px] w-[8px] rounded-full" style={{ background: r.nodeOnline ? "var(--success)" : "var(--error)" }} />
-                              <CubeIcon width={14} height={14} />
-                              {routeLabel(r)}
-                            </div>
-                            <div className="mt-0.5 text-[12px]" style={bad ? { color: k === routeKey ? "inherit" : "var(--error)" } : { opacity: 0.8 }}>
-                              {r.nodeOnline ? `${t("onboardSite.capacity")} ${r.used}/${r.capacity} · ${t("onboardSite.freeProxies")} ${r.assignable}` : t("onboardSite.routeOffline")}
-                            </div>
-                          </Chip>
-                        );
-                      })}
+                      <p className="text-[12px] font-semibold text-on-surface-faint">{t("onboardSite.recommendedRoutes")}</p>
+                      <div className="mt-1.5 grid gap-2 sm:grid-cols-2">
+                        {routes.map((r) => {
+                          const k = `${r.nodeId}|${r.group ?? ""}`;
+                          const active = r.nodeId === legacyNodeId && (r.group ?? null) === selGroup;
+                          const bad = !r.nodeOnline || r.assignable === 0 || !r.groupExists;
+                          const known = nodes.some((n) => n.nodeId === r.nodeId);
+                          return (
+                            <Chip key={k} active={active} onClick={() => { setLegacyNodeId(r.nodeId); setSelGroup(r.group ?? null); setRouteDone(true); }} disabled={batchActive || inFlight || !known}>
+                              <div className="flex items-center gap-2 font-semibold">
+                                <span className="h-[8px] w-[8px] rounded-full" style={{ background: r.nodeOnline ? "var(--success)" : "var(--error)" }} />
+                                <CubeIcon width={14} height={14} />
+                                {routeLabel(r)}
+                              </div>
+                              <div className="mt-0.5 text-[12px]" style={bad ? { color: active ? "inherit" : "var(--error)" } : { opacity: 0.8 }}>
+                                {r.nodeOnline ? `${t("onboardSite.capacity")} ${r.used}/${r.capacity} · ${t("onboardSite.freeProxies")} ${r.assignable}` : t("onboardSite.routeOffline")}
+                              </div>
+                            </Chip>
+                          );
+                        })}
+                      </div>
                     </div>
                   )}
+                  <div className="mt-3 grid gap-3 sm:grid-cols-[1fr_auto] sm:items-start">
+                    <div>
+                      <label className="text-[12px] font-semibold text-on-surface-faint">{t("onboardSite.pickNode")}</label>
+                      <select className="input mt-1 font-mono text-[13px]" value={legacyNodeId} onChange={(e) => { setLegacyNodeId(e.target.value); setSelGroup(null); }} disabled={batchActive || inFlight}>
+                        {nodes.map((n) => (
+                          <option key={n.nodeId} value={n.nodeId}>
+                            {n.name ? `${n.name} · ` : ""}{n.nodeId.slice(0, 16)}… · {n.online ? t("onboardSite.nodeOnline") : t("onboardSite.nodeOffline")} · {n.used}/{n.capacity} · {t("onboardSite.freeProxies")} {n.freeProxies ?? "?"}
+                          </option>
+                        ))}
+                      </select>
+                      {nodes.length === 1 && <p className="mt-1 text-[12px] text-on-surface-faint">{t("onboardSite.singleNode")}</p>}
+                    </div>
+                  </div>
+                  <div className="mt-3">
+                    <label className="text-[12px] font-semibold text-on-surface-faint">{t("onboardSite.pickGroup")}</label>
+                    <div className="mt-1.5 flex flex-wrap gap-2">
+                      <Chip active={selGroup === null} onClick={() => setSelGroup(null)} disabled={batchActive || inFlight}>
+                        {t("onboardSite.anyGroup")} · {t("onboardSite.freeProxies")} {groups.reduce((a, g) => a + g.assignable, 0)}
+                      </Chip>
+                      {groups.filter((g) => g.group).map((g) => (
+                        <Chip key={g.group!} active={selGroup === g.group} onClick={() => setSelGroup(g.group)} disabled={batchActive || inFlight} title={`${g.live}/${g.total} live`}>
+                          <span className="font-mono">{g.group}</span> · {t("onboardSite.freeProxies")} {g.assignable}
+                        </Chip>
+                      ))}
+                      {groups.filter((g) => g.group).length === 0 && <span className="text-[12px] text-on-surface-faint">{t("onboardSite.noGroups")}</span>}
+                    </div>
+                  </div>
+                  <button type="button" className="wk-btn wk-btn-md wk-btn-primary mt-4" disabled={!legacyNode || batchActive || inFlight} onClick={() => setRouteDone(true)}>{t("onboardSite.useRoute")}</button>
                 </Step>
               )}
             </>
@@ -789,13 +855,26 @@ export function OnboardSite() {
             {!legacy && (<><dt className="text-on-surface-faint">{t("onboardSite.sumOrg")}</dt><dd className="min-w-0 break-words">{org?.name ?? "—"}</dd></>)}
             {!legacy && domains.length > 0 && (<><dt className="text-on-surface-faint">{t("onboardSite.sumDomain")}</dt><dd className="font-mono">{domain ? `@${domain}` : "—"}</dd></>)}
             <dt className="text-on-surface-faint">{t("onboardSite.sumRoute")}</dt>
-            <dd className="min-w-0 break-words">{route ? routeLabel(route) : targetNode ? (targetNode.name ?? targetNode.nodeId.slice(0, 14)) : "—"}</dd>
+            <dd className="min-w-0 break-words">{legacy ? (targetNode ? (targetNode.name ?? targetNode.nodeId.slice(0, 14)) : "—") : (selLabel ?? "—")}</dd>
             <dt className="text-on-surface-faint">{t("onboardSite.sumKeys")}</dt>
             <dd className="font-mono text-[12.5px]">{method === "link" ? t("onboardSite.methodLink") : validRows.length === 0 ? "—" : validRows.length === 1 ? `${validRows[0].sessionKey!.slice(0, 14)}…` : t("onboardSite.skBatch", { n: validRows.length })}</dd>
           </dl>
           {targetNode && !nodeOk && <p className="mt-3 text-[12.5px]" style={{ color: "var(--error)" }}>{targetNode.online ? `${t("onboardSite.capacity")} ${targetNode.used}/${targetNode.capacity}` : t("onboardSite.nodeOffline")}</p>}
           {err && !inFlight && <p className="mt-3 text-[12.5px]" style={{ color: "var(--error)" }}>{err}</p>}
-          <button type="button" onClick={() => void start()} disabled={!canStart || inFlight || !!batch} className="wk-btn wk-btn-md wk-btn-primary mt-4 w-full justify-center" title={canStart ? undefined : t("onboardSite.pickFirst")}>
+          {pendingConfirm && (
+            <div className="mt-4 rounded-lg border p-3 text-[13px]" style={{ borderColor: "var(--warning)", background: "color-mix(in srgb, var(--warning) 10%, transparent)" }}>
+              <div className="font-semibold">{t("onboardSite.confirmTitle")}</div>
+              <ul className="mt-1.5 list-disc pl-5">
+                {pendingConfirm.map((w, i) => <li key={i}>{w}</li>)}
+              </ul>
+              <div className="mt-2 font-mono text-[12px]">{org?.name ?? "—"}{domain ? ` · @${domain}` : ""} · {selLabel ?? "—"}</div>
+              <div className="mt-3 flex gap-2">
+                <button type="button" className="wk-btn wk-btn-sm wk-btn-primary" onClick={() => void start(true)} disabled={busy}>{t("onboardSite.confirmGo")}</button>
+                <button type="button" className="wk-btn wk-btn-sm wk-btn-ghost" onClick={() => { setPendingConfirm(null); setRouteDone(false); }}>{t("onboardSite.confirmBack")}</button>
+              </div>
+            </div>
+          )}
+          <button type="button" onClick={() => void start()} disabled={!canStart || inFlight || !!batch || !!pendingConfirm} className="wk-btn wk-btn-md wk-btn-primary mt-4 w-full justify-center" title={canStart ? undefined : t("onboardSite.pickFirst")}>
             {method === "sk" && isBatch ? t("onboardSite.startBatch", { n: validRows.length }) : t("onboardSite.start")}
           </button>
         </aside>

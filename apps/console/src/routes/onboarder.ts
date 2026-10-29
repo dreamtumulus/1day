@@ -1,7 +1,7 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { all, decryptJson, newId, nowIso, one, randomHex, run, sha256Hex, tx } from "@1dayapi/core";
 import { bad, body, notFound, num, sendError, str, uuid } from "../http.js";
-import { listProxiesForPicker, resolveTeamProxy, ProxyInputError } from "../node/proxies.js";
+import { listProxiesForPicker, resolveTeamProxy, ProxyInputError, listNodeProxyGroups } from "../node/proxies.js";
 import {
   continueAuthUrlJob,
   cancelJob,
@@ -16,7 +16,7 @@ import {
 } from "../onboard/jobs.js";
 import { nodeOccupancy } from "../node/capacity.js";
 import { requireAdmin } from "../session.js";
-import { listOrgs, loadOrg, orgDomains, orgOut, orgRoutes, type OrgRow } from "./onboarding.js";
+import { listOrgs, loadOrg, orgDomains, orgOut, type OrgRow } from "./onboarding.js";
 
 // 上号员站点（/onboard）的独立鉴权与上号 API。管理员在控制台签发 1dk_onb_…
 // 令牌并绑定目标节点；上号员持令牌在该节点执行上号，账号落入平台池
@@ -198,11 +198,15 @@ async function onboardAsToken(req: FastifyRequest) {
   };
 
   // Organization profile (docs/onboarding.md §10.1): once profiles exist for this operator, every
-  // job names one; the organization UUID comes from the profile, the domain and the node / IP-group
-  // route must be among the profile's, and the automatic proxy pick stays inside that group.
+  // job names one; the organization UUID comes from the profile and the domain must be among the
+  // profile's. The node and the IP group are the operator's choice (user rule 2026-10-29 上号员应该
+  // 可以选择节点和 IP 分组): the profile's routes are only the recommended defaults shown by the site.
+  // A named group must exist on the chosen node; the automatic proxy pick then stays inside it.
   const orgs = visibleOrgs(token);
   const orgId = str(b, "orgId", { max: 60 });
-  let proxyGroup: string | null | undefined;
+  const groupReq = str(b, "proxyGroup", { max: 60 }) || null;
+  if (groupReq && !listNodeProxyGroups(node.nodeId).some((g) => g.group === groupReq)) bad("group_invalid", `Node has no IP group '${groupReq}'`);
+  const proxyGroup: string | undefined = groupReq ?? undefined;
   if (orgs.length > 0 && !orgId) bad("org_required", "Pick an organization first");
   if (orgId) {
     const org = orgs.find((o) => o.id === orgId);
@@ -210,11 +214,6 @@ async function onboardAsToken(req: FastifyRequest) {
     const domains = orgDomains(org);
     const domain = str(b, "domain", { max: 253 })?.toLowerCase().replace(/^@/, "");
     if (domains.length > 0 && (!domain || !domains.includes(domain))) bad("domain_invalid", `Pick one of the organization's domains (${domains.join(", ")})`);
-    const routes = orgRoutes(org).filter((r) => token.node_id === ANY_NODE || r.nodeId === token.node_id);
-    const groupReq = str(b, "proxyGroup", { max: 60 }) ?? null;
-    const route = routes.find((r) => r.nodeId === node.nodeId && (r.group === null || r.group === groupReq));
-    if (routes.length > 0 && !route) bad("route_invalid", "Pick one of the organization's node / IP-group routes");
-    proxyGroup = route ? (route.group ?? groupReq ?? undefined) : groupReq ?? undefined;
     params.expectedTeamId = org.org_uuid;
     params.teamName = org.name;
     params.orgProfileId = org.id;
@@ -290,6 +289,12 @@ export function registerOnboarderRoutes(app: FastifyInstance): void {
     // `node` stays for older site bundles; `nodes` is the selectable list (one entry for a bound token).
     // `orgs`: organization profiles this operator may use (no UUIDs), with live route facts.
     return { data: { label: t.label, node: onboarderNode(t), nodes, anyNode: t.node_id === ANY_NODE, orgs: visibleOrgs(t).map((o) => orgForOnboarder(t, o)) } };
+  });
+  /** IP groups of a node the token may use, with live/assignable counts (the site's group picker). */
+  app.get("/api/onboard/node-groups", preOnb, async (req) => {
+    const q = req.query as { nodeId?: string };
+    const node = pickNode(req.onboardToken!, typeof q.nodeId === "string" && q.nodeId ? q.nodeId : undefined);
+    return { data: listNodeProxyGroups(node.node_id) };
   });
   app.get("/api/onboard/proxies", preOnb, async (req) => {
     const q = req.query as { nodeId?: string; group?: string };

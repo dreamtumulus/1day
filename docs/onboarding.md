@@ -502,6 +502,12 @@ POST /api/onboard/jobs  body 多 orgId、domain、proxyGroup
 （组织 404、域名不符、分组无代理）。最近作业表多「组织 @域名」列。令牌没有可见方案时退回老流程（选节点、选代理）。
 测试：`test/onboarder-orgs.test.mjs`。
 
+**2026-10-29 调整（用户要求"上号员应该可以选择节点和 IP 分组"）**：方案里的路线只是**推荐默认值**，不再是限制。
+`POST /api/onboard/jobs` 接受令牌可见范围内的任意 `nodeId` 与任意存在于该节点的 `proxyGroup`（不存在 → `group_invalid`；`route_invalid` 已删除）；
+新增 `GET /api/onboard/node-groups?nodeId=` 返回该节点各 IP 分组的 total/live/assignable。站点第 ③ 步固定显示节点下拉 + 分组 chips，
+推荐路线以 chips 形式列在上方，点选即填入；令牌绑定单节点时下拉只有一项并提示找管理员改为「任意节点」。
+**开始前核对**：所选节点 / 分组不在推荐路线内，或与上一次上号的（组织、节点、分组）不同，提交前弹出核对卡片，确认后才创建作业。
+
 ## 11. 原地重授权（2026-10-22）
 
 掉授权的账号不用删行重上。两条路都落到同一段引擎代码（`jobs.ts` `reauthorizeInPlace`）：
