@@ -162,12 +162,12 @@ CC 对非 SDK 线端点的调用**不走**不锈钢头集，而是 axios 辅助�
 | 调用 | 真实 CC 形态 |
 |---|---|
 | `GET /api/oauth/usage`（窗口巡检） | 仅 `Authorization: Bearer` + `User-Agent: claude-code/2.1.300`（`ps()`，无 entrypoint 后缀）+ axios 默认 `Accept: application/json, text/plain, */*`；**不发** x-stainless-* / anthropic-beta / anthropic-version |
-| `POST platform.claude.com/v1/oauth/token`（刷新） | JSON body 含 `grant_type, refresh_token, client_id, scope`（scope 回放授权时全集：`user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload user:plugins`）；头同上 axios 默认 |
+| `POST platform.claude.com/v1/oauth/token`（刷新） | JSON body 含 `grant_type, refresh_token, client_id, scope`（scope 回放授权时全集：`user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload user:plugins`）；**不要带 `claude-code/<ver>` UA**：2026-10-29 平台照本行加上后，令牌端点对每一次刷新回 429（8 小时 0 次成功），去掉即恢复；实现默认不发 UA（gateway.md §8） |
 
 配套实现约束：
 
 - console 巡检 `probeHeaders` 与刷新 `refreshOAuthCredential` 按上表发送（`CC_AUX_UA` / `CC_AUX_ACCEPT` / `refreshScopes` 常量）。
-- provider-node 出口的不锈钢指纹补齐**只作用于 `/v1/*` 路径（`/v1/oauth/*` 除外，2026-10-29）**；`/api/oauth/*` 与 `/v1/oauth/*` 保持调用方原样（调用方自带 `CC_AUX_UA`），否则辅助调用会被"过度装扮"成异常指纹。节点上没有 UA 的请求会带 Bun 默认 `Bun/x`：刷新（platform.claude.com 不在补齐范围）与代理健康探测都因此显式带 `CC_AUX_UA`（2026-10-29 审计）。
+- provider-node 出口的不锈钢指纹补齐**只作用于 `/v1/*` 路径（`/v1/oauth/*` 除外，2026-10-29）**；`/api/oauth/*` 与 `/v1/oauth/*` 保持调用方原样（调用方自带 `CC_AUX_UA`），否则辅助调用会被"过度装扮"成异常指纹。节点上没有 UA 的请求会带 Bun 默认 `Bun/x`：代理健康探测因此显式带 `CC_AUX_UA`；**刷新例外**——带该 UA 的刷新被令牌端点一律 429（2026-10-29 实测），刷新不发 UA。
 - 节点 CC 进程**保留遥测**（2026-10-29 本地 MITM 实测 2.1.312 共 8 个会话）：正常会话会调 `/api/claude_cli/bootstrap`、`/api/eval/*`、`/mcp-registry/v0/servers` 并上报一批 `/api/event_logging/v2/batch`（≈120 事件、≈230 KB），载荷含固定 device_id、session_id 与机器 `env` 块（内核、发行版、架构、内存），不含主机名/用户名/路径；关掉后这些调用整体消失，比保留更显眼。只关 `DISABLE_ERROR_REPORTING`（Sentry 在正常与 API 500 会话中都未触发，崩溃报告会带主机名）与 `DISABLE_AUTOUPDATER`（-p 会话未见升级检查）。另设 `SHELL=/bin/bash`。
 - **`# Environment` 系统块（2.1.312）**：`messages[1]` 以 `role=system` 携带「Primary working directory / Is a git repository / Platform / Shell / OS Version(内核)」，`CLAUDE_CODE_DISABLE_ATTACHMENTS` 不再覆盖它。节点上所有账号共享同一内核串与 worker 根路径前缀——已知未对齐项，见 §7。
 - OAuth 订阅号的 `/v1/messages` 测试/探测必须带 §5 的计费头 system 块 + 身份句 + `metadata.user_id`（JSON 字符串），否则上游 429（2026-10-16 实测）：console 账号「测试」与 `/root/monitor/func.py` 的 `cc_dual_mode` 均已按此改造。
