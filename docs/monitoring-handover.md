@@ -108,6 +108,10 @@ w1: node=active claude_procs=2 load=0.71 mem_avail=86.9G bundle=c41dbe8f
 | `cc-shape` 有少量 suspect，missing 里是 `billing_header` / `metadata_user_id` / `stainless_js_node` | 只带 UA 的路由器或 SDK 流量被正确降到 worker 路径 |
 | `nginx 5xx` 在 5000 行里个位数到二十来个且不增长 | 扫描器探测 `.env`、`wp-admin` 之类 |
 | `gateway recent warnings` 里 `PROOF_SECRET not set` | 启动时的固定提示 |
+| 用量日志里 `mode=probe`（费用 0，200 或 503 `no_available_account`） | 测活接管（gateway.md §2c，2026-10-29）：重复的极小请求由平台按号池状态直接作答，没有碰任何账号 |
+| `[oauth] refresh … failed: HTTP 429 → back-off until …` 偶发，随后 `token endpoint back-off until …, not refreshing` | 令牌端点限流退避（gateway.md §8，迁移 31）：10 分钟内不再重试；**持续数小时 0 次 `refreshed access token` 才是问题**（2026-10-29 09Z 起出现过一整天） |
+| `[proxy] … 401 while the token endpoint back-off runs … → cooldown, not status error` | 退避期内令牌到期，账号临时冷却而非标死；退避结束自动恢复 |
+| `[oauth] keep-alive tick: a/b refreshed, n in back-off, m deferred (same exit)` | 保活每轮汇总：同一出口 IP 每轮只刷一个号是设计行为 |
 | 负责人发布期间（gateway 蓝绿切换无中断；节点或 console 重启会切断当时在途的 worker 请求）出现一分钟内的集中失败 | 发布代价，之后应立刻归零；若 5 分钟后仍有同类失败则升级为红 |
 
 ### 4.4 每日汇总（建议北京时间 09:00 发一次）

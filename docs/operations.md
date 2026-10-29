@@ -182,7 +182,7 @@ curl -s -o /dev/null -w '%{http_code}\n' https://1dayapi.com/login   # 期望 20
 ## 7. 监控与告警
 
 没有指标、告警、日志集中与错误追踪。现有的只有一个功能探针：主服务器 `1dayapi-monitor.timer`
-每 10 分钟跑 `/root/monitor/func.py`（经公网打 messages / chat 的流式与非流式、工具调用，再以 admin 登录控制台核对
+每 **30 分钟**（2026-10-29 起，drop-in `/etc/systemd/system/1dayapi-monitor.timer.d/interval.conf`，此前 10 分钟：每条探测都在某个号上起一次 worker 会话，太密）跑 `/root/monitor/func.py`（经公网打 messages / chat 的流式与非流式、工具调用，再以 admin 登录控制台核对
 usage 行、账户与节点状态），每次一行 JSON 追加到 `/root/monitor/func.jsonl`，`journalctl -u 1dayapi-monitor` 可看摘要。
 探针里的 `cc_dual_mode`（带 Claude Code UA 走订阅号直连）2026-10-16 起改为发送 Claude Code 形态的 body（计费头 system 块 +
 `metadata.user_id`，见 docs/claude-code-compat.md §5）：此前它不带计费头，Anthropic 对这种请求恒回 429，每 10 分钟把账户
