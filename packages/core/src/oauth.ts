@@ -43,14 +43,6 @@ export function refreshCooldownUntil(accountId: string): string | null {
   }
 }
 
-/**
- * Upstream says the grant itself is gone — only a re-authorization helps. Any other
- * authentication failure while the refresh is cooling down is the expected expiry of a
- * token we were not allowed to renew, and must not retire the account.
- */
-export function isRevokedAuthText(text: string): boolean {
-  return /revoked|invalid_grant/i.test(text);
-}
 
 /** fetch-shaped override for the refresh HTTP call; may return null on infrastructure failure. */
 export type OAuthTransport = (url: string, init: { headers: Record<string, string>; body: string; signal?: AbortSignal }) => Promise<Response | null>;

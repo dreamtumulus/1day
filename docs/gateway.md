@@ -346,8 +346,9 @@ Anthropic `POST https://platform.claude.com/v1/oauth/token`（JSON），OpenAI `
 
 **令牌端点退避（迁移 31，2026-10-29）**：刷新收到 429 时写 `accounts.refresh_cooldown_until`（有 Retry-After 用它，否则默认 10 分钟，夹在 1 分钟～2 小时），
 期间 console 保活、网关强制刷新都不再调令牌端点；刷新成功即清除。此前没有退避：platform.claude.com 对 9 个号连续数小时回 429，保活每 5 分钟重试一次把限流一直续着，
-令牌到期后这些号被当成死号。**退避期内的 401/403 不是死号**：上游没有说 `revoked` / `invalid_grant` 的 401/403，以及 worker 路径的 "OAuth session expired and could not be refreshed"，
-只做到退避结束的临时冷却（`temp_unschedulable_until`），不置 `status=error`；上游明说 revoked 仍立即置 error（只有重新授权能救）。
+令牌到期后这些号被当成死号。**退避期内的 401/403 不是死号**：退避运行期间的任何 401/403，以及 worker 路径的 "OAuth session expired and could not be refreshed"，
+只做到退避结束的临时冷却（`temp_unschedulable_until`），不置 `status=error`。**不能靠 401 文案区分**：上游对已过期的 access token 回的同样是
+"OAuth access token has been revoked"（2026-10-29 晚 3 个号因此在退避期内被误标死，已改）。真吊销的号在退避结束后暴露：刷新返回 400/401（不会再进退避），下一次 401 即置 error。
 刷新实现在 `@1dayapi/core` `oauth.ts`，接受可选 transport：`route=node` 的账户由其节点（绑定 / 粘性代理）发出刷新请求
 （console 的保活循环已如此；网关侧按 `docs/onboarding.md` §6.2 接入中），其余账户直连。
 

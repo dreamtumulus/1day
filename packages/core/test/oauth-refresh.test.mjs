@@ -145,6 +145,4 @@ test("429 from the token endpoint parks the account: back-off persisted, next re
   assert.equal(parseRetryAfterMs("120"), 120_000);
   assert.equal(parseRetryAfterMs(null), null);
   assert.equal(parseRetryAfterMs("garbage"), null);
-  assert.ok(core.isRevokedAuthText('{"message":"OAuth access token has been revoked."}'));
-  assert.ok(!core.isRevokedAuthText("OAuth session expired and could not be refreshed"));
 });
