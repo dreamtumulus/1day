@@ -162,7 +162,7 @@ CC 对非 SDK 线端点的调用**不走**不锈钢头集，而是 axios 辅助�
 | 调用 | 真实 CC 形态 |
 |---|---|
 | `GET /api/oauth/usage`（窗口巡检） | 仅 `Authorization: Bearer` + `User-Agent: claude-code/2.1.300`（`ps()`，无 entrypoint 后缀）+ axios 默认 `Accept: application/json, text/plain, */*`；**不发** x-stainless-* / anthropic-beta / anthropic-version |
-| `POST platform.claude.com/v1/oauth/token`（刷新） | JSON body 含 `grant_type, refresh_token, client_id, scope`（scope 回放授权时全集：`user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload user:plugins`）；**不要带 `claude-code/<ver>` UA**：2026-10-29 平台照本行加上后，令牌端点对每一次刷新回 429（8 小时 0 次成功），去掉即恢复；实现默认不发 UA（gateway.md §8） |
+| `POST platform.claude.com/v1/oauth/token`（刷新） | **2026-10-29 16:34Z 本地 MITM 实抓（2.1.312，把本地凭证 expiresAt 改成过去时强制刷新）**：头只有 `accept: application/json, text/plain, */*`、`content-type: application/json`、**`user-agent: axios/1.15.2`**、`accept-encoding: gzip, compress, deflate, br`，没有 authorization / anthropic-version / x-app；body 与平台一致：`{grant_type:"refresh_token", refresh_token, client_id, scope:"user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload user:plugins"}`。时机是**懒刷新**：启动发现令牌过期才刷，失败后 3 秒内重试共 4 次（每次后 GET `/api/oauth/profile` 验旧令牌），仍失败就拿旧令牌继续；没有任何后台保活。**本行此前写的 `claude-code/<ver>` UA 是错的**（那是 `/api/oauth/profile` 等 api.anthropic.com 辅助调用的 UA）：平台 2026-10-29 照错行加上后，令牌端点对每次刷新回 429、8 小时 0 次成功，去掉即恢复。平台现状：不发 UA（Bun 默认），见 gateway.md §8 |
 
 配套实现约束：
 
