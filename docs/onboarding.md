@@ -228,6 +228,12 @@ POST /api/provider/accounts/onboard/proxy
 - 顺带修正：`resolveTeamProxy` 对**显式指定**的 `proxyId`（下拉手选或自带）只检查硬上限 3；此前只要别的出口还有常态名额，
   手选一个已占 2 的代理会被拒为「无可用代理」。自动分配仍先填满常态 2 再用第 3 名额。显式指定的失败信息改为
   `proxy_not_found` / `proxy_unassignable: <原因码>` / `proxy_full`。
+- **无人使用的旧行按新代理处理（2026-10-29）**：命中的行既没有绑定账号也没有在途预留，却因封存 / 冷却 / 探测失败 / 行级旧组织标记而不可分配时，
+  `reset=true`：dryRun 只报告；正式调用解除封存（写 `proxy_quarantine_lifts`）、记事件 `resupplied`、删掉旧行，再把操作者的规范化 URL
+  （无 scheme 一律 socks5）作为新行加到**操作者选的节点**并下发，随后像新代理一样等节点验证。出口 IP 上另一组织的归属（`proxy_team_claims`）
+  是只增不删的，这种情况不重置，返回 `blocked=other_organization`。
+- 节点页「代理池」粘贴也接受无 scheme 的行（`host:port[:user:pass]`、`user:pass@host:port`），服务端 `validateProxies` 统一规范化为 socks5；
+  写了 http(s):// 的保持原样。
 - 400 `proxy_unparseable`（解析失败）、`proxy_on_other_node`、`node_offline`、`invalid_request`；404 `node`。
   测试：`test/proxy-parse.test.mjs`、`test/proxy-supplied.test.mjs`。
 

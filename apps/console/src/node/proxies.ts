@@ -23,13 +23,19 @@ export function validateProxies(input: unknown): ProxyInput[] {
     if (!p || typeof p !== "object") throw new ProxyInputError("each proxy must be an object {url, label?}");
     const url = (p as Record<string, unknown>).url;
     const label = (p as Record<string, unknown>).label;
-    if (typeof url !== "string" || !PROXY_URL_RE.test(url.trim()) || url.length > 500) {
-      throw new ProxyInputError("proxy url must be http(s):// or socks5(h):// URL");
+    if (typeof url !== "string" || url.length > 500) throw new ProxyInputError("proxy url must be a string of at most 500 chars");
+    // A bare "host:port[:user:pass]" / "user:pass@host:port" line is a socks5 proxy by default;
+    // an explicit scheme (http(s)://, socks5(h)://) is kept as written.
+    let normalized = url.trim();
+    if (!PROXY_URL_RE.test(normalized)) {
+      const parsedLoose = parseProxyInput(normalized);
+      if (!parsedLoose) throw new ProxyInputError("proxy url must be host:port[:user:pass], user:pass@host:port or an http(s):// / socks5(h):// URL");
+      normalized = canonicalProxyUrl(parsedLoose);
     }
     if (label !== undefined && (typeof label !== "string" || label.length > 120)) {
       throw new ProxyInputError("proxy label must be a string of at most 120 chars");
     }
-    out.push({ url: url.trim(), label: typeof label === "string" && label.trim() ? label.trim() : undefined });
+    out.push({ url: normalized, label: typeof label === "string" && label.trim() ? label.trim() : undefined });
   }
   return out;
 }
@@ -405,6 +411,12 @@ export interface SuppliedProxyResult {
   reservedAccounts: number;
   /** null = assignable to `teamId` right now (capacity included); otherwise the reason. */
   blocked: ProxyIncompatibility | "full" | "not_in_pool" | null;
+  /**
+   * The row existed but nobody used it (no bound account, no live reservation) and something
+   * blocked it (quarantine, cooldown, dead verdict, another organization's claim): it is treated
+   * as a new proxy — dry run: would be reset on submit; real call: was reset and re-verifies now.
+   */
+  reset: boolean;
 }
 
 /**
@@ -438,6 +450,38 @@ export function resolveSuppliedProxy(nodeId: string, raw: string, opts: {
   }
   if (hit && !allowed(hit.node_id)) throw new ProxyInputError(`proxy_on_other_node: this proxy is already in another node's pool`);
   const teamId = normalizeTeamId(opts.teamId ?? null);
+  // An existing row nobody uses is the operator's to reuse as if new (user rule 2026-10-29):
+  // a stale quarantine, cooldown, dead verdict or an old organization claim must not turn a
+  // supplied proxy into a failure when no account or reservation depends on that exit.
+  // "Treated as new" means exactly that: the stale row is dropped and the operator's canonical
+  // URL (socks5 unless they wrote another scheme) is added to the node they chose, so the
+  // result follows their selection instead of wherever/however the old row was recorded.
+  let reset = false;
+  if (hit) {
+    const p = one<IsolatedProxy>("SELECT * FROM node_proxies WHERE id=?", hit.id)!;
+    const occ = p.resource_key ? proxyOccupancy(p.resource_key) : { bound: 0, reserved: 0, total: 0 };
+    const unused = occ.total === 0 && !one("SELECT 1 FROM accounts WHERE bound_proxy_id=?", p.id) && !proxyReserved(p.id);
+    const reason = teamIncompatibleReason(p, teamId);
+    const stuck = reason !== null && reason !== "unprobed" && reason !== "exit_unverified";
+    // Organization claims on the exit IP are append-only by design (an exit that carried
+    // organization A never becomes virgin again): those stay in force. Everything else that
+    // blocks an unused row (quarantine, cooldown, dead verdict, stale row-level team tag) is cleared.
+    const exitClaim = p.resource_key ? one<{ team_id: string }>("SELECT team_id FROM proxy_team_claims WHERE resource_key=?", p.resource_key) : undefined;
+    const claimBlocks = !!exitClaim && exitClaim.team_id !== teamId;
+    if (unused && stuck && !claimBlocks) {
+      reset = true;
+      if (!opts.dryRun) {
+        const keys = [`proxy:${p.id}`, ...(p.resource_key ? [p.resource_key] : [])];
+        liftQuarantine(keys, null, "re-supplied by an operator while unused");
+        recordProxyTeamEvent({ resourceKey: p.resource_key ?? `proxy:${p.id}`, proxyId: p.id, nodeId: p.node_id, teamId: p.team_id,
+          event: "resupplied", reason: `operator supplied this unused proxy again (was: ${reason}); old row dropped, re-added as new on node ${nodeId}` });
+        run("DELETE FROM node_proxy_assignments WHERE proxy_id = ?", p.id);
+        run("DELETE FROM node_proxies WHERE id = ?", p.id);
+        if (p.node_id !== nodeId) opts.push?.(p.node_id);
+        hit = undefined; // fall through to the insert below
+      }
+    }
+  }
   const display = describeProxy(parsed);
   const base = { parsed: { scheme: parsed.scheme, host: parsed.host, port: parsed.port, username: parsed.username, display } };
   const snapshot = (id: string, owner: string, existed: boolean, added: boolean, pushed: boolean): SuppliedProxyResult => {
@@ -451,14 +495,14 @@ export function resolveSuppliedProxy(nodeId: string, raw: string, opts: {
       const stored = parseProxyInput(decryptString(one<{ url_enc: string }>("SELECT url_enc FROM node_proxies WHERE id=?", p.id)!.url_enc));
       if (stored) shown = { scheme: stored.scheme, host: stored.host, port: stored.port, username: stored.username, display: describeProxy(stored) };
     } catch { /* unreadable ciphertext: keep the input's reading */ }
-    return { ...base, parsed: shown, proxyId: p.id, nodeId: owner, existed, added, pushed, status: p.status, lastError: p.last_error ?? null,
+    return { ...base, parsed: shown, proxyId: p.id, nodeId: owner, existed, added, pushed, reset, status: p.status, lastError: p.last_error ?? null,
       exitIp: p.exit_ip, country: (p as IsolatedProxy & { exit_country?: string | null }).exit_country ?? null,
       quarantined: q.quarantined, quarantineReason: q.reason, boundAccounts: occ.bound, reservedAccounts: occ.reserved,
       blocked: reason ?? (occ.total >= 3 ? "full" : null) };
   };
   if (hit) return snapshot(hit.id, hit.node_id, true, false, false);
   if (opts.dryRun) {
-    return { ...base, proxyId: null, nodeId: null, existed: false, added: false, pushed: false, status: null, lastError: null, exitIp: null,
+    return { ...base, proxyId: null, nodeId: null, existed: false, added: false, pushed: false, reset: false, status: null, lastError: null, exitIp: null,
       country: null, quarantined: false, quarantineReason: null, boundAccounts: 0, reservedAccounts: 0, blocked: "not_in_pool" };
   }
   const res = addNodeProxies(nodeId, [{ url: canonical, label: opts.label ?? "supplied" }]);

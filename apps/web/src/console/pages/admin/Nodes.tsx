@@ -45,7 +45,9 @@ import {
 // Protocol v2 node management: list with capacity/proxy counts, SSH + local
 // deploy, and per-node proxy pool replacement (docs/provider-protocol.md).
 
-const PROXY_RE = /^(https?|socks5):\/\/\S+$/;
+const PROXY_RE = /^(https?|socks5h?|socks):\/\/\S+$/;
+/** Scheme-less lines (host:port, host:port:user:pass, user:pass@host:port) are socks5 by default — the server canonicalises them. */
+const BARE_PROXY_RE = /^(\[[^\]]+\]|[^\s:@\/]+)(:\d{1,5})(:[^\s]+:[^\s]+)?$|^[^\s@]+@(\[[^\]]+\]|[^\s:@\/]+):\d{1,5}$|^[^\s:@\/]+:[^\s:@\/]+:(\[[^\]]+\]|[^\s:@\/]+):\d{1,5}$/;
 
 interface ProxyLine {
   url: string;
@@ -61,7 +63,7 @@ function parseProxyLines(text: string): { proxies: ProxyLine[]; bad: string | nu
     const sp = line.search(/\s/);
     const url = sp === -1 ? line : line.slice(0, sp);
     const label = sp === -1 ? undefined : line.slice(sp).trim() || undefined;
-    if (!PROXY_RE.test(url)) return { proxies: out, bad: line };
+    if (!PROXY_RE.test(url) && !BARE_PROXY_RE.test(url)) return { proxies: out, bad: line };
     out.push(label ? { url, label } : { url });
   }
   return { proxies: out, bad: null };
@@ -282,7 +284,7 @@ function ProxiesField({ value, onChange }: { value: string; onChange: (v: string
         rows={4}
         value={value}
         onChange={(e) => onChange(e.target.value)}
-        placeholder={"http://user:pass@proxy.example:8080 us-east\nsocks5://proxy2.example:1080"}
+        placeholder={"host:port:user:pass us-east\nuser:pass@host:port\nsocks5://user:pass@host:port"}
         spellCheck={false}
       />
     </Field>
@@ -657,7 +659,7 @@ function ProxyPoolModal({ node, onClose }: { node: NodeRow; onClose: () => void 
             rows={5}
             value={text}
             onChange={(e) => setText(e.target.value)}
-            placeholder={"http://user:pass@proxy.example:8080 us-east\nsocks5://proxy2.example:1080"}
+            placeholder={"host:port:user:pass us-east\nuser:pass@host:port\nsocks5://user:pass@host:port"}
             spellCheck={false}
           />
         </Field>

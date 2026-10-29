@@ -385,6 +385,7 @@ export function OnboardPage({ scope }: { scope: OnboardScope }) {
     const parsed = t("onboard.proxyOwnParsed", { url: ownPreview.parsed.display });
     if (!ownPreview.existed) return `${parsed} · ${t("onboard.proxyOwnNew")}`;
     const known = t("onboard.proxyOwnKnown", { node: ownPreview.nodeId ?? "?", status: t(`status.${ownPreview.status ?? "unknown"}`), n: ownPreview.boundAccounts + ownPreview.reservedAccounts });
+    if (ownPreview.reset) return `${parsed} · ${known} · ${t("onboard.proxyOwnReset")}`;
     const blocked = ownPreview.blocked && ownPreview.blocked !== "unprobed" && ownPreview.blocked !== "exit_unverified"
       ? ` · ${t(`onboard.proxyBlocked.${ownPreview.blocked}`, { err: ownPreview.lastError ?? ownPreview.quarantineReason ?? "-" })}` : "";
     return `${parsed} · ${known}${blocked}`;
@@ -722,7 +723,7 @@ export function OnboardPage({ scope }: { scope: OnboardScope }) {
     );
   })();
 
-  const ownTone: Tone = ownProbeSec !== null ? "info" : ownPreviewErr ? "error" : !ownPreview ? "neutral" : ownPreview.blocked && ownPreview.blocked !== "not_in_pool" && ownPreview.blocked !== "unprobed" && ownPreview.blocked !== "exit_unverified" ? "error" : ownPreview.existed ? "success" : "info";
+  const ownTone: Tone = ownProbeSec !== null ? "info" : ownPreviewErr ? "error" : !ownPreview ? "neutral" : ownPreview.reset ? "info" : ownPreview.blocked && ownPreview.blocked !== "not_in_pool" && ownPreview.blocked !== "unprobed" && ownPreview.blocked !== "exit_unverified" ? "error" : ownPreview.existed ? "success" : "info";
 
   const canSubmit =
     !!nodeId &&

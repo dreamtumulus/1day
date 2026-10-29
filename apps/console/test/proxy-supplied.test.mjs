@@ -144,6 +144,75 @@ test("explicit pick: third slot allowed, fourth refused (normal 2, maximum 3)", 
   assert.equal(r.data.blocked, "other_organization");
 });
 
+test("an unused existing proxy that is stuck (quarantined / claimed / dead) is treated as new", async () => {
+  const url = "http://dave:pw@198.51.100.90:3128"; // provider lists arrive as http too; the pool row keeps its url
+  replaceNodeProxies("sp-node-b", [{ url }]);
+  const id = core.sha256Hex(url).slice(0, 12);
+  const OTHER = "77777777-2222-4333-8444-555555555555";
+  run("INSERT INTO upstream_teams(id,name,created_at) VALUES (?,?,?) ON CONFLICT DO NOTHING", OTHER, "o", core.nowIso());
+  run("UPDATE node_proxies SET status='dead', last_error='exit resource quarantined', exit_ip='198.51.100.90', resource_key='ip:198.51.100.90', team_id=?, cooldown_until='2099-01-01T00:00:00Z' WHERE id=?", OTHER, id);
+  core.quarantineResource("ip:198.51.100.90", "authorize_failed");
+  core.quarantineResource(`proxy:${id}`, "authorize_failed");
+  // dry run: reported, nothing changed
+  let r = await admin("POST", "/api/admin/accounts/onboard/proxy", { nodeId: "sp-node-b", proxy: "198.51.100.90:3128:dave:pw", orgUuid: TEAM, dryRun: true });
+  assert.equal(r.data.existed, true);
+  assert.equal(r.data.reset, true);
+  assert.equal(r.data.parsed.display, "http://dave:***@198.51.100.90:3128");
+  assert.equal(one("SELECT status FROM node_proxies WHERE id=?", id).status, "dead");
+  // real call on the operator's chosen node (a different one): the old http row is dropped, the
+  // canonical socks5 url is added there, quarantine / claim gone, it re-verifies like a new proxy
+  r = await admin("POST", "/api/admin/accounts/onboard/proxy", { nodeId: "sp-node-a", proxy: "198.51.100.90:3128:dave:pw", orgUuid: TEAM });
+  assert.equal(r.status, 200, JSON.stringify(r));
+  assert.equal(r.data.reset, true);
+  assert.equal(r.data.added, true);
+  assert.equal(r.data.nodeId, "sp-node-a");
+  assert.equal(r.data.status, "unknown");
+  assert.equal(r.data.blocked, "unprobed");
+  assert.equal(r.data.parsed.display, "socks5://dave:***@198.51.100.90:3128");
+  const newId = core.sha256Hex("socks5://dave:pw@198.51.100.90:3128").slice(0, 12);
+  assert.equal(r.data.proxyId, newId);
+  assert.equal(one("SELECT COUNT(*) n FROM node_proxies WHERE id=?", id).n, 0, "old row gone");
+  const row = one("SELECT * FROM node_proxies WHERE id=?", newId);
+  assert.equal(row.node_id, "sp-node-a");
+  assert.equal(row.team_id, null);
+  assert.equal(row.cooldown_until, null);
+  assert.equal(core.quarantineActive("ip:198.51.100.90", `proxy:${id}`), undefined, "quarantine lifted (history rows stay, lifts recorded)");
+  assert.ok(one("SELECT 1 FROM proxy_team_events WHERE proxy_id=? AND event='resupplied'", id));
+  // the heartbeat verifies it → assignable to the operator's organization
+  run("UPDATE node_proxies SET status='live', exit_ip='198.51.100.90', resource_key='ip:198.51.100.90', last_check_at=? WHERE id=?", core.nowIso(), newId);
+  r = await admin("POST", "/api/admin/accounts/onboard/proxy", { nodeId: "sp-node-a", proxy: "198.51.100.90:3128:dave:pw", orgUuid: TEAM });
+  assert.equal(r.data.reset, false);
+  assert.equal(r.data.existed, true);
+  assert.equal(r.data.blocked, null);
+  // an exit IP claimed by another organization stays theirs (claims are append-only): no reset
+  const claimedUrl = "socks5://fay:pw@198.51.100.95:1080";
+  replaceNodeProxies("sp-node-b", [{ url: claimedUrl }, ...all("SELECT url_enc FROM node_proxies WHERE node_id='sp-node-b'").map((x) => ({ url: core.decryptString(x.url_enc) }))]);
+  const claimedId = core.sha256Hex(claimedUrl).slice(0, 12);
+  run("UPDATE node_proxies SET status='live', exit_ip='198.51.100.95', resource_key='ip:198.51.100.95', last_check_at=? WHERE id=?", core.nowIso(), claimedId);
+  core.claimProxyResource("ip:198.51.100.95", OTHER);
+  r = await admin("POST", "/api/admin/accounts/onboard/proxy", { nodeId: "sp-node-b", proxy: "198.51.100.95:1080:fay:pw", orgUuid: TEAM });
+  assert.equal(r.data.reset, false);
+  assert.equal(r.data.blocked, "other_organization");
+  assert.equal(one("SELECT COUNT(*) n FROM node_proxies WHERE id=?", claimedId).n, 1);
+  // a proxy that carries an account is never reset
+  const carol = core.sha256Hex("socks5://carol:pw@203.0.113.5:1080").slice(0, 12);
+  core.quarantineResource(`proxy:${carol}`, "test");
+  r = await admin("POST", "/api/admin/accounts/onboard/proxy", { nodeId: "sp-node-a", proxy: "203.0.113.5:1080:carol:pw", orgUuid: TEAM });
+  assert.equal(r.data.reset, false);
+  assert.equal(r.data.blocked, "quarantined");
+  assert.equal(one("SELECT COUNT(*) n FROM proxy_quarantine WHERE resource_key=?", `proxy:${carol}`).n, 1);
+});
+
+test("pool add: bare lines default to socks5, explicit schemes are kept", async () => {
+  const r = await admin("POST", "/api/admin/nodes/sp-node-b/proxies", { proxies: [{ url: "198.51.100.91:1080:eve:pw" }, { url: "eve:pw@198.51.100.92:1080" }, { url: "http://198.51.100.93:8080" }] });
+  assert.equal(r.status, 200, JSON.stringify(r));
+  assert.equal(r.data.added, 3);
+  const urls = all("SELECT url_enc FROM node_proxies WHERE node_id='sp-node-b'").map((x) => core.decryptString(x.url_enc)).sort();
+  assert.deepEqual(urls.filter((u) => /198\.51\.100\.9[0-3]/.test(u)), ["http://198.51.100.93:8080", "socks5://eve:pw@198.51.100.91:1080", "socks5://eve:pw@198.51.100.92:1080"]);
+  const bad = await admin("POST", "/api/admin/nodes/sp-node-b/proxies", { proxies: [{ url: "not a proxy" }] });
+  assert.equal(bad.status, 400);
+});
+
 test("bad input and offline node", async () => {
   let r = await admin("POST", "/api/admin/accounts/onboard/proxy", { nodeId: "sp-node-a", proxy: "not a proxy at all" });
   assert.equal(r.status, 400);

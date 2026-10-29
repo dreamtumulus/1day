@@ -623,6 +623,8 @@ export interface OnboardSuppliedProxy {
   quarantineReason: string | null;
   boundAccounts: number;
   reservedAccounts: number;
+  /** Existing but unused and stuck: treated as new (dry run: on submit; real call: done, re-verifying). */
+  reset: boolean;
   blocked: "legacy" | "dead" | "unprobed" | "exit_unverified" | "cooldown" | "quarantined" | "other_organization" | "needs_virgin_exit" | "reserved_by_other" | "full" | "not_in_pool" | null;
 }
 export const onboardSupplyProxy = (scope: OnboardScope, body: { nodeId: string; proxy: string; orgUuid?: string; dryRun?: boolean }) =>
