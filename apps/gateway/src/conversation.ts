@@ -83,6 +83,22 @@ export function latestQuestion(body: Json, format: ClientFormat): ResetQuestion 
   return { message: null, index: -1, anchor: null, prefix: null };
 }
 
+/**
+ * The request continues a tool round rather than asking something new: the last non-system message is
+ * an Anthropic user turn carrying tool_result blocks, a Chat Completions `tool` message, or a Responses
+ * function_call_output item. Such a turn is only answerable by the upstream that issued the tool calls.
+ */
+export function isToolContinuation(body: Json, format: ClientFormat): boolean {
+  const messages = requestMessages(body, format);
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (!m || typeof m !== "object" || ["system", "developer", "assistant"].includes(m.role)) continue;
+    if (m.role === "tool" || m.type === "function_call_output") return true;
+    return m.role === "user" && Array.isArray(m.content) && m.content.some((b: Json) => b?.type === "tool_result");
+  }
+  return false;
+}
+
 function cleanSchema(value: any): any {
   if (Array.isArray(value)) return value.map(cleanSchema);
   if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).filter(([k]) => !["description", "$comment", "examples", "default"].includes(k)).map(([k, v]) => [k, cleanSchema(v)]));
@@ -110,16 +126,20 @@ export function resetBody(body: Json, format: ClientFormat, messages: Json[]): J
   return out;
 }
 
-/** Keep stripping the old prefix on every future request, including after gateway restarts. */
+/**
+ * Keep stripping the old prefix on every future request, including after gateway restarts. The boundary
+ * is recognized by its anchor (the first question of this generation) standing at the recorded index;
+ * the pre-boundary messages themselves are dropped either way, so edits to them (Claude Code clears old
+ * tool_result bodies) must not make the gateway forget the generation's own history.
+ */
 export function applyResetBoundary(body: Json, format: ClientFormat, row: ConversationRow): { body: Json; matched: boolean; question: ResetQuestion } {
   const question = latestQuestion(body, format);
   if (!row.reset_active) return { body, matched: true, question };
   const messages = requestMessages(body, format);
   let before: string[] = [];
   try { before = JSON.parse(row.reset_prefix ?? "[]"); } catch { /* conservative reset */ }
-  const hashes = messages.map(fingerprint);
   const index = before.length;
-  const matched = !!row.reset_anchor && hashes[index] === row.reset_anchor && before.every((h, i) => hashes[i] === h);
+  const matched = !!row.reset_anchor && index < messages.length && fingerprint(messages[index]) === row.reset_anchor;
   if (matched) {
     const first = cleanContent(messages[index]?.content);
     if (first) {

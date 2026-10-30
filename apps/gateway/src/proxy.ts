@@ -75,7 +75,7 @@ import { openaiChatToAnthropic } from "./convert.js";
 import { postRaw } from "./rawhttp.js";
 import { SharedAccountGates, type AccountLease } from "./limits.js";
 import { TunnelRequestError, fetchViaTunnel, resetConversationWorkers, type IsolationContext } from "./tunnel.js";
-import { applyResetBoundary, latestQuestion, resetBody, requestMessages, resolveConversationIdentity, conversationBranchKey, RESET_NOTICE } from "./conversation.js";
+import { applyResetBoundary, isToolContinuation, latestQuestion, resetBody, requestMessages, resolveConversationIdentity, conversationBranchKey, RESET_NOTICE } from "./conversation.js";
 import {
   buildUpstreamRequest,
   canRefresh,
@@ -610,39 +610,6 @@ async function switchTeam(scope: ConversationScope, nextTeam: string, format: Cl
 async function proxyRequest(req: FastifyRequest, reply: FastifyReply, format: ClientFormat, endpoint: string, caller: CallerContext, scope?: ConversationScope): Promise<void> {
   assertScope(scope);
   let body = scope ? scope.originalBody : (req.body && typeof req.body === "object" ? req.body : {}) as Json;
-  let rejectUnknownHistory = false;
-  if (scope) {
-    await lockScope(scope);
-    const question = latestQuestion(body, format);
-    const unknownInitialHistory = !scope.row.team_id && (!scope.reliable || requestMessages(body, format).filter((m) => m?.role && !["system", "developer"].includes(m.role)).length > 1 || !!body.previous_response_id);
-    // Per-key history policy (docs/gateway.md §2b, customer report 2026-10-29): `reset` is the isolation
-    // default (boundary saved, only the latest question forwarded, x-1day-context-reset: 1); `reject`
-    // answers 409 so a multi-upstream client can route the turn elsewhere; `passthrough` forwards the
-    // history as-is and binds the conversation to whichever organization serves it.
-    if (unknownInitialHistory && !scope.row.reset_active) {
-      if (caller.policy.historyPolicy === "reject") rejectUnknownHistory = true;
-      else if (caller.policy.historyPolicy === "reset") scope.row = saveConversationBoundary(scope.row.id, scope.token, scope.row.generation, question.anchor, question.prefix);
-    }
-    if (scope.row.reset_active) {
-      scope.boundary = getConversationBoundary(scope.row.id, scope.row.generation, scope.branch);
-      const prepared = scope.boundary ? applyResetBoundary(body, format, { ...scope.row, reset_anchor: scope.boundary.anchor, reset_prefix: scope.boundary.prefix }) : null;
-      if (!prepared?.matched || scope.justReset) {
-        scope.boundary = saveBranchBoundary(scope.row.id, scope.token, scope.row.generation, scope.branch, question.anchor, question.prefix);
-        body = resetBody(body, format, question.message ? [question.message] : []);
-      } else body = prepared.body;
-      scope.justReset = false;
-      if (!latestQuestion(body, format).message) {
-        unlockScope(scope);
-        if (scope.responseCtx) { stopEarlyKeepalive(scope.responseCtx); stopNonStreamHeartbeat(scope.responseCtx); }
-        sendResetNotice(reply, format, scope.originalBody); return;
-      }
-    }
-    if (!reply.raw.headersSent) {
-      reply.header("x-1day-conversation-id", scope.row.id).header("x-1day-conversation-generation", String(scope.row.generation));
-      if (scope.row.reset_active) reply.header("x-1day-context-reset", "1");
-    }
-  }
-  const model = typeof body.model === "string" ? body.model.trim() : "";
   // Admission rejections after auth are logged as zero-cost usage rows so the
   // error log is complete (who asked for what, and why it was refused).
   const reject = (status: number, code: string, message: string, type: Parameters<typeof sendError>[5]): void => {
@@ -656,7 +623,7 @@ async function proxyRequest(req: FastifyRequest, reply: FastifyReply, format: Cl
         accountId: null,
         providerId: null,
         payoutRate: 0,
-        model: model || "-",
+        model: (typeof body.model === "string" && body.model.trim()) || "-",
         upstreamModel: null,
         endpoint,
         stream: body.stream === true,
@@ -673,6 +640,56 @@ async function proxyRequest(req: FastifyRequest, reply: FastifyReply, format: Cl
     }
     sendError(reply, format, status, code, message, type);
   };
+  let rejectUnknownHistory = false;
+  if (scope) {
+    await lockScope(scope);
+    const question = latestQuestion(body, format);
+    const unknownInitialHistory = !scope.row.team_id && (!scope.reliable || requestMessages(body, format).filter((m) => m?.role && !["system", "developer"].includes(m.role)).length > 1 || !!body.previous_response_id);
+    // Per-key history policy (docs/gateway.md §2b, customer report 2026-10-29): `reset` is the isolation
+    // default (boundary saved, only the latest question forwarded, x-1day-context-reset: 1); `reject`
+    // answers 409 so a multi-upstream client can route the turn elsewhere; `passthrough` forwards the
+    // history as-is and binds the conversation to whichever organization serves it.
+    if (unknownInitialHistory && !scope.row.reset_active) {
+      if (caller.policy.historyPolicy === "reject") rejectUnknownHistory = true;
+      else if (caller.policy.historyPolicy === "reset") scope.row = saveConversationBoundary(scope.row.id, scope.token, scope.row.generation, question.anchor, question.prefix);
+    }
+    if (scope.row.reset_active) {
+      scope.boundary = getConversationBoundary(scope.row.id, scope.row.generation, scope.branch);
+      const prepared = scope.boundary ? applyResetBoundary(body, format, { ...scope.row, reset_anchor: scope.boundary.anchor, reset_prefix: scope.boundary.prefix }) : null;
+      const justReset = scope.justReset === true;
+      scope.justReset = false;
+      if (prepared?.matched && !justReset) {
+        // The history after the boundary is this generation's own: forward it whole, whatever its last
+        // message is. A tool round (assistant tool_use + user tool_result) is answerable only with its
+        // chain intact; cutting it to "the latest question" here is what used to end a session mid-task.
+        body = prepared.body;
+      } else if (question.message) {
+        // No boundary this generation recognizes: a new conversation starts at the latest question.
+        scope.boundary = saveBranchBoundary(scope.row.id, scope.token, scope.row.generation, scope.branch, question.anchor, question.prefix);
+        body = resetBody(body, format, [question.message]);
+      } else {
+        // Nothing forwardable. A fake 200 would be read by the client as the model's answer, so this is a
+        // real error unless the generation really was just reset and the client only needs to be told.
+        unlockScope(scope);
+        if (scope.responseCtx) { stopEarlyKeepalive(scope.responseCtx); stopNonStreamHeartbeat(scope.responseCtx); }
+        const toolRound = isToolContinuation(body, format);
+        if (!toolRound && justReset) { sendResetNotice(reply, format, scope.originalBody); return; }
+        const [status, code, message] = toolRound
+          ? [409, "tool_continuation_after_reset", justReset
+            ? "This conversation's context was reset while a tool round was in progress (the previous upstream organization ran out of capacity); the pending tool_use was issued by that context and cannot be continued here. Start the task again with a new independent question; already executed tool actions are not redone."
+            : "This request continues a tool round that this platform did not serve (no recognized conversation boundary): its tool_use came from another context and cannot be continued here. Start the task again with a new independent question."]
+          : [400, "no_forwardable_question", "This conversation's context was reset and the latest message carries nothing that can be forwarded as a new question (no text, image, or document content). Send a new independent question."];
+        if (scope.responseCtx) fail(scope.responseCtx, null, status, code, message, "invalid_request_error");
+        else reject(status, code, message, "invalid_request_error");
+        return;
+      }
+    }
+    if (!reply.raw.headersSent) {
+      reply.header("x-1day-conversation-id", scope.row.id).header("x-1day-conversation-generation", String(scope.row.generation));
+      if (scope.row.reset_active) reply.header("x-1day-context-reset", "1");
+    }
+  }
+  const model = typeof body.model === "string" ? body.model.trim() : "";
   if (rejectUnknownHistory) {
     unlockScope(scope);
     if (scope?.responseCtx) { stopEarlyKeepalive(scope.responseCtx); stopNonStreamHeartbeat(scope.responseCtx); }

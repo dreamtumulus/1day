@@ -91,7 +91,7 @@ await new Promise((resolve) => consoleServer.listen(0, "127.0.0.1", resolve));
 process.env.CONSOLE_BASE = `http://127.0.0.1:${consoleServer.address().port}`;
 const core = await import("@1dayapi/core");
 const { proxy } = await import("../dist/proxy.js");
-const { resolveConversationIdentity, resetBody, latestQuestion, applyResetBoundary } = await import("../dist/conversation.js");
+const { resolveConversationIdentity, resetBody, latestQuestion, applyResetBoundary, isToolContinuation, RESET_NOTICE } = await import("../dist/conversation.js");
 const gateway = Fastify();
 gateway.post("/v1/messages", (req, reply) => proxy(req, reply, "anthropic", "/v1/messages"));
 await gateway.ready();
@@ -194,15 +194,113 @@ test("simultaneous requests for one session share a durable team and generation 
   assert.equal(core.getConversation(calls[0].isolation.conversationId).lease_token, null);
 });
 
-test("tool-only reset returns a normal explicit message and never sends orphan results to B", async () => {
+const toolUse = (id, name = "lookup") => ({ role: "assistant", content: [{ type: "tool_use", id, name, input: { q: id } }] });
+const toolResult = (id, text) => ({ role: "user", content: [{ type: "tool_result", tool_use_id: id, content: text }] });
+
+// 2026-10-30: a tool round whose tool_use the other organization issued cannot be continued in B. The answer
+// is a real 409, never a 200 "assistant message" the client would read as the model's reply.
+test("team switch mid tool round: 409 tool_continuation_after_reset, never a synthetic 200, no orphan results to B", async () => {
   const f = seed([{ team: TEAM_A }, { team: TEAM_B }]);
   await request(f, payload([question("tool task")]));
   behaviors.set(f.ids[0], { team: TEAM_A, status: 402 });
   const start = attempts.length;
-  const response = await request(f, payload([question("tool task"), { role: "assistant", content: [{ type: "tool_use", id: "old-call", name: "lookup", input: {} }] }, { role: "user", content: [{ type: "tool_result", tool_use_id: "old-call", content: "OLD TOOL SECRET" }] }]));
-  assert.equal(response.statusCode, 200, response.body);
-  assert.match(response.json().content[0].text, /上下文和工具状态已清空/);
+  const response = await request(f, payload([question("tool task"), toolUse("old-call"), toolResult("old-call", "OLD TOOL SECRET")]));
+  assert.equal(response.statusCode, 409, response.body);
+  assert.equal(response.json().error.code ?? response.json().error.type, "tool_continuation_after_reset");
+  assert.ok(!response.body.includes(RESET_NOTICE));
   assert.ok(!attempts.slice(start).some((a) => a.accountId === f.ids[1]));
+  const row = core.one("SELECT status_code, error_code, actual_cost FROM usage_logs WHERE api_key_id=? ORDER BY created_at DESC LIMIT 1", f.id);
+  assert.equal(row.status_code, 409); assert.equal(row.error_code, "tool_continuation_after_reset"); assert.equal(row.actual_cost, 0);
+  // The generation did move to B; the next independent question is served there with only itself.
+  const next = await request(f, payload([question("tool task"), toolUse("old-call"), toolResult("old-call", "OLD TOOL SECRET"), answer("gave up"), question("fresh start in B")]));
+  assert.equal(next.statusCode, 200, next.body);
+  assert.equal(attempts.at(-1).accountId, f.ids[1]);
+  assert.deepEqual(attempts.at(-1).body.messages, [question("fresh start in B")]);
+});
+
+// The bug this fixes: after a reset the boundary matched, the rebuilt body ended in B's own tool_result,
+// and "no latest question" turned a normal tool round into the 200 reset notice — mid-session, zero usage.
+test("after a reset, this generation's own tool rounds are forwarded whole (tool_use + tool_result chain), never short-circuited", async () => {
+  const f = seed([{ team: TEAM_A }, { team: TEAM_B }]);
+  await request(f, payload([question("OLD ROOT")]));
+  behaviors.set(f.ids[0], { team: TEAM_A, status: 402 });
+  const switched = await request(f, payload([question("OLD ROOT"), answer("OLD ANSWER"), question("list the files")]));
+  assert.equal(switched.statusCode, 200, switched.body);
+  assert.equal(switched.headers["x-1day-context-reset"], "1");
+  const history = [question("OLD ROOT"), answer("OLD ANSWER"), question("list the files"), toolUse("call-1", "ls")];
+  const start = attempts.length;
+  for (const variant of ["plain", "stream", "with-reminder", "second-round"]) {
+    const extra = variant === "stream" ? { stream: true } : {};
+    const tail = variant === "with-reminder"
+      ? [{ role: "user", content: [{ type: "tool_result", tool_use_id: "call-1", content: "a.ts b.ts" }, { type: "text", text: "<system-reminder>budget low</system-reminder>" }] }]
+      : variant === "second-round"
+        ? [toolResult("call-1", "a.ts b.ts"), toolUse("call-2", "cat"), toolResult("call-2", "file body"), { role: "system", content: "per-turn control" }]
+        : [toolResult("call-1", "a.ts b.ts")];
+    if (variant === "stream") behaviors.set(f.ids[1], { team: TEAM_B, stream: true });
+    const r = await request(f, payload([...history, ...tail], extra));
+    behaviors.set(f.ids[1], { team: TEAM_B });
+    assert.equal(r.statusCode, 200, `${variant}: ${r.body}`);
+    assert.ok(!r.body.includes(RESET_NOTICE), `${variant}: no synthetic reset notice`);
+    assert.ok(r.body.includes(`reply:${f.ids[1]}`), `${variant}: the real upstream answer`);
+    const call = attempts.at(-1);
+    assert.equal(call.accountId, f.ids[1], variant);
+    assert.equal(call.isolation.generation, 2, variant);
+    assert.deepEqual(call.body.messages, [question("list the files"), toolUse("call-1", "ls"), ...tail.filter((m) => m.role !== "system")], variant);
+    assert.ok(!JSON.stringify(call.body).includes("OLD"), variant);
+  }
+  assert.equal(attempts.length - start, 4, "every tool round reached B");
+  assert.equal(core.one("SELECT COUNT(*) AS n FROM usage_logs WHERE api_key_id=? AND error_code IN ('tool_continuation_after_reset','no_forwardable_question')", f.id).n, 0);
+});
+
+test("pre-boundary drift (Claude Code clears old tool_result bodies) does not lose the generation's history", async () => {
+  const f = seed([{ team: TEAM_A }, { team: TEAM_B }]);
+  await request(f, payload([question("OLD ROOT")]));
+  behaviors.set(f.ids[0], { team: TEAM_A, status: 402 });
+  const oldRound = [question("OLD ROOT"), toolUse("old-call"), toolResult("old-call", "2301 chars of OLD output")];
+  const switched = await request(f, payload([...oldRound, question("fresh question")]));
+  assert.equal(switched.statusCode, 200, switched.body);
+  const cleared = [question("OLD ROOT"), toolUse("old-call"), toolResult("old-call", "[Old tool result content cleared]")];
+  const r = await request(f, payload([...cleared, question("fresh question"), toolUse("call-1"), toolResult("call-1", "result")]));
+  assert.equal(r.statusCode, 200, r.body);
+  assert.ok(!r.body.includes(RESET_NOTICE));
+  assert.deepEqual(attempts.at(-1).body.messages, [question("fresh question"), toolUse("call-1"), toolResult("call-1", "result")]);
+  assert.ok(!JSON.stringify(attempts.at(-1).body).includes("OLD"));
+  // The anchor at another index is not the boundary: the conservative restart at the latest question applies.
+  const shifted = await request(f, payload([...cleared, answer("INSERTED OLD TURN"), question("fresh question"), answer("x"), question("another question")]));
+  assert.equal(shifted.statusCode, 200, shifted.body);
+  assert.deepEqual(attempts.at(-1).body.messages, [question("another question")]);
+  assert.ok(!JSON.stringify(attempts.at(-1).body).includes("OLD"));
+});
+
+test("unknown earlier history arriving mid tool round (history policy reset): 409, nothing forwarded; an empty latest turn: 400", async () => {
+  const f = seed([{ team: TEAM_A }]);
+  const start = attempts.length;
+  const r = await request(f, payload([question("served elsewhere"), toolUse("foreign-call"), toolResult("foreign-call", "FOREIGN RESULT")]));
+  assert.equal(r.statusCode, 409, r.body);
+  assert.match(r.body, /tool_continuation_after_reset/);
+  assert.ok(!r.body.includes(RESET_NOTICE));
+  assert.equal(attempts.length, start);
+  const empty = await request(f, payload([question("served elsewhere"), answer("x"), { role: "user", content: [{ type: "text", text: "<system-reminder>only a reminder</system-reminder>" }] }]));
+  assert.equal(empty.statusCode, 400, empty.body);
+  assert.match(empty.body, /no_forwardable_question/);
+  assert.equal(attempts.length, start);
+  // The same key then starts the conversation here: served normally.
+  const ok = await request(f, payload([question("served elsewhere"), toolUse("foreign-call"), toolResult("foreign-call", "FOREIGN RESULT"), answer("x"), question("start here")]));
+  assert.equal(ok.statusCode, 200, ok.body);
+  assert.deepEqual(attempts.at(-1).body.messages, [question("start here")]);
+});
+
+test("isToolContinuation: tool_result / tool role / function_call_output in every dialect; a new question is not one", () => {
+  assert.equal(isToolContinuation({ messages: [question("q"), toolUse("c"), toolResult("c", "r")] }, "anthropic"), true);
+  assert.equal(isToolContinuation({ messages: [question("q"), toolUse("c"), toolResult("c", "r"), { role: "system", content: "per-turn" }] }, "anthropic"), true, "trailing system messages do not hide it");
+  assert.equal(isToolContinuation({ messages: [question("q"), toolUse("c"), toolResult("c", "r"), { role: "assistant", content: "prefill" }] }, "anthropic"), true, "assistant prefill is skipped like latestQuestion does");
+  assert.equal(isToolContinuation({ messages: [question("q"), toolUse("c"), toolResult("c", "r"), question("next")] }, "anthropic"), false);
+  assert.equal(isToolContinuation({ messages: [question("q")] }, "anthropic"), false);
+  assert.equal(isToolContinuation({ messages: [{ role: "user", content: "q" }, { role: "assistant", tool_calls: [{ id: "c", type: "function", function: { name: "f", arguments: "{}" } }] }, { role: "tool", tool_call_id: "c", content: "r" }] }, "openai-chat"), true);
+  assert.equal(isToolContinuation({ messages: [{ role: "user", content: "q" }, { role: "assistant", content: "a" }, { role: "user", content: "b" }] }, "openai-chat"), false);
+  assert.equal(isToolContinuation({ input: [{ role: "user", content: "q" }, { type: "function_call", call_id: "c", name: "f", arguments: "{}" }, { type: "function_call_output", call_id: "c", output: "r" }] }, "responses"), true);
+  assert.equal(isToolContinuation({ input: "plain" }, "responses"), false);
+  assert.equal(latestQuestion({ messages: [question("q"), toolUse("c"), toolResult("c", "r")] }, "anthropic").message, null, "a tool result is still never a question");
 });
 
 test("reset body removes Responses handles, developer summaries, remote tool resources, and schema descriptions", () => {
