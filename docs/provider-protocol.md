@@ -230,6 +230,7 @@ bunVersion, nodeVersion, bundleHash, draining}`（`bundleHash` = 运行中 bundl
   **连续 `PROXY_DEAD_AFTER`（默认 3）次才算失效**，成功即清零，见 onboarding.md §6.1），并发 4 个，池被替换时排队重跑一遍。状态随心跳上报 `proxies: [{id, url, live, latencyMs, error}]`（URL 脱敏；`live=null` 表示尚未探测，
   平台记为 `unknown` 而非 `dead`；`error` 为失败原因，管理台代理池表「失败原因」列可见）。
 - 分配上报：心跳携带 `assignments: {accountId: proxyId}`，平台落 `node_proxy_assignments` 表供管理台展示。
+- `proxyTeams` 中 `unassigned:<proxyId>` 是未分配标记，不是组织 UUID；`getPinned` 必须忽略该标记，legacy 账号才能使用无组织代理。真实组织标签仍要求 team、account 与 proxy 三者一致。
 
 ## 数据库新增（v3 migration 2）
 

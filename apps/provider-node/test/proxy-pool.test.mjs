@@ -48,6 +48,15 @@ strict.replaceAll([P1, P2]);
 strict.markDead(P1, "test: dead");
 assert.equal(strict.getPinned(id1), null, "deadAfter=1: first failure withdraws the proxy");
 
+// Unassigned sentinel is not an organization: legacy accounts may pin these proxies.
+{
+  const legacy = new ProxyPool(fakeStore(), { autoCheck: false });
+  legacy.replaceAll([P1], { proxyTeams: { [id1]: `unassigned:${id1}` }, proxyAccounts: { [id1]: [] } });
+  assert.equal(legacy.getPinned(id1), P1, "unassigned sentinel does not block an unbound pin");
+  assert.equal(legacy.getPinned(id1, "legacy-acct"), P1, "unassigned sentinel accepts a legacy account");
+  assert.equal(legacy.getPinned(id1, "team-acct", "team-a"), null, "a real team cannot take an unassigned legacy pin");
+}
+
 console.log("proxy-pool: ALL PASSED");
 
 // 2026-10-28: a pool push keeps the health of proxies that stay in the pool (liveness,

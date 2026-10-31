@@ -251,7 +251,8 @@ export class ProxyPool {
   }
 
   getPinned(id: string, accountId?: string, teamId?: string): string | null {
-    const team = this.store.data.proxyTeams?.[id];
+    const tagged = this.store.data.proxyTeams?.[id];
+    const team = tagged && !tagged.startsWith("unassigned:") ? tagged : null;
     if (team || teamId) {
       if (!team || team !== teamId || !accountId || !this.store.data.proxyAccounts?.[id]?.includes(accountId)) return null;
     }
