@@ -25,7 +25,7 @@
 | 组件 | 位置 | 职责 |
 |---|---|---|
 | core | `packages/core` | 打开共享 SQLite + 版本化迁移、加密主钥与内部令牌、模型注册表与计价、白名单、平台默认值、候选账户与冷却、结算事务 |
-| catalog | `packages/catalog` | 内置 45 个模型与官方价目（注册表的种子数据） |
+| catalog | `packages/catalog` | 内置 13 个 Claude 模型（另 4 个不带版本号的别名，共 17 个名字）与官方价目（注册表的种子数据；2026-11-01 核对 `packages/catalog/data`） |
 | gateway | `apps/gateway` :8400 | 推理入口：Key 鉴权 → 准入 → 选账户 → 协议转换 → 上游 / 节点隧道 → 流式 → 结算 |
 | console | `apps/console` :8401 | 控制台 API（三角色）、会话登录、节点 WS 控制面、隧道管理器 |
 | web | `apps/web` :8402 | 公开站点（首页、模型、价格、文档、校验工具，风格不变）+ `/console` 三角色控制台 |

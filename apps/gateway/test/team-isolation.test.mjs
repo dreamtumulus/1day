@@ -197,25 +197,54 @@ test("simultaneous requests for one session share a durable team and generation 
 const toolUse = (id, name = "lookup") => ({ role: "assistant", content: [{ type: "tool_use", id, name, input: { q: id } }] });
 const toolResult = (id, text) => ({ role: "user", content: [{ type: "tool_result", tool_use_id: id, content: text }] });
 
-// 2026-10-30: a tool round whose tool_use the other organization issued cannot be continued in B. The answer
-// is a real 409, never a 200 "assistant message" the client would read as the model's reply.
-test("team switch mid tool round: 409 tool_continuation_after_reset, never a synthetic 200, no orphan results to B", async () => {
+// 2026-10-30: a tool round whose tool_use the other organization issued cannot be continued in B. 2026-11-01: so the
+// generation is never moved for one — the client gets a retryable 503 with team and context retained, never a 409
+// that throws the task away (771 of them in two days) and never a synthetic 200 read as the model's reply.
+test("team A fails mid tool round: 503 team_capacity_exhausted, context retained in A, nothing forwarded to B, same round succeeds once A recovers", async () => {
   const f = seed([{ team: TEAM_A }, { team: TEAM_B }]);
   await request(f, payload([question("tool task")]));
   behaviors.set(f.ids[0], { team: TEAM_A, status: 402 });
   const start = attempts.length;
-  const response = await request(f, payload([question("tool task"), toolUse("old-call"), toolResult("old-call", "OLD TOOL SECRET")]));
-  assert.equal(response.statusCode, 409, response.body);
-  assert.equal(response.json().error.code ?? response.json().error.type, "tool_continuation_after_reset");
+  const round = [question("tool task"), toolUse("old-call"), toolResult("old-call", "OLD TOOL SECRET")];
+  const response = await request(f, payload(round));
+  assert.equal(response.statusCode, 503, response.body);
+  assert.equal(response.json().error.code ?? response.json().error.type, "team_capacity_exhausted");
+  assert.equal(response.headers["retry-after"], "30");
   assert.ok(!response.body.includes(RESET_NOTICE));
   assert.ok(!attempts.slice(start).some((a) => a.accountId === f.ids[1]));
   const row = core.one("SELECT status_code, error_code, actual_cost FROM usage_logs WHERE api_key_id=? ORDER BY created_at DESC LIMIT 1", f.id);
-  assert.equal(row.status_code, 409); assert.equal(row.error_code, "tool_continuation_after_reset"); assert.equal(row.actual_cost, 0);
-  // The generation did move to B; the next independent question is served there with only itself.
-  const next = await request(f, payload([question("tool task"), toolUse("old-call"), toolResult("old-call", "OLD TOOL SECRET"), answer("gave up"), question("fresh start in B")]));
-  assert.equal(next.statusCode, 200, next.body);
-  assert.equal(attempts.at(-1).accountId, f.ids[1]);
-  assert.deepEqual(attempts.at(-1).body.messages, [question("fresh start in B")]);
+  assert.equal(row.status_code, 503); assert.equal(row.error_code, "team_capacity_exhausted"); assert.equal(row.actual_cost, 0);
+  const conv = core.getConversation(response.headers["x-1day-conversation-id"]);
+  assert.equal(conv.generation, 1); assert.equal(conv.team_id, TEAM_A);
+  // A recovers: the very same round is served there with its tool chain intact, nothing ever went to B.
+  behaviors.set(f.ids[0], { team: TEAM_A });
+  core.run("UPDATE accounts SET temp_unschedulable_until=NULL, overload_until=NULL, rate_limited_until=NULL, status='active', error_message=NULL WHERE id=?", f.ids[0]);
+  const retry = await request(f, payload(round));
+  assert.equal(retry.statusCode, 200, retry.body);
+  assert.equal(attempts.at(-1).accountId, f.ids[0]);
+  assert.deepEqual(attempts.at(-1).body.messages, round);
+  assert.ok(!attempts.slice(start).some((a) => a.accountId === f.ids[1]));
+  assert.equal(core.one("SELECT COUNT(*) AS n FROM usage_logs WHERE api_key_id=? AND error_code='tool_continuation_after_reset'", f.id).n, 0);
+});
+
+test("team A fully cooled before a tool round: no reset, 503 team_capacity_exhausted after the bounded wait, served in A after the cooldown", async () => {
+  const f = seed([{ team: TEAM_A }, { team: TEAM_B }]);
+  await request(f, payload([question("cooled task")]));
+  const start = attempts.length;
+  core.run("UPDATE accounts SET temp_unschedulable_until=? WHERE id=?", new Date(Date.now() + 3_600_000).toISOString().replace(/\.\d{3}Z$/, "Z"), f.ids[0]);
+  const round = [question("cooled task"), toolUse("call-2"), toolResult("call-2", "RESULT")];
+  const t0 = Date.now();
+  const r = await request(f, payload(round));
+  assert.equal(r.statusCode, 503, r.body); assert.equal(r.json().error.code, "team_capacity_exhausted");
+  assert.ok(Date.now() - t0 >= 700, "waited for the organization up to ACCOUNT_BUSY_WAIT_MS");
+  assert.equal(attempts.length, start);
+  const conv = core.getConversation(r.headers["x-1day-conversation-id"]);
+  assert.equal(conv.generation, 1); assert.equal(conv.team_id, TEAM_A);
+  core.run("UPDATE accounts SET temp_unschedulable_until=NULL WHERE id=?", f.ids[0]);
+  const ok = await request(f, payload(round));
+  assert.equal(ok.statusCode, 200, ok.body);
+  assert.equal(attempts.at(-1).accountId, f.ids[0]);
+  assert.deepEqual(attempts.at(-1).body.messages, round);
 });
 
 // The bug this fixes: after a reset the boundary matched, the rebuilt body ended in B's own tool_result,

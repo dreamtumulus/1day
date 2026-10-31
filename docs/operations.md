@@ -22,7 +22,7 @@
 | 证书 | Let's Encrypt（certbot nginx 插件，systemd timer 自动续期）；CF SSL 模式应为 Full (Strict) |
 | DNS | 三台机器 `/etc/systemd/resolved.conf.d/10-public-dns.conf`：`DNS=1.1.1.1 8.8.8.8 1.0.0.1 8.8.4.4`，`FallbackDNS=` Contabo 两台（2026-10-19）。resolved 对全局与网卡（DHCP/Contabo）两组解析器并行查询、先回者胜；节点按域名连 `wss://1dayapi.com`，10-18 23:45 CEST Contabo 解析器故障曾让两个 worker 掉线 6 分钟 |
 | 请求体上限 | nginx `client_max_body_size 32m`（2026-10-18，原 10m）= 网关 Fastify `bodyLimit` 32 MB = Anthropic 官方 32 MB；节点 http_egress spec 上限 48 MiB（body base64 ×4/3）。三者需一致，否则大请求在某一层被拒而其他层无感 |
-| 公网端口 | 22 / 80（301→443）/ 443；ufw 未启用 |
+| 公网端口 | 22 / 80（301→443）/ 443；ufw **已启用**（22/tcp LIMIT、80/tcp、443/tcp ALLOW；2026-11-01 核对） |
 
 ## 2. 进程（systemd）
 
@@ -32,7 +32,7 @@
 | `1dayapi-console` | `node apps/console/dist/index.js` | 127.0.0.1:8401 | `HOST=127.0.0.1`、`TRUST_PROXY=127.0.0.1,::1`、`COOKIE_SECURE=1`、`PLATFORM_WS_URL`；`TRUSTED_EXECUTION_NODE_IDS`、`REQUIRE_TEAM_UID_ISOLATION=1`；连接数从共享 SQLite 租约汇总 |
 | `1dayapi-mock-upstream` | `node apps/gateway/scripts/mock-upstream.mjs` | 127.0.0.1:19001 | — |
 | `1dayapi-node` | `/root/.bun/bin/bun /root/.1dayapi-node/node-bundle.js` | 本地控制台 127.0.0.1:16889 | 平台节点 server-node-1。**2026-10-16 起 `disable --now`**：主服务器暂不跑节点，节点行保留（控制台显示离线），要恢复 `systemctl enable --now 1dayapi-node` |
-| `1dayapi-backup.timer` | `/usr/local/bin/1dayapi-backup.sh` | — | 每 6 小时备份到 worker-01（见 §5） |
+| `1dayapi-backup.timer` | `/usr/local/bin/1dayapi-backup.sh` | — | 每小时（`*:30`，drop-in `hourly.conf`）备份到 worker-01（见 §5） |
 
 「1day 核心节点」（node_0065de07，310 条代理，无 systemd 托管）已于 2026-10-16 删除：目录归档在 `/opt/1dayapi/backups/core-node-archive-<ts>.tar.gz`
 （含加密代理清单与 `config.key`），平台侧节点行已删。该段为 2026-10-16 的节点快照；当前供给节点以控制台和最新发布记录为准。
@@ -125,10 +125,10 @@ curl -s -o /dev/null -w '%{http_code}\n' https://1dayapi.com/login   # 期望 20
 
 ## 5. 数据与备份
 
-- **互备（2026-10-16 起）**，两台机器各有 `1dayapi-backup.timer`，每 6 小时一次，`Persistent=true`：
+- **互备（2026-10-16 起）**，两台机器各有 `1dayapi-backup.timer`，`Persistent=true`。主服务器自 2026-10-3x 起改为**每小时**（timer drop-in `1dayapi-backup.timer.d/hourly.conf`，`OnCalendar=*-*-* *:30:00`）；worker-01 仍为每 6 小时：
   - 主服务器 `/usr/local/bin/1dayapi-backup.sh`：`VACUUM INTO` 在线快照 + `PRAGMA integrity_check` → 加 `provider-cred.key`、`internal.key`、
     systemd 单元、nginx `sites-enabled`、`/root/monitor` 凭据 → `backups/auto/<ts>.tar.gz`（0600）→ rsync 到 worker-01 `/backup/1dayapi-main/`。
-    本地保留 28 份，对端 60 份。
+    保留份数：脚本原为本地 28 份 / 对端 60 份，按 6 小时节奏即 7 天 / 15 天；改为每小时后只覆盖 28 小时 / 60 小时（2026-11-01 审计发现），目标值为本地 168 份（7 天）/ 对端 360 份（15 天，worker-01 磁盘 671 GB 可用，约 80 GB），以服务器上脚本实际 `tail -n +N` 为准。
   - worker-01 `/usr/local/bin/1dayapi-backup.sh`：节点配置 `/root/.config/1dayapi-provider-node/`（`config.json` 含节点密钥与加密代理池、
     `config.key`）+ `cc-worker-root.tar.gz`（`/var/lib/1dayapi-cc-worker/cc-accounts/<id>/.credentials.json`，排除 cc-sessions 与
     Claude Code 的 projects/skills/plugins 缓存）+ `1dayapi-node.service`

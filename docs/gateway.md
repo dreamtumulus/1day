@@ -91,6 +91,13 @@ tools 字母序且无 `strict`、有 `thinking` / `context_management`。beta �
 | `directOnly` | `false`（默认）/ `true` | 开启后非 genuine Claude Code 请求返回 **400 `direct_only`**（message 列出缺失项），不转 worker；原样透传分组（§4a）不受影响 |
 | `probeIntercept` | `true`（默认）/ `false` | 测活接管（§2c）：探测请求由平台按号池状态直接回复，不占用账号 |
 
+**工具轮不换组织（2026-11-01）**：请求是工具轮（最后一条非 system 消息是 `tool_result` / `tool` / `function_call_output`，`isToolContinuation`）时，
+网关不再因 `team_pool_exhausted` 切换组织：其 `tool_use` 只有发出它的组织能接，换组织后只能得到 409 `tool_continuation_after_reset`
+（2026-10-30 上线后两天 771 次，98% 来自非 Claude Code 形态的 Agent/SDK 客户，两把 Key 占 717 次）。现在：组织内暂无可调度账号时先等待
+至多 `ACCOUNT_BUSY_WAIT_MS`（默认 15 s，等待期间释放对话租约）；仍无账号、或组织内账号全部尝试失败，返回 **503 `team_capacity_exhausted`**
+（`Retry-After: 30`），代次与 `team_id` 不变、边界不动，客户端原样重试即可。非工具轮请求的换组织 / reset 行为不变。
+
+
 ### 2c. 测活接管（`apps/gateway/src/probe.ts`，2026-10-29）
 
 健康检查器每隔几秒用同一条极小请求轮询各个模型；在 worker 路径上每一次都要在某个号上起一个 Claude Code 会话（2026-10-29 一个测活客户端一小时碰了 63 个号）。

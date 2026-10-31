@@ -816,8 +816,29 @@ async function proxyRequest(req: FastifyRequest, reply: FastifyReply, format: Cl
     all = all.filter((a) => current ? accountTeamId(a) === current : a.type !== "oauth");
     usable = all.filter((a) => modeFor(format, a, ccClient) !== null);
     if (current && usable.length === 0) {
-      const next = teams.find((a) => !scope.triedTeams.has(accountTeamId(a)!));
-      if (next) { await switchTeam(scope, accountTeamId(next)!, format, "team_pool_exhausted"); return proxyRequest(req, reply, format, endpoint, caller, scope); }
+      if (isToolContinuation(scope.originalBody, format)) {
+        // A tool round is answerable only by the organization whose model issued its tool_use: moving the
+        // generation elsewhere could only end in 409 tool_continuation_after_reset (2026-10-30/31: 771 in two
+        // days, 98% from Agent/SDK callers). Keep the team and its context: wait for one of its accounts to
+        // become schedulable again, otherwise fail retryably so the client resends this same round.
+        unlockScope(scope);
+        const deadline = Date.now() + busyWaitMs();
+        while (usable.length === 0 && Date.now() < deadline && !ctx.clientGone) {
+          try { await wait(Math.min(500, deadline - Date.now()), ctx.abort.signal); } catch { break; }
+          all = listCandidates(caller.groupId, model).filter((a) => accountTeamId(a) === current);
+          usable = all.filter((a) => modeFor(format, a, ccClient) !== null);
+        }
+        if (usable.length === 0) {
+          if (ctx.clientGone) { logFailure(ctx, null, 499, "client_closed", "Client closed while waiting for the conversation's organization"); return; }
+          failTeamCapacity(ctx, null);
+          return;
+        }
+        await lockScope(scope);
+        if (scope.row.team_id !== current) return proxyRequest(req, reply, format, endpoint, caller, scope);
+      } else {
+        const next = teams.find((a) => !scope.triedTeams.has(accountTeamId(a)!));
+        if (next) { await switchTeam(scope, accountTeamId(next)!, format, "team_pool_exhausted"); return proxyRequest(req, reply, format, endpoint, caller, scope); }
+      }
     }
   }
   unlockScope(scope);
@@ -888,7 +909,7 @@ async function proxyRequest(req: FastifyRequest, reply: FastifyReply, format: Cl
     return ccrBody;
   };
 
-  const busyDeadline = Date.now() + Math.max(0, Math.min(60_000, Number(process.env.ACCOUNT_BUSY_WAIT_MS ?? 15_000)));
+  const busyDeadline = Date.now() + busyWaitMs();
   let busy: Candidate[] = [];
   for (;;) {
   busy = [];
@@ -1104,7 +1125,11 @@ async function proxyRequest(req: FastifyRequest, reply: FastifyReply, format: Cl
         }
         // Per-model org suspension (403, time-boxed): cool that model only and let the
         // next account (another org) serve; never treat it as a dead credential.
-        const suspended = status === 403 ? parseModelSuspension(text) : null;
+        // The worker path wraps the same 403 text in a 502 body ("ccr_worker: Failed to authenticate. API Error:
+        // 403 model: … is suspended for this organization until …"); 2026-10-29/31 that fell through to the short
+        // transient cooldown and one account was re-picked four times in eight minutes (39 client 502s), so on the
+        // worker path the text is parsed whatever the status.
+        const suspended = status === 403 || isCcrMode(mode) ? parseModelSuspension(text) : null;
         if (suspended) {
           markFailure(account.id, { kind: "model_suspended", model: suspended.model, until: suspended.until });
           console.warn(`[proxy] ${ctx.requestId} account ${account.name}: model ${suspended.model} suspended for its organization until ${suspended.until} → model cooldown, trying next account`);
@@ -1176,7 +1201,8 @@ async function proxyRequest(req: FastifyRequest, reply: FastifyReply, format: Cl
 
   // Every account in this generation was tried before changing organizations. The new
   // generation receives a rebuilt body, never the failed generation's full transcript.
-  if (scope?.row.team_id && !requestError && !ctx.clientGone && !ccrUnsupported) {
+  const toolRound = scope ? isToolContinuation(scope.originalBody, format) : false;
+  if (scope?.row.team_id && !toolRound && !requestError && !ctx.clientGone && !ccrUnsupported) {
     const next = listCandidates(caller.groupId, model).find((a) => accountTeamId(a) && !scope.triedTeams.has(accountTeamId(a)!) && modeFor(format, a, ccClient) !== null);
     if (next) {
       // Heartbeats may have committed HTTP headers, but no model output was delivered.
@@ -1200,6 +1226,9 @@ async function proxyRequest(req: FastifyRequest, reply: FastifyReply, format: Cl
     );
   } else if (lastStatus === 429) {
     fail(ctx, lastAccount, 429, "upstream_rate_limited", "All upstream accounts are rate limited. Retry later.", "rate_limit_error");
+  } else if (toolRound && scope?.row.team_id && attempts > 0 && !ctx.clientGone) {
+    // Every account of the organization failed this tool round; it is not moved elsewhere (see above).
+    failTeamCapacity(ctx, lastAccount);
   } else if (attempts === 0 && ccrUnsupported) {
     fail(ctx, null, 400, ccrUnsupported.code, ccrUnsupported.message, "invalid_request_error");
   } else if (attempts === 0) {
@@ -1300,6 +1329,28 @@ function logFailure(ctx: Ctx, account: AccountRow | null, status: number, code: 
   } catch (err) {
     console.error("[proxy] failed to log failed request:", err);
   }
+}
+
+/** How long a request waits for a busy / momentarily unschedulable organization (env, 0–60 s, default 15 s). */
+function busyWaitMs(): number {
+  return Math.max(0, Math.min(60_000, Number(process.env.ACCOUNT_BUSY_WAIT_MS ?? 15_000)));
+}
+
+/**
+ * A tool round whose organization has no schedulable account, or whose accounts all failed (2026-11-01): the
+ * generation is not reset and nothing is forwarded to another organization — the client gets a retryable 503
+ * with its team and context retained, instead of the 409 that threw the task away.
+ */
+function failTeamCapacity(ctx: Ctx, account: AccountRow | null): void {
+  if (!ctx.reply.raw.headersSent) ctx.reply.header("retry-after", "30");
+  fail(
+    ctx,
+    account,
+    503,
+    "team_capacity_exhausted",
+    "The organization serving this conversation has no schedulable account right now (cooldown, usage window or upstream failure), and a tool round cannot be continued by another organization. The conversation's context is retained: retry this same request shortly.",
+    "upstream_error",
+  );
 }
 
 function fail(
