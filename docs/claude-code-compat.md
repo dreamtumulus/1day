@@ -153,6 +153,7 @@ Accept: application/json
 4. **HTTP 头顺序**：undici 与 Bun 的头块顺序不同，不做对齐（无证据表明上游校验顺序）。
 5. 后台小模型调用（话题摘要等）、`count_tokens`、遥测流量由客户端直连，与网关无关。
 6. **按账号机器身份**（2026-10-31 实现）：core 与 provider-node 使用同一 `accountMachine(accountId)`。root 节点设置 `CC_WORKER_MACHINE_IDENTITY=1` 后，worker 在独立 mount namespace 中绑定该账号的 `machine-os-release` / `machine-proc-version`，并通过只读兼容层让 `uname` 与 `os.release()` 返回同一内核和架构；Shell 也按账号对齐。直连 body 与 worker 的 `# Environment`、event_logging `env` 因而使用同一机器档。编译器和 `unshare`/`setpriv` 缺失、非 root 或自检失败会拒绝 worker，不静默退回节点共享值。它是呈现给 Claude Code 的机器身份，不是独立 VM；每会话 0700 scratch 与每组织 Linux UID 仍是实际权限边界，工作目录继续使用每会话私有 scratch。
+7. **生产验收**（2026-10-31）：三个 worker 均为 Bun 1.4.4、Claude 2.1.312，启动自检通过并回连。真实代理路径的受控 ClientHello 为 1482 字节，JA3、ALPN、签名算法及扩展顺序与官方 CC 2.1.312 完全一致。使用假 OAuth 凭证和本机假上游捕获 `/api/event_logging/v2/batch`，其 `arch=x64`、`shell=bash`、`linux_distro_id=ubuntu`、`linux_distro_version=22.04`、`linux_kernel=6.5.0-27-generic` 与该 accountId 的机器档和 `# Environment` 一致；未调用真实上游账号。
 
 ## 8. 辅助端点（非 /v1/messages）指纹
 
