@@ -8,7 +8,8 @@ export function genuineCcRequest({ model = "claude-sonnet-5", stream = false, se
   return {
     headers: {
       "user-agent": "claude-cli/2.1.303 (external, cli)", "x-app": "cli", "anthropic-beta": "claude-code-20250219",
-      "x-stainless-lang": "js", "x-stainless-runtime": "node", "x-claude-code-session-id": sessionId,
+      "x-stainless-lang": "js", "x-stainless-runtime": "node", "x-stainless-runtime-version": "v26.3.0",
+      "x-stainless-package-version": "0.128.0", "x-claude-code-session-id": sessionId,
       accept: "application/json", "anthropic-version": "2023-06-01",
     },
     body: {

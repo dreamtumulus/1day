@@ -13,6 +13,8 @@
  * only reported (logging / drift detection), never enforced.
  */
 
+import { ccBuildSuffix } from "./fingerprint.js";
+
 type Headers = Record<string, string | string[] | undefined>;
 type Json = Record<string, any>;
 
@@ -32,9 +34,19 @@ export const CC_SHAPE_POLICIES = ["observe", "downgrade", "reject"] as const;
 export type CcShapePolicy = (typeof CC_SHAPE_POLICIES)[number];
 
 const UA_RE = /^(?:claude-cli|claude-code)\/(\d+\.\d+\.\d+)/;
-const BILLING_RE = /^x-anthropic-billing-header:\s*cc_version=(\d+\.\d+\.\d+)[^;]*;/;
+const UA_ENTRYPOINT_RE = /\(external,\s*([^,)]+)(?:,|\))/;
+const BILLING_RE = /^x-anthropic-billing-header:\s*cc_version=(\d+\.\d+\.\d+)(?:\.([0-9a-z]+))?[^;]*;/;
+const BILLING_ENTRYPOINT_RE = /(?:^|;\s*)cc_entrypoint=([a-z][a-z0-9_-]{0,39})(?=;|$)/;
+const KNOWN_ENTRYPOINTS = /^(cli|sdk-cli|sdk-ts|sdk-py|claude-vscode|claude-jetbrains|claude-desktop|claude-desktop-3p|local-agent)$/;
+const CLI_IDENTITY = "You are Claude Code, Anthropic's official CLI for Claude.";
+const SDK_IDENTITY = "You are a Claude agent, built on Anthropic's Claude Agent SDK.";
+const SDK_APPEND_IDENTITY = "You are Claude Code, Anthropic's official CLI for Claude, running within the Claude Agent SDK.";
+const CC_VERSION_DETAILS: Record<string, { runtime: string; packageVersion: string }> = {
+  "2.1.300": { runtime: "v26.3.0", packageVersion: "0.128.0" },
+  "2.1.312": { runtime: "v26.12.1", packageVersion: "0.128.0" },
+};
 const HEX64 = /^[0-9a-f]{64}$/i;
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 function h(headers: Headers, name: string): string {
   const v = headers[name];
@@ -54,6 +66,8 @@ export function classifyCcRequest(headers: Headers, body: Json): CcShape {
   const version = m[1];
   const missing: string[] = [];
   const soft: string[] = [];
+  const uaEntrypoint = UA_ENTRYPOINT_RE.exec(ua)?.[1]?.trim() ?? "";
+  if (!KNOWN_ENTRYPOINTS.test(uaEntrypoint)) missing.push("ua_entrypoint");
 
   // ---- hard: headers every CC build sends (docs/claude-code-compat.md §3) ----
   if (h(headers, "x-app") !== "cli") missing.push("x_app_cli");
@@ -64,8 +78,15 @@ export function classifyCcRequest(headers: Headers, body: Json): CcShape {
   const system = body?.system;
   const sysBlocks: unknown[] = Array.isArray(system) ? system : [];
   const billing = BILLING_RE.exec(textOf(sysBlocks[0]));
+  let billingEntrypoint = "";
   if (!Array.isArray(system) || !billing) missing.push("billing_header");
-  else if (billing[1] !== version) missing.push("billing_version_mismatch");
+  else {
+    billingEntrypoint = BILLING_ENTRYPOINT_RE.exec(textOf(sysBlocks[0]))?.[1] ?? "";
+    if (!billingEntrypoint) missing.push("billing_entrypoint");
+    if (billing[1] !== version) missing.push("billing_version_mismatch");
+    if (version === "2.1.312" && billing[2] !== ccBuildSuffix(body.messages)) missing.push("billing_suffix");
+  }
+  if (uaEntrypoint && billingEntrypoint && uaEntrypoint !== billingEntrypoint) missing.push("entrypoint_mismatch");
 
   const uid = body?.metadata?.user_id;
   let uidOk = false;
@@ -84,6 +105,15 @@ export function classifyCcRequest(headers: Headers, body: Json): CcShape {
   // ---- hard: transport fingerprint every CC build sends (verified against a live 2.1.303 capture, 2026-10-19;
   // promoted from soft after forged-shape requests with a foreign runtime reached the direct path) ----
   if (h(headers, "x-stainless-lang") !== "js" || h(headers, "x-stainless-runtime") !== "node") missing.push("stainless_js_node");
+  const runtimeVersion = h(headers, "x-stainless-runtime-version");
+  const packageVersion = h(headers, "x-stainless-package-version");
+  if (!runtimeVersion) missing.push("stainless_runtime_version");
+  if (!packageVersion) missing.push("stainless_package_version");
+  const details = CC_VERSION_DETAILS[version];
+  if (details) {
+    if (runtimeVersion && runtimeVersion !== details.runtime) missing.push("stainless_runtime_version");
+    if (packageVersion && packageVersion !== details.packageVersion) missing.push("stainless_package_version");
+  }
   const sessionHeader = h(headers, "x-claude-code-session-id");
   if (!UUID.test(sessionHeader)) missing.push("session_id_header");
   else if (uidSession && sessionHeader.toLowerCase() !== uidSession.toLowerCase()) missing.push("session_id_mismatch");
@@ -94,11 +124,19 @@ export function classifyCcRequest(headers: Headers, body: Json): CcShape {
   // outdated client or a forged UA; either way the subscription direct path would only collect a 400.
   const minVersion = ccMinVersionForModel(typeof body?.model === "string" ? body.model : "");
   if (minVersion && compareVersions(version, minVersion) < 0) missing.push("version_below_model_minimum");
+  if (version === "2.1.312" && body?.stream !== true) missing.push("stream_true");
+  else if (body?.stream !== true) soft.push("stream_true");
+
+  const identity = textOf(sysBlocks[1]);
+  if (billing) {
+    if (uaEntrypoint === "cli") {
+      if (identity !== CLI_IDENTITY) missing.push("identity_block");
+    } else if (uaEntrypoint === "sdk-cli") {
+      if (identity !== SDK_IDENTITY && identity !== SDK_APPEND_IDENTITY) missing.push("identity_block");
+    } else if (!/^You are (Claude Code|a Claude agent)/.test(identity)) soft.push("identity_block");
+  }
 
   // ---- soft: canonical-build details, reported only ----
-  if (body?.stream !== true) soft.push("stream_true");
-  const identity = textOf(sysBlocks[1]);
-  if (!/^You are (Claude Code|a Claude agent)/.test(identity)) soft.push("identity_block");
   const mainPrompt = sysBlocks.find((b) => textOf(b).length > 4000 && (b as Json)?.cache_control);
   if (!mainPrompt) soft.push("main_prompt_cached");
   if (Array.isArray(body?.tools) && body.tools.length > 0) {

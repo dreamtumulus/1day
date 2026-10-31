@@ -55,7 +55,8 @@ function firstUserText(messages: unknown): string {
   const content = message?.content ?? message?.message?.content;
   if (typeof content === "string") return content;
   if (!Array.isArray(content)) return "";
-  const block = content.find((b) => b && typeof b === "object" && b.type === "text" && typeof b.text === "string");
+  // The billing hash is computed from the user's prompt, not Claude Code's injected reminder attachments.
+  const block = content.find((b) => b && typeof b === "object" && b.type === "text" && typeof b.text === "string" && !b.text.trimStart().startsWith("<system-reminder>"));
   return block?.text ?? "";
 }
 
@@ -308,7 +309,10 @@ export function normalizeCcSoftware(
   }
   if (changed.length === 0) return { headers, body, changed };
   const outHeaders: Record<string, string | string[] | undefined> = { ...headers, "user-agent": `${product}/${version}${buildSuffix}${rest}` };
-  if (changed.includes("version")) outHeaders["x-stainless-package-version"] = CC_SDK_VERSION;
+  if (changed.includes("version")) {
+    outHeaders["x-stainless-package-version"] = CC_SDK_VERSION;
+    outHeaders["x-stainless-runtime-version"] = CC_RUNTIME_VERSION;
+  }
   // Billing block (first system text block): keep every other field, align version / entrypoint.
   let outBody = body;
   const system = body?.system;

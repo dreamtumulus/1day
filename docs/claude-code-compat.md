@@ -49,7 +49,8 @@ POST /v1/messages?beta=true     HTTP/1.1
 | `Accept-Encoding` | `gzip, deflate, br, zstd` | Bun fetch 默认值（见 §7 差异） |
 
 **形态判定**：UA 像 CC 不等于是 CC。网关用本文 §3 / §5 的结构性特征做硬检查（`x-app`、`claude-code-20250219` beta、计费头块及其版本与 UA 一致、
-`metadata.user_id` 结构），不通过的请求按 settings `cc_shape_policy` 处理，见 docs/gateway.md §2a。头部缺失**不再**仅靠下面的 canonical 注入"洗白"：注入只服务非 CC 客户端。
+entrypoint 与身份块一致、runtime/package 版本符合已知构建、metadata 与 session 头均为 UUIDv4 且一致），不通过的请求按 settings `cc_shape_policy` 处理，见 docs/gateway.md §2a。
+2.1.312 额外验证 `cc_version` 的提示词派生后缀和 `stream:true`；其他版本不套用这些版本特定规则。头部缺失**不再**仅靠下面的 canonical 注入"洗白"：注入只服务非 CC 客户端。
 
 **网关策略**：客户端发来的上述头**透传**（仅替换凭证）；两个例外——`User-Agent` 仅在形如
 `claude-cli/*` / `claude-code/*` 时透传（其他 UA 透传反而更突兀），`Accept` 仅在含

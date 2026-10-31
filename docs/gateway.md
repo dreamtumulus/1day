@@ -51,17 +51,18 @@
 | `genuine` | 全部**硬检查**通过 |
 | `suspect` | 自称 CC 但任一硬检查失败 |
 
-**硬检查**（每个真 CC 版本都满足、结构稳定、不随版本漂移；2026-10-19 对照 2.1.303 实抓请求核对）：`x-app: cli`；`anthropic-beta` 含
-`claude-code-20250219`；`system` 为数组且首块为 `x-anthropic-billing-header: cc_version=<ver>; …`，`<ver>` 的 major.minor.patch 与 UA 版本一致；
-`metadata.user_id` 是 JSON 字符串且含 64 位 hex `device_id` 与 uuid `session_id`；`x-stainless-lang: js` 且 `x-stainless-runtime: node`；
-`x-claude-code-session-id` 为 uuid **且等于** `metadata.user_id.session_id`（`session_id_mismatch`）；`accept` 含 `application/json`；
-`anthropic-version: 2023-06-01`；UA 版本不低于 Anthropic 对该模型的最低 Claude Code 版本（`CC_MIN_VERSION_BY_MODEL`：opus-5-5 ≥ 2.1.280、
+**硬检查**（结构稳定；2.1.300/2.1.312 实抓复核）：`x-app: cli`；`anthropic-beta` 含 `claude-code-20250219`；UA entrypoint 是已知值且与 billing `cc_entrypoint` 一致；
+`system` 为数组且首块为 `x-anthropic-billing-header: cc_version=<ver>; …`，`<ver>` 的 major.minor.patch 与 UA 版本一致；cli / sdk-cli 的身份块必须与 entrypoint 完全匹配（sdk-cli 另允许 append-system 形式）；
+`metadata.user_id` 是 JSON 字符串且含 64 位 hex `device_id` 与 **UUIDv4** `session_id`；`x-claude-code-session-id` 也为 UUIDv4 **且等于** metadata session id（`session_id_mismatch`）；
+`x-stainless-lang: js` 且 `x-stainless-runtime: node`；runtime-version / package-version 必须存在，2.1.300 分别为 v26.3.0 / 0.128.0，2.1.312 分别为 v26.12.1 / 0.128.0；
+`accept` 含 `application/json`；`anthropic-version: 2023-06-01`；UA 版本不低于 Anthropic 对该模型的最低 Claude Code 版本（`CC_MIN_VERSION_BY_MODEL`：opus-5-5 ≥ 2.1.280、
 fable-5-1 ≥ 2.1.251，来自上游 `claude_code_version_too_old` 400；低于门槛的请求直连只会收 400，走 worker 反而能用节点的 2.1.300）。
-2026-10-19 之前后五项只是软检查：当天有 8 个只补了 UA / x-app / beta / 计费头 / metadata 的 router 请求以 bun 运行时、无 session 头的形状
-通过 genuine 进了订阅直连。注意 TLS 在 nginx 终止、网关重新发起，Anthropic 看到的 TLS 指纹永远是平台的，客户端差异只剩头和体。
+2.1.312 还要求 `cc_version` 后缀等于 `ccBuildSuffix(messages)` 的结果，且主 Messages 请求 `stream:true`。其他版本不套用该后缀算法或强制流式，避免把未知构建误判为伪造。
+注意 TLS 在 nginx 终止、网关重新发起，Anthropic 看到的 TLS 指纹永远是平台的，客户端差异只剩头和体。
 
-**软检查**（描述当前 canonical 构建，只记录不判定，用来提前发现 CC 升级）：`stream:true`、身份句块、带 cache_control 的长主提示词、
-tools 字母序且无 `strict`、有 `thinking` / `context_management`。巡检脚本 `1day-health` 输出窗口内 genuine / suspect 计数与缺失项分布。
+**软检查**（描述当前 canonical 构建，只记录不判定，用来提前发现 CC 升级）：非 2.1.312 的 `stream:true`、其他 entrypoint 的身份句块、带 cache_control 的长主提示词、
+tools 字母序且无 `strict`、有 `thinking` / `context_management`。beta 仍按功能动态裁剪，不强制完整列表；长主提示词也只作漂移观察。
+巡检脚本 `1day-health` 输出窗口内 genuine / suspect 计数与缺失项分布。
 
 **处置**由 settings `cc_shape_policy` 决定（控制台「设置」可改）：
 

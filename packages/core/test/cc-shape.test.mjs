@@ -12,6 +12,8 @@ const genuineHeaders = {
   accept: "application/json",
   "x-stainless-lang": "js",
   "x-stainless-runtime": "node",
+  "x-stainless-runtime-version": "v26.3.0",
+  "x-stainless-package-version": "0.128.0",
   "x-claude-code-session-id": "3f2c1a4e-5b6d-4c7e-8f90-a1b2c3d4e5f6",
 };
 const userId = JSON.stringify({ device_id: "a".repeat(64), account_uuid: "", session_id: "3f2c1a4e-5b6d-4c7e-8f90-a1b2c3d4e5f6" });
@@ -48,7 +50,7 @@ test("non-CC user agent is not_cc and untouched", () => {
 test("UA-only forgery (the 2026-10-16 probe) is suspect with every hard check missing", () => {
   const r = classifyCcRequest({ "user-agent": UA, "anthropic-version": "2023-06-01" }, { model: "claude-sonnet-5-5", max_tokens: 16, messages: [{ role: "user", content: "hi" }] });
   assert.equal(r.verdict, "suspect");
-  assert.deepEqual(r.missing.sort(), ["accept_json", "beta_claude_code", "billing_header", "metadata_user_id", "session_id_header", "stainless_js_node", "x_app_cli"]);
+  assert.deepEqual(r.missing.sort(), ["accept_json", "beta_claude_code", "billing_header", "metadata_user_id", "session_id_header", "stainless_js_node", "stainless_package_version", "stainless_runtime_version", "x_app_cli"]);
 });
 
 test("each hard check is individually enforced", () => {
@@ -99,12 +101,60 @@ test("Anthropic's per-model minimum Claude Code version is enforced before the d
 
 test("a newer CC build with a different beta list and prompt still passes the hard checks", () => {
   const r = classifyCcRequest(
-    { ...genuineHeaders, "user-agent": "claude-cli/2.3.0 (external, sdk-cli, agent-sdk/0.9.0)", "anthropic-beta": "claude-code-20250219,effort-2025-11-24" },
+    { ...genuineHeaders, "user-agent": "claude-cli/2.3.0 (external, sdk-cli, agent-sdk/0.9.0)", "anthropic-beta": "claude-code-20250219,effort-2025-11-24", "x-stainless-runtime-version": "v26.0.0", "x-stainless-package-version": "0.129.0" },
     { ...genuineBody, system: [{ type: "text", text: "x-anthropic-billing-header: cc_version=2.3.0.a1; cc_entrypoint=sdk-cli;" }, { type: "text", text: "You are a Claude agent, built on Anthropic's Claude Agent SDK." }] },
   );
   assert.equal(r.verdict, "genuine");
   assert.equal(r.version, "2.3.0");
   assert.ok(r.soft.includes("main_prompt_cached"));
+});
+
+const official312Headers = {
+  ...genuineHeaders,
+  "user-agent": "claude-cli/2.1.312 (external, sdk-cli)",
+  "x-stainless-runtime-version": "v26.12.1",
+};
+const official312Body = {
+  ...genuineBody,
+  messages: [{ role: "user", content: "Reply with the single word OK." }],
+  system: [
+    { type: "text", text: "x-anthropic-billing-header: cc_version=2.1.312.6b4; cc_entrypoint=sdk-cli;" },
+    { type: "text", text: "You are a Claude agent, built on Anthropic's Claude Agent SDK.", cache_control: { type: "ephemeral" } },
+    genuineBody.system[2],
+  ],
+};
+
+test("official CC 2.1.312 sdk-cli shape, including the prompt-derived suffix, is genuine", () => {
+  const r = classifyCcRequest(official312Headers, official312Body);
+  assert.equal(r.verdict, "genuine");
+  assert.deepEqual(r.missing, []);
+  assert.deepEqual(r.soft, []);
+});
+
+test("2.1.312 identity, entrypoint, runtime, suffix, stream and UUID consistency are hard checks", () => {
+  const miss = (h, b) => classifyCcRequest({ ...official312Headers, ...h }, { ...official312Body, ...b }).missing.sort();
+  assert.deepEqual(miss({}, { system: official312Body.system.filter((_, i) => i !== 1) }), ["identity_block"]);
+  assert.deepEqual(miss({}, { system: official312Body.system.map((b, i) => i === 0 ? { ...b, text: b.text.replace("cc_entrypoint=sdk-cli", "cc_entrypoint=made-up") } : b) }), ["entrypoint_mismatch"]);
+  assert.deepEqual(miss({ "x-stainless-runtime-version": "v20.0.0" }, {}), ["stainless_runtime_version"]);
+  assert.deepEqual(miss({ "x-stainless-package-version": "0.120.0" }, {}), ["stainless_package_version"]);
+  assert.deepEqual(miss({}, { system: official312Body.system.map((b, i) => i === 0 ? { ...b, text: b.text.replace("2.1.312.6b4", "2.1.312.foo") } : b) }), ["billing_suffix"]);
+  assert.deepEqual(miss({}, { stream: false }), ["stream_true"]);
+  const v1 = "550e8400-e29b-11d4-a716-446655440000";
+  const uid = JSON.parse(official312Body.metadata.user_id);
+  uid.session_id = v1;
+  assert.deepEqual(miss({ "x-claude-code-session-id": v1 }, { metadata: { user_id: JSON.stringify(uid) } }), ["metadata_user_id", "session_id_header"]);
+});
+
+test("sdk-cli accepts the append-system identity, while mismatched and missing entrypoints are rejected", () => {
+  const appended = official312Body.system.map((b, i) => i === 1 ? { ...b, text: "You are Claude Code, Anthropic's official CLI for Claude, running within the Claude Agent SDK." } : b);
+  assert.deepEqual(classifyCcRequest(official312Headers, { ...official312Body, system: appended }).missing, []);
+  const wrongIdentity = official312Body.system.map((b, i) => i === 1 ? { ...b, text: "You are Claude Code, Anthropic's official CLI for Claude." } : b);
+  assert.deepEqual(classifyCcRequest(official312Headers, { ...official312Body, system: wrongIdentity }).missing, ["identity_block"]);
+  const unknownUa = { ...official312Headers, "user-agent": "claude-cli/2.1.312 (external, made-up)" };
+  const unknownBilling = official312Body.system.map((b, i) => i === 0 ? { ...b, text: b.text.replace("cc_entrypoint=sdk-cli", "cc_entrypoint=made-up") } : b);
+  assert.deepEqual(classifyCcRequest(unknownUa, { ...official312Body, system: unknownBilling }).missing, ["ua_entrypoint"]);
+  const noBillingEntrypoint = official312Body.system.map((b, i) => i === 0 ? { ...b, text: b.text.replace("cc_entrypoint=sdk-cli;", "") } : b);
+  assert.deepEqual(classifyCcRequest(official312Headers, { ...official312Body, system: noBillingEntrypoint }).missing, ["billing_entrypoint"]);
 });
 
 test("policy parsing defaults to observe", () => {

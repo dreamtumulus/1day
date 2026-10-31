@@ -13,6 +13,7 @@ test("customer-made entrypoint → (external, cli), billing cc_entrypoint follow
   assert.deepEqual(n.changed, ["entrypoint", "version"]);
   assert.equal(n.headers["user-agent"], "claude-cli/2.1.303 (external, cli)");
   assert.equal(n.headers["x-stainless-package-version"], CC_SDK_VERSION);
+  assert.equal(n.headers["x-stainless-runtime-version"], "v26.12.1");
   assert.equal(n.headers["x-app"], "cli");
   // the client's build flag (".f23") is kept: real Claude Code sends it and the cc-shape gate allows it
   assert.equal(n.body.system[0].text, "x-anthropic-billing-header: cc_version=2.1.303.f23; cc_entrypoint=cli;");

@@ -31,18 +31,21 @@ Claude Code 打到订阅号上。完整清单见第 3 节。
 4. 任一失败 → `suspect` → 当前策略 downgrade → 走 cc-worker 路径，仍返回 200。
 5. 硬检查只看结构，不比对具体字符串。Claude Code 升级改了 beta 列表、工具数、主提示词都不会被误判。
 
-## 3. 硬检查清单（9 项必须全部满足）
+## 3. 硬检查清单（全部必须满足）
 
 | # | 项目 | 要求 | 失败代号 |
 |---|---|---|---|
-| 1 | `user-agent` | `claude-cli/<x.y.z> (external, <entrypoint>)`。交互式 entrypoint 为 `cli`，`-p` / Agent SDK 为 `sdk-cli` | （不是 CC 则 `not_cc`） |
+| 1 | `user-agent` | `claude-cli/<x.y.z> (external, <entrypoint>)`。交互式 entrypoint 为 `cli`，`-p` / Agent SDK 为 `sdk-cli`；entrypoint 必须是已知值 | `ua_entrypoint`（不是 CC 则 `not_cc`） |
 | 2 | `x-app` | 恒为 `cli` | `x_app_cli` |
-| 3 | `anthropic-beta` | 逗号分隔，必须包含 `claude-code-20250219`。其他 beta 按真 CC 发什么就带什么 | `beta_claude_code` |
+| 3 | `anthropic-beta` | 逗号分隔，必须包含 `claude-code-20250219`。其他 beta 按真 CC 发什么就带什么，不强制完整列表 | `beta_claude_code` |
 | 4 | `system[0]` 计费头块 | `system` 必须是数组；第 0 块是 text 块，内容形如 `x-anthropic-billing-header: cc_version=2.1.301.f23; cc_entrypoint=sdk-cli;`，无 `cache_control` | `billing_header` |
-| 4b | 计费头版本 | `cc_version=` 的 `x.y.z` 必须等于 UA 里的版本（后缀如 `.f23` 可有） | `billing_version_mismatch` |
-| 5 | `metadata.user_id` | **JSON 字符串**（不是对象）：`{"device_id":"<64 位 hex>","account_uuid":"","session_id":"<uuid>"}`。旧拼接格式 `user_xxx_account_xxx_session_xxx` 不通过 | `metadata_user_id` |
+| 4b | 计费头版本与 entrypoint | `cc_version=` 的 `x.y.z` 必须等于 UA 版本，`cc_entrypoint` 必须与 UA entrypoint 一致；缺 billing entrypoint 报 `billing_entrypoint`，不一致报 `entrypoint_mismatch` | `billing_version_mismatch` |
+| 4c | 身份块 | cli 必须是 `You are Claude Code, Anthropic's official CLI for Claude.`；sdk-cli 必须是 Agent SDK 身份句（也接受 running within the Claude Agent SDK 的 append-system 形式） | `identity_block` |
+| 4d | 2.1.312 后缀与流式 | 后缀必须等于 `ccBuildSuffix(messages)`，且主 Messages 请求 `stream:true`；其他版本不套用这两条版本特定规则 | `billing_suffix` / `stream_true` |
+| 5 | `metadata.user_id` | **JSON 字符串**（不是对象）：`{"device_id":"<64 位 hex>","account_uuid":"","session_id":"<UUIDv4>"}`。旧拼接格式不通过 | `metadata_user_id` |
 | 6 | `x-stainless-lang` / `x-stainless-runtime` | 分别恒为 `js` 和 `node` | `stainless_js_node` |
-| 7 | `x-claude-code-session-id` | uuid，且必须等于第 5 项里的 `session_id`（大小写不敏感） | `session_id_header` / `session_id_mismatch` |
+| 6b | runtime / package 版本 | 必须存在；2.1.300 为 v26.3.0 / 0.128.0，2.1.312 为 v26.12.1 / 0.128.0 | `stainless_runtime_version` / `stainless_package_version` |
+| 7 | `x-claude-code-session-id` | **UUIDv4**，且必须等于第 5 项里的 `session_id`（大小写不敏感） | `session_id_header` / `session_id_mismatch` |
 | 8 | `accept` | 必须包含 `application/json`（真 CC 即使 `stream:true` 也发 `application/json`，不是 `text/event-stream`） | `accept_json` |
 | 9 | `anthropic-version` | 恒为 `2023-06-01` | `anthropic_version` |
 | 10 | UA 版本下限 | 这是 Anthropic 自己的门槛，低于它直连只会收 400。当前：`claude-opus-5-5*` ≥ 2.1.280，`claude-fable-5-1*` ≥ 2.1.251；sonnet 暂无 | `version_below_model_minimum` |
@@ -97,8 +100,8 @@ x-stainless-retry-count: 0
 x-stainless-timeout: 600
 ```
 
-硬检查只看其中的 `user-agent`、`x-app`、`anthropic-beta`、`accept`、`anthropic-version`、`x-claude-code-session-id`、
-`x-stainless-lang`、`x-stainless-runtime`。其余 `x-stainless-*` 和 `anthropic-dangerous-direct-browser-access` 真 CC 都发，建议一并带上。
+硬检查会使用其中的 `user-agent`、`x-app`、`anthropic-beta`、`accept`、`anthropic-version`、`x-claude-code-session-id`、
+`x-stainless-lang`、`x-stainless-runtime`、`x-stainless-runtime-version`、`x-stainless-package-version`。其余 `x-stainless-*` 和 `anthropic-dangerous-direct-browser-access` 真 CC 都发，建议一并带上。
 
 ### 请求体
 
