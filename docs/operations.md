@@ -165,18 +165,20 @@ curl -s -o /dev/null -w '%{http_code}\n' https://1dayapi.com/login   # 期望 20
 
 **新增 worker 节点检查清单**（每一步都有机器可验的产出，别跳）：
 
-1. 控制台「节点」→ SSH 部署（2026-10-17 起脚本自带：unzip、bun、claude 2.1.312 → `/opt/claude/claude`（2026-10-28 起；此前 2.1.300）、`ccworker`、worker 根目录、隔离自检，
-   自检失败则整个部署失败并把输出留在 `deployMeta.log`），或手工 `install.sh`（一键或 `--local`）；日志里必须看到
+1. 控制台「节点」→ SSH 部署（脚本自带：unzip、Bun 1.4.4、claude 2.1.312 → `/opt/claude/claude`、`gcc`/`libc6-dev`/`util-linux`、`ccworker`、worker 根目录与隔离自检），或手工 `install.sh`（一键或 `--local`）；日志里必须看到
    `worker isolation self-test PASSED: ccworker ran claude <ver>`；看到 `FAILED`
    先按提示修（`id ccworker`、`ls -ld /var/lib/1dayapi-cc-worker` 应为 `drwx--x--x root`、`sudo -u ccworker claude --version`）。
 2. `1dayapi-node install-service && 1dayapi-node restart` 后 `journalctl -u 1dayapi-node` 必须出现
-   `[cc-worker] workers run as ccworker (uid N), tools: none, root /var/lib/1dayapi-cc-worker`，且**没有** `SELF-TEST FAILED`。
+   `[cc-worker] workers run as ccworker (uid N), tools: none, root /var/lib/1dayapi-cc-worker` 与
+   `machine identity: per-account kernel/distro/arch via /opt/claude/machine-identity`，且**没有** `SELF-TEST FAILED`。
    节点为 root 时默认降权；若日志显示 `the node user (no privilege drop)`，说明 `ccworker` 用户缺失，worker 会以节点用户跑，不合格。
+   `CC_WORKER_MACHINE_IDENTITY=1` 要求 root、编译器和 `unshare`/`setpriv`；失败时不得以关闭该开关冒充完成部署。
 3. 控制台节点页 `deploy_meta.ccWorker.enabled` 为 true、`selfTestError` 为空；为 false/非空时节点会以 `self_test_failed: …` 拒绝会话。
+   按账号机器身份覆盖 Claude Code 与遥测看到的内核、发行版、架构和 Shell；直连与 worker 必须同源。它不改变 UID/scratch 的实际权限边界，也不等于独立 VM。
 4. 把一个账号绑到该节点后，用平台 key 走 `https://api.1dayapi.com` 发一条非 CC 请求（见 §7.1），`/api/admin/errors/summary` 无该节点 502；
    再发一条带图片的请求确认 worker 路径（图片只在 worker 可用）。
 5. 顺手确认 `/root/.config/1dayapi-provider-node/` 下**没有** `cc-accounts/`、`cc-sessions/`（旧位置，有就是旧 bundle）。
-6. 新隔离节点 hello 必须包含 `team_isolation_v1`，平台与节点均校验 team / account / proxy / generation。需要每组织独立系统身份时，使用 `apps/provider-node/packaging/linux/1dayapi-team@.service`，分别配置 `PROVIDER_TEAM_ID`、状态目录和本地端口。
+6. 新隔离节点 hello 必须包含 `team_isolation_v1`，平台与节点均校验 team / account / proxy / generation。需要每组织独立系统身份时，使用 `apps/provider-node/packaging/linux/1dayapi-team@.service`，分别配置 `PROVIDER_TEAM_ID`、状态目录和本地端口。该模板的 `DynamicUser`/`NoNewPrivileges` 与 root mount namespace 不兼容，不得在其中开启 `CC_WORKER_MACHINE_IDENTITY`；标准 root worker 节点才使用按账号机器身份。
 7. 保留旧目录与设备身份。本次发布不安装或运行旧数据清理任务；历史备份与清理机制见 §5，不能将历史说明当作本次的执行指令。
 
 ## 7. 监控与告警

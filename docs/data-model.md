@@ -157,7 +157,7 @@ console 定时任务每 `cache_refund_interval_sec`（默认 86400）跑一轮�
 | `cc_shape_policy` | `observe` | Claude Code 形态判定策略：`observe` / `downgrade` / `reject`（gateway.md §2a） |
 | `onboard_default_executor` | `ccr_worker` | 上号落库账号的默认执行器（`ccr_worker` / `ccr`，onboarding.md） |
 | `onboard_default_concurrency` / `onboard_default_rpm_limit` | `9` / `100` | 上号表单留空时新账号的并发 / RPM 上限 |
-| `direct_cc_entrypoint_normalize` / `direct_cc_version_pin` | `1` / `2.1.303` | 直连「一账号一软件」（docs/gateway.md §3）：UA 入口后缀归一化、Claude Code 版本统一；pin 留空 = 透传 |
+| `direct_cc_entrypoint_normalize` / `direct_cc_version_pin` | `1` / `2.1.312` | 直连「一账号一软件」（docs/gateway.md §3）：UA 入口后缀归一化、Claude Code 版本统一；pin 留空 = 透传 |
 | `proxy_release_cooldown_sec` | `86400` | 删除 error 状态账号（401 吊销 / on hold）释放的代理在此时长内不分配给新账号（`node_proxies.cooldown_until`）；0 = 关闭 |
 | `onboard_cooldown_min_sec` / `onboard_cooldown_max_sec` | `3720` / `4200` | 新号冷静期：授权完成后随机 62～70 分钟不参与调度（写 `temp_unschedulable_until`）；两项为 0 = 关闭 |
 | `window_passive_max_age_sec` | `21600` | 账号超过此秒数无任何窗口采样才主动探测 usage（被动优先，ccr-supply.md §7） |

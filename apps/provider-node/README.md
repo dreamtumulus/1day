@@ -20,7 +20,13 @@
 
 v2 出口依赖 Bun 的 TLS 指纹（与 Claude Code 同为 Bun/BoringSSL）。**Node 下 `serve`
 直接拒绝启动**；`NODE_ALLOW_NODE_RUNTIME=1` 仅为本地开发逃生门（日志大字警告，指纹退化）。
-安装脚本固定装 Bun 1.4.3（与 CC 2.1.300 同版本族），已装且版本一致则跳过。
+安装脚本固定装 Bun 1.4.4（与 CC 2.1.312 内嵌运行时一致），已装且版本一致则跳过。
+
+### 按账号机器身份
+
+root 节点的 systemd 配置启用 `CC_WORKER_MACHINE_IDENTITY=1`。节点为每个账号派生与网关直连相同的内核、发行版、架构和 Shell，worker 在独立 mount namespace 中绑定对应文件，并用 `uname` 兼容层覆盖 Claude Code 及其遥测看到的主机值。需要 `gcc`、`libc6-dev` 和 `util-linux`；启动时会编译、探测并跑完整启动器自检，失败会拒绝 cc_worker 会话而不是退回共享节点身份。
+
+该机制不改变实际权限边界：每组织 UID、每会话 0700 scratch、固定代理与组织校验仍负责隔离。它不是独立 VM，也不会把不同账号的工作目录合并。非 root 节点不启用此模式。
 
 ## 安装
 
@@ -34,7 +40,7 @@ curl -fsSL https://releases.1dayapi.com/provider-node/install.sh | bash
 环境变量：`1DAYAPI_NODE_DIST`（发布地址）、`1DAYAPI_NODE_VERSION`、`PREFIX`（安装前缀，
 默认系统目录 `/opt/1dayapi-provider-node` + `/usr/local/bin`）、`1DAYAPI_NODE_BUNDLE_URL`
 （平台单文件 bundle，同 `--bundle-url`，如 `…/internal/provider/bundle?code=bind_...`）。
-没有 Bun 1.4.3 时自动安装（`curl -fsSL https://bun.sh/install | bash -s "bun-v1.4.3"`，
+没有 Bun 1.4.4 时自动安装（`curl -fsSL https://bun.sh/install | bash -s "bun-v1.4.4"`，
 装到当前用户 `~/.bun`）。macOS 暂不支持。
 
 **安装后自检（worker 隔离）**：`install.sh` 最后一步 `verify_worker_isolation` 会以 `ccworker` 用户在
@@ -100,7 +106,7 @@ bun apps/provider-node/dist/cli.js serve   # 或 pnpm --filter @1dayapi/provider
 
 - `ws` / `@types/ws` 使用 registry semver（`^8.20.0` / `^8.18.1`）；`Dockerfile` 不再引用已删除的 `vendor/` 目录，可正常构建。
 - 新上传的 Claude 订阅凭据经实际 token 验证、组织核验和代理容量预留后固定到当前节点；不能通过旧上传入口创建无组织、无固定代理的订阅供给。其他供给类型仍按其审核规则处理。Codex 凭证会一并上传 ChatGPT `accountId`。
-- **运行时**：v2 起必须 Bun（>= 1.4，安装脚本固定 1.4.3）；`tsc` build 仍供 CI，`engines.node`
+- **运行时**：v2 起必须 Bun（>= 1.4，安装脚本固定 1.4.4）；`tsc` build 仍供 CI，`engines.node`
   仅为构建/工具链保留。`Dockerfile`（node:22 基底）尚未适配 Bun 运行时，容器部署待跟进。
 - Docker 容器内控制台监听 `0.0.0.0`（`PROVIDER_CONSOLE_HOST`），宿主机映射到 127.0.0.1；
   Host 头白名单仍然生效。

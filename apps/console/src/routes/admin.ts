@@ -5,7 +5,7 @@ import {
   SETTING_KEYS,
   CC_ANTHROPIC_VERSION,
   ccCanonicalBetas,
-  CC_BILLING_BLOCK,
+  ccBillingBlock,
   CC_IDENTITY_BLOCK,
   accountBaseUrl,
   all,
@@ -262,15 +262,16 @@ async function testAccount(a: AccountRow, model: string | undefined) {
       headers.authorization = `Bearer ${secret}`;
       headers["anthropic-version"] = CC_ANTHROPIC_VERSION;
       headers["anthropic-beta"] = ccCanonicalBetas(true).join(",");
+      const messages = [{ role: "user", content: [{ type: "text", text: randomProbePrompt(), cache_control: { type: "ephemeral" } }] }];
       payload = {
         model: testModel,
         max_tokens: 8,
         stream: true,
         system: [
-          { type: "text", text: CC_BILLING_BLOCK },
+          { type: "text", text: ccBillingBlock(messages) },
           { type: "text", text: CC_IDENTITY_BLOCK, cache_control: { type: "ephemeral" } },
         ],
-        messages: [{ role: "user", content: [{ type: "text", text: randomProbePrompt(), cache_control: { type: "ephemeral" } }] }],
+        messages,
         metadata: { user_id: ccMetadataUserId() },
       };
     } else {
@@ -1510,7 +1511,7 @@ export function registerAdminRoutes(app: FastifyInstance): void {
     };
   };
 
-  // SSH remote deploy (Ubuntu target): install bun 1.4.3, download the node
+  // SSH remote deploy (Ubuntu target): install bun 1.4.4, download the node
   // bundle with a one-time bind code, write config + systemd unit, start,
   // then wait up to 30s for the node to come online.
   app.post("/api/admin/nodes/deploy", pre, async (req) => {

@@ -17,12 +17,12 @@
 #   PREFIX                   Install prefix (default system-wide; e.g. PREFIX=/tmp/testroot
 #                            installs into /tmp/testroot/opt and /tmp/testroot/usr/local/bin)
 #
-# Protocol v2 requires the Bun runtime (pinned 1.4.3, same family as the
-# Claude Code client it impersonates). The installer installs Bun when
-# missing and reuses an existing 1.4.3 install.
+# Protocol v2 requires the Bun runtime (pinned 1.4.4, matching the runtime
+# embedded in Claude Code 2.1.312). The installer installs Bun when missing
+# and reuses an existing 1.4.4 install.
 set -euo pipefail
 
-BUN_VERSION="1.4.3"
+BUN_VERSION="1.4.4"
 
 # Note: 1DAYAPI_* names start with a digit, which is not a valid shell
 # identifier — read them via printenv instead of parameter expansion.
@@ -109,7 +109,7 @@ write_bun_hint() {
 # Claude Code binary, pinned to the fingerprint-anchored version. Best-effort:
 # a node without claude still serves official_exit/http_egress and simply
 # reports ccWorker.enabled=false in its heartbeat.
-CLAUDE_VERSION="2.1.300"
+CLAUDE_VERSION="2.1.312"
 install_claude() {
   if command -v claude >/dev/null 2>&1 && claude --version 2>/dev/null | grep -q "${CLAUDE_VERSION}"; then
     log "claude $(claude --version 2>/dev/null | head -1) already installed"
@@ -139,6 +139,9 @@ setup_worker_user() {
   if [ -n "${real}" ] && ! sudo -u ccworker test -x "${real}" 2>/dev/null; then
     as_root mkdir -p /opt/claude && as_root cp -f "${real}" /opt/claude/claude && as_root chmod 755 /opt/claude/claude \
       && as_root ln -sfn /opt/claude/claude /usr/local/bin/claude && log "exposed claude at /opt/claude/claude for ccworker"
+  fi
+  if [ "$(id -u)" -eq 0 ] && { ! command -v cc >/dev/null 2>&1 || ! command -v unshare >/dev/null 2>&1 || ! command -v setpriv >/dev/null 2>&1; }; then
+    as_root env DEBIAN_FRONTEND=noninteractive apt-get update -qq && as_root env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq gcc libc6-dev util-linux
   fi
   verify_worker_isolation
   return 0

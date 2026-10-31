@@ -8,6 +8,7 @@ import type { CcWorkerClose, CcWorkerCred, CcWorkerOpen } from "./protocol.js";
 import type { ProxyPool } from "./proxy-pool.js";
 import { IsolationGuard, sameIsolation, validIsolation } from "./isolation.js";
 import type { IsolationContext } from "./protocol.js";
+import { prepareMachineRuntime, machineEnvironment, type MachineRuntime } from "./machine-runtime.js";
 
 // cc_worker mode (docs/ccr-supply.md §8.1): run the real Claude Code binary
 // per request on this node and stream its stream-json stdout back as data
@@ -177,6 +178,9 @@ export interface CcWorkerManagerOptions {
    * /var/lib/1dayapi-cc-worker; without a privilege drop it stays under dataDir.
    */
   workerRoot?: string;
+  /** Per-account kernel/distro/architecture identity for native workers and their telemetry. */
+  machineIdentity?: boolean;
+  machineRuntimeDir?: string;
   maxConcurrency?: number;
   maxQueue?: number;
   timeoutMs?: number;
@@ -217,8 +221,10 @@ export class CcWorkerManager {
   readonly workerRoot: string;
   private readonly sessionsDir: string;
   private readonly teamUsers = new Map<string, RunAs>();
+  private machineRuntime: MachineRuntime | null = null;
+  private machinePreparationError: string | null = null;
 
-  /** Each organization gets a distinct kernel identity; never falls back on failure. */
+  /** Each organization gets a distinct Linux UID; this is not a separate kernel or VM. */
   private teamRunAs(teamId?: string): RunAs | null {
     if (!teamId || process.env.CC_WORKER_TEAM_UIDS !== "1") return this.runAs;
     if (process.getuid?.() !== 0) throw new Error("Per-team worker identities require a root supervisor");
@@ -270,11 +276,23 @@ export class CcWorkerManager {
     this.sweeper = setInterval(() => this.sweep(), POOL_SWEEP_MS);
     this.sweeper.unref?.();
     this.mcp = new McpServer((m) => this.log(m));
+    if (opts.machineIdentity ?? process.env.CC_WORKER_MACHINE_IDENTITY === "1") {
+      if (process.getuid?.() !== 0) {
+        this.machinePreparationError = "machine_identity_requires_root: mount namespaces cannot be created by this node user";
+      } else {
+        try {
+          this.machineRuntime = prepareMachineRuntime(opts.machineRuntimeDir ?? process.env.CC_WORKER_MACHINE_RUNTIME_DIR ?? "/opt/claude/machine-identity");
+        } catch (err) {
+          this.machinePreparationError = (err as Error).message;
+        }
+      }
+    }
     const probe = this.selfTest();
     this.claudeVersion = probe.version;
     this.selfTestError = probe.error;
     if (this.selfTestError) this.log(`SELF-TEST FAILED, cc_worker sessions will be rejected: ${this.selfTestError}`);
     this.log(`workers run as ${this.runAs ? `${this.runAs.user} (uid ${this.runAs.uid})` : "the node user (no privilege drop)"}, tools: ${this.tools.length ? this.tools.join(",") : "none"}, root ${this.workerRoot}`);
+    if (this.machineRuntime) this.log(`machine identity: per-account kernel/distro/arch via ${this.machineRuntime.directory}`);
     this.log(`session pool: max ${this.maxLive} live, idle ttl ${this.idleTtlMs / 1000}s, max ${this.maxTurns} turns, max age ${this.maxAgeMs / 1000}s, mem high-water ${Math.round(this.memHigh * 100)}%`);
   }
 
@@ -297,17 +315,19 @@ export class CcWorkerManager {
 
   /** `claude --version` under session isolation; see `selfTestError`. */
   private selfTest(): { version: string | null; error: string | null } {
+    if (this.machinePreparationError) return { version: null, error: `self_test_failed: ${this.machinePreparationError}` };
     const dir = path.join(this.sessionsDir, "selftest");
     try {
       fs.rmSync(dir, { recursive: true, force: true });
       fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
       this.chownTree(dir);
-      const r = spawnSync(this.claudeBin, [...(this.opts.claudeArgsPrefix ?? []), "--version"], {
+      const machineEnv = this.machineRuntime ? machineEnvironment("selftest", dir, this.machineRuntime, this.runAs) : {};
+      const r = spawnSync(this.machineRuntime?.launcher ?? this.claudeBin, [...(this.machineRuntime ? [this.claudeBin] : []), ...(this.opts.claudeArgsPrefix ?? []), "--version"], {
         stdio: ["ignore", "pipe", "pipe"],
         timeout: 15_000,
         cwd: dir,
-        ...(this.runAs ? { uid: this.runAs.uid, gid: this.runAs.gid } : {}),
-        env: { PATH: process.env.PATH ?? "", HOME: dir, TMPDIR: dir, CLAUDE_CONFIG_DIR: dir },
+        ...(!this.machineRuntime && this.runAs ? { uid: this.runAs.uid, gid: this.runAs.gid } : {}),
+        env: { PATH: process.env.PATH ?? "", HOME: dir, TMPDIR: dir, CLAUDE_CONFIG_DIR: dir, ...machineEnv },
       });
       const where = `as ${this.runAs ? `${this.runAs.user}` : "node user"} in ${dir}`;
       if (r.error) {
@@ -920,16 +940,17 @@ export class CcWorkerManager {
       // Telemetry stays ON (measured 2026-10-29 with a local MITM, 2.1.312, 8 sessions): a normal session
       // calls /api/claude_cli/bootstrap, /api/eval/*, /mcp-registry and posts one /api/event_logging/v2/batch
       // (~120 events, ~230 KB) — all of it on the account's proxy. Its payload carries the pinned device_id,
-      // session_id and a machine `env` block (kernel, distro, arch, RAM); no hostname, user or path. With
-      // DISABLE_TELEMETRY / CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC those calls vanish entirely, which is
-      // the more visible oddity (user rule 2026-10-29: 关闭遥测是不正常的行为). Only the two parts that add
-      // nothing visible stay off: Sentry (never fired in normal or API-500 sessions; a crash report would
-      // carry the node's hostname) and the autoupdater (no update check was observed in -p sessions; a
-      // download into the per-session HOME would be wasted on every turn).
+      // session_id and a machine `env` block; no hostname, user or path. With DISABLE_TELEMETRY /
+      // CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC those calls vanish entirely, which is the more visible oddity
+      // (user rule 2026-10-29: 关闭遥测是不正常的行为). Only the two parts that add nothing visible stay off:
+      // Sentry (never fired in normal or API-500 sessions; a crash report would carry the node's hostname) and
+      // the autoupdater (no update check was observed in -p sessions; a download into the per-session HOME
+      // would be wasted on every turn). machineEnvironment below supplies the account's kernel/distro/arch/shell
+      // when machine identity is enabled, so telemetry and the direct path use one profile.
       env.DISABLE_ERROR_REPORTING = "1";
       env.DISABLE_AUTOUPDATER = "1";
-      // The "# Environment" system block names the shell: SHELL unset under systemd → the uid's login shell
-      // (nologin for team identities) → "Shell: nologin". A plain bash is what every real session says.
+      // Without machine identity, SHELL unset under systemd falls back to the uid's login shell (nologin for
+      // team identities); use bash. With machine identity, machineEnvironment selects the account's bash/zsh.
       if (!env.SHELL) env.SHELL = "/bin/bash";
       // NOT CLAUDE_CODE_SIMPLE / --bare: both stop Claude Code from reading the OAuth credentials file
       // ("Not logged in · Please run /login", canary 2026-10-19 08:53 CEST).
@@ -953,13 +974,15 @@ export class CcWorkerManager {
       // model's limit). The gateway ends the message at the first max_tokens stop and cancels the session, so
       // Claude Code's own "continue from where you left off" turn never runs.
       if (typeof msg.maxTokens === "number" && msg.maxTokens > 0) env.CLAUDE_CODE_MAX_OUTPUT_TOKENS = String(Math.floor(msg.maxTokens));
-      const child = spawn(this.claudeBin, args, {
+      const machineEnv = this.machineRuntime ? machineEnvironment(msg.accountId, configDir, this.machineRuntime, identity) : {};
+      const child = spawn(this.machineRuntime?.launcher ?? this.claudeBin, this.machineRuntime ? [this.claudeBin, ...args] : args, {
         stdio: ["pipe", "pipe", "pipe"],
         detached: true, // own process group so the whole tree (MCP children, shells) can be killed
         cwd: workDir,
-        ...(identity ? { uid: identity.uid, gid: identity.gid } : {}),
+        ...(!this.machineRuntime && identity ? { uid: identity.uid, gid: identity.gid } : {}),
         env: {
           ...env,
+          ...machineEnv,
           HOME: workDir,
           TMPDIR: workDir,
           CLAUDE_CONFIG_DIR: configDir,

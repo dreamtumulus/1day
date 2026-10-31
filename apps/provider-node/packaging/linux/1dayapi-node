@@ -44,7 +44,7 @@ find_bun() {
 BUN_BIN="$(find_bun || true)"
 if [ -z "${BUN_BIN}" ]; then
   echo "1dayapi-node: Bun is required but was not found." >&2
-  echo "  install: curl -fsSL https://bun.sh/install | bash -s \"bun-v1.4.3\"" >&2
+  echo "  install: curl -fsSL https://bun.sh/install | bash -s \"bun-v1.4.4\"" >&2
   echo "  hint: set PROVIDER_NODE_BUN=/path/to/bun, or write it to ${BUN_HINT_FILE}" >&2
   exit 70
 fi

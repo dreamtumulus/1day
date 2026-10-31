@@ -176,7 +176,7 @@ console 日志里 2600 条 400）。最常见的触发是 `messagesToPrompt` 渲
 最多 7 个 CC 版本，且 70% 的直连流量带客户自定义后缀 "(external, mirasim)"。网关在 `buildUpstreamRequest`（passthrough-anthropic）里
 调 core `normalizeCcSoftware`：`direct_cc_entrypoint_normalize=1` 把非真实入口（真实：cli / sdk-cli / sdk-ts / sdk-py / claude-vscode /
 claude-jetbrains / claude-desktop(-3p) / local-agent）的后缀改成 "(external, cli)"，计费头 `cc_entrypoint` 同步；`direct_cc_version_pin`
-（默认 2.1.303 = 节点 worker 的版本，空 = 透传）把 UA 版本、`x-stainless-package-version`（取 canonical SDK 版本）和计费头 `cc_version`
+（默认 2.1.312 = 节点 worker 的版本，空 = 透传）把 UA 版本、`x-stainless-package-version`（取 canonical SDK 版本）和计费头 `cc_version`
 统一。形态判定（§2a）在归一化之前跑，判的仍是客户原始形状；worker 路径不受影响。两项都是设置项，改完即生效，无需发布。
 
 **设备亲和**（2026-10-19）：会话键只管一条对话，同一台客户机器的其它对话仍会散到任意账号，结果一个账号一小时内同时服务多台机器、

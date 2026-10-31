@@ -22,12 +22,25 @@ test("legacy form: user_<hex>_account_<uuid>_session_<uuid> rewritten in place",
   assert.equal(out.metadata.user_id, `user_${acct.device_id}_account_${acct.account_uuid}_session_12345678-1234-1234-1234-123456789abc`);
 });
 
-test("unknown account_uuid keeps the client's; no metadata -> body unchanged", () => {
+test("unknown account_uuid: the client's is cleared to empty, never passed through (JSON + legacy)", () => {
   const body = { metadata: { user_id: JSON.stringify({ device_id: "d".repeat(64), account_uuid: "client-uuid", session_id: "s1" }) } };
   const out = pinDeviceIdentity(body, { ...acct, account_uuid: null });
   const j = JSON.parse(out.metadata.user_id);
   assert.equal(j.device_id, acct.device_id);
-  assert.equal(j.account_uuid, "client-uuid");
+  assert.equal(j.account_uuid, "", "client account_uuid must not leak when the account has none");
+  assert.equal(j.session_id, "s1");
+  const legacy = { metadata: { user_id: `user_${"c".repeat(64)}_account_client-uuid_session_abc` } };
+  const outLegacy = pinDeviceIdentity(legacy, { ...acct, account_uuid: null });
+  assert.equal(outLegacy.metadata.user_id, `user_${acct.device_id}_account__session_abc`);
+});
+
+test("canonical field order device_id, account_uuid, session_id is preserved after pinning", () => {
+  const body = { metadata: { user_id: JSON.stringify({ device_id: "", account_uuid: "", session_id: "sx" }) } };
+  const out = pinDeviceIdentity(body, acct);
+  assert.equal(out.metadata.user_id, JSON.stringify({ device_id: acct.device_id, account_uuid: acct.account_uuid, session_id: "sx" }));
+});
+
+test("no metadata -> body returned unchanged", () => {
   const plain = { model: "m", messages: [] };
   assert.equal(pinDeviceIdentity(plain, acct), plain);
 });

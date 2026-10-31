@@ -120,9 +120,9 @@ export function buildRemoteScript(opts: {
 set -euo pipefail
 export PATH="$HOME/.bun/bin:$PATH"
 echo "[deploy] start: $(uname -srm)"
-if ! command -v bun >/dev/null 2>&1 || ! bun --version 2>/dev/null | grep -q '^1\\.4\\.3$'; then
-  echo "[deploy] installing bun 1.4.3"
-  curl -fsSL https://bun.sh/install | bash -s bun-v1.4.3
+if ! command -v bun >/dev/null 2>&1 || ! bun --version 2>/dev/null | grep -q '^1\\.4\\.4$'; then
+  echo "[deploy] installing bun 1.4.4"
+  curl -fsSL https://bun.sh/install | bash -s bun-v1.4.4
   export PATH="$HOME/.bun/bin:$PATH"
   hash -r 2>/dev/null || true
 fi
@@ -168,9 +168,16 @@ RestartSec=3
 [Install]
 WantedBy=$WANTED
 EOF
+if [ "$(id -u)" -eq 0 ]; then
+  echo "Environment=CC_WORKER_MACHINE_IDENTITY=1" >> "$UNIT"
+fi
 if ! $SYSCTL daemon-reload || ! $SYSCTL enable --now 1dayapi-node; then
   echo "[deploy] WARN: systemd unavailable; starting node with nohup"
-  nohup "$HOME/.bun/bin/bun" "$APP_DIR/node-bundle.js" >> "$APP_DIR/node.log" 2>&1 &
+  if [ "$(id -u)" -eq 0 ]; then
+    CC_WORKER_MACHINE_IDENTITY=1 nohup "$HOME/.bun/bin/bun" "$APP_DIR/node-bundle.js" >> "$APP_DIR/node.log" 2>&1 &
+  else
+    nohup "$HOME/.bun/bin/bun" "$APP_DIR/node-bundle.js" >> "$APP_DIR/node.log" 2>&1 &
+  fi
 else
   if [ "$(id -u)" -ne 0 ]; then
     loginctl enable-linger "$(whoami)" 2>/dev/null \\

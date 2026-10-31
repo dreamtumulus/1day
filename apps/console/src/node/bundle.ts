@@ -89,7 +89,7 @@ async function buildBundle(): Promise<BundleInfo> {
   const bun = findBun();
   if (!bun) {
     throw new Error(
-      "bun not found on this server; install it first: curl -fsSL https://bun.sh/install | bash -s bun-v1.4.3",
+      "bun not found on this server; install it first: curl -fsSL https://bun.sh/install | bash -s bun-v1.4.4",
     );
   }
   mkdirSync(CACHE_DIR, { recursive: true });

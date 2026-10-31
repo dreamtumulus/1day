@@ -5,8 +5,6 @@
  */
 
 export const CC_VERSION = "2.1.312";
-/** Build flag Claude Code appends to cc_version in the billing block (2.1.300 → "f23", 2.1.312 → "6b4"). */
-export const CC_BUILD_SUFFIX = "6b4";
 export const CC_SDK_VERSION = "0.128.0";
 export const CC_RUNTIME_VERSION = "v26.12.1";
 export const CC_ANTHROPIC_VERSION = "2023-06-01";

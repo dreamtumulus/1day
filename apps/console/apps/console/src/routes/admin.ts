@@ -992,7 +992,7 @@ export function registerAdminRoutes(app: FastifyInstance): void {
     };
   };
 
-  // SSH remote deploy (Ubuntu target): install bun 1.4.3, download the node
+  // SSH remote deploy (Ubuntu target): install bun 1.4.4, download the node
   // bundle with a one-time bind code, write config + systemd unit, start,
   // then wait up to 30s for the node to come online.
   app.post("/api/admin/nodes/deploy", pre, async (req) => {

@@ -34,7 +34,9 @@ new per-release config/worker directories are listed in the release record.
 
 This isolates OS identities and writable state on one host. It still shares the
 host kernel and hardware. Dedicated VMs/hosts are required to separate those as
-well. If `PROVIDER_TEAM_ID` is unset, a node can host multiple teams with checked
+well. Do not enable `CC_WORKER_MACHINE_IDENTITY` in this template: `DynamicUser`
+and `NoNewPrivileges=yes` intentionally prevent the root mount-namespace setup
+used by that mode. If `PROVIDER_TEAM_ID` is unset, a node can host multiple teams with checked
 protocol ownership and namespaced process/config state, but it is **not** an OS
 isolation boundary; do not describe that mode as physically isolated.
 

@@ -45,7 +45,7 @@ export const SETTING_DEFAULTS = {
   //   的后缀（如 "(external, mirasim)"）改成 "(external, cli)"，计费头的 cc_entrypoint 同步；0 = 原样透传。
   // direct_cc_version_pin = 直连 UA / 计费头 cc_version / stainless 包版本统一成这个 Claude Code 版本（与节点 worker 一致）；空 = 透传客户版本。
   direct_cc_entrypoint_normalize: "1",
-  direct_cc_version_pin: "2.1.303",
+  direct_cc_version_pin: "2.1.312",
   // CCR 路径（worker / 云端会话）客户可见缓存 = 上游缓存 − 身份上下文基线（docs/ccr-supply.md §7.1）。
   // 基线 = 真 Claude Code 系统提示词 + 工具集的 token 数，按执行模式实测（worker 2026-10-16：16608–16777）；0 = 上游缓存全额计给客户。
   ccr_cache_baseline_worker: "16600",

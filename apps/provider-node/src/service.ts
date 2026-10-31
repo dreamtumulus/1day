@@ -34,6 +34,7 @@ Restart=always
 RestartSec=5
 Environment=PROVIDER_CONSOLE_HOST=127.0.0.1
 Environment=PROVIDER_CONSOLE_PORT=16889
+${process.getuid?.() === 0 ? "Environment=CC_WORKER_MACHINE_IDENTITY=1" : ""}
 
 [Install]
 WantedBy=default.target

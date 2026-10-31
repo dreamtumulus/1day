@@ -32,6 +32,8 @@ import {
   settleRequestDurably as settleRequest,
   acquireRequestBudget, renewRequestBudget, releaseRequestBudget,
   sha256Hex,
+  sessionUuidFromHash,
+  sessionMetadataUserId,
   touchAccount,
   upstreamModelFor,
   groupIsRawPassthrough,
@@ -851,13 +853,13 @@ async function proxyRequest(req: FastifyRequest, reply: FastifyReply, format: Cl
   const isolation = scopeContext(scope);
   const namespace = isolation ? `team:${isolation.teamId}:conversation:${isolation.conversationId}:generation:${isolation.generation}:branch:${scope!.branch}:${scope!.boundary?.nonce ?? "original"}` : null;
   const hash = namespace ? sha256Hex(namespace) : null;
-  const upstreamSession = hash ? `${hash.slice(0, 8)}-${hash.slice(8, 12)}-${hash.slice(12, 16)}-${hash.slice(16, 20)}-${hash.slice(20, 32)}` : undefined;
+  const upstreamSession = hash ? sessionUuidFromHash(hash) : undefined;
   const upstreamHeaders = { ...req.headers };
   if (upstreamSession) {
     for (const key of Object.keys(upstreamHeaders)) if (/^(?:x-(?:1day-)?conversation-|x-(?:claude-code-|claude-)?session-id$|session_id$)/i.test(key)) delete upstreamHeaders[key];
     upstreamHeaders["x-claude-code-session-id"] = upstreamSession;
     if (format !== "responses") {
-      body = { ...body, metadata: { user_id: JSON.stringify({ session_id: upstreamSession }) } };
+      body = { ...body, metadata: { user_id: sessionMetadataUserId(upstreamSession) } };
       ctx.body = body;
     }
   }

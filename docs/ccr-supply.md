@@ -333,7 +333,8 @@ cache_read 16608–16777，云端约 28K，几乎全是 Claude Code 系统提示
 - 并发护栏：默认 floor((可用内存MB-512)/320) 下限 1（env `CC_WORKER_MAX_CONCURRENCY` 覆盖），FIFO 队列 >30
   拒 `worker_overloaded`。
 - 遥测：心跳 `ccWorker:{enabled, claudeVersion, maxConcurrency, active, queued}` → 平台落 `nodes.deploy_meta.ccWorker`；
-  hello capabilities 含 `cc_worker`。install.sh 加装 `@anthropic-ai/claude-code@2.1.300`（npm 优先 bun 兜底，失败仅告警）。
+  hello capabilities 含 `cc_worker`。install.sh 加装 `@anthropic-ai/claude-code@2.1.312`（npm 优先 bun 兜底，失败仅告警）。
+- 按账号机器身份：root 节点启用 `CC_WORKER_MACHINE_IDENTITY=1`，core/provider-node 共用同一确定性机器档；worker 的 `# Environment` 和 event_logging `env` 中的内核、发行版、架构及 Shell 与直连一致。实现使用每会话 mount namespace 和 `uname` 兼容层，不把 UID 或容器误称为独立内核；启动自检失败拒绝会话。
 - 测试：provider-node `test/cc-worker.test.mjs`（fixture 假 claude：spawn/凭证物化 0700+0600/钉代理硬拒/并发排队/
   超时杀/非零退出）；gateway `test/ccr-worker.test.mjs`（行分割 + SessionTranslator 翻译）+ `dual-mode.test.mjs`
   （ccr_worker 双模矩阵）；e2e `tests/e2e/worker.test.mjs`（fake-node + fake-claude 全链路：JSON/流式/chat/tools、

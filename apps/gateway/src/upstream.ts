@@ -7,6 +7,14 @@ import {
   getSetting,
   isCcrExecutor,
   normalizeCcSoftware,
+  sessionMetadataUserId,
+  sessionUuidFromHash,
+  sha256Hex,
+  accountMachine,
+  machineStainlessHeaders,
+  rewriteEnvironmentBlock,
+  isMachineEnvironmentBlock,
+  type AccountMachine,
   type AccountRow,
   type Credential,
 } from "@1dayapi/core";
@@ -100,7 +108,7 @@ export function buildUpstreamRequest(
   clientQuery = "",
   upstreamSession?: string,
 ): UpstreamRequest | null {
-  if (upstreamSession) clientBody = { ...clientBody, metadata: { user_id: JSON.stringify({ session_id: upstreamSession }) } };
+  if (upstreamSession) clientBody = { ...clientBody, metadata: { user_id: sessionMetadataUserId(upstreamSession) } };
   const base = accountBaseUrl(account);
   if (!base) return null;
   const secret = cred.apiKey ?? cred.accessToken ?? "";
@@ -138,6 +146,15 @@ export function buildUpstreamRequest(
   const headers: Record<string, string> = anthropicWire
     ? { "content-type": "application/json", ...anthropicFingerprintHeaders(clientHeaders) }
     : { "content-type": "application/json", accept: "*/*" };
+  // 每账号一台独立 Linux 机器（docs/claude-code-compat.md §10）：x-stainless-os/arch 与 body 的 # Environment 同源，
+  // 同号恒定、号号各异；runtime / runtime-version 由 CC 版本定死（anthropicFingerprintHeaders 已补），不覆盖。
+  const machine = anthropicWire ? accountMachine(account.id) : null;
+  const envUuid = upstreamSession ?? sessionUuidFromHash(sha256Hex(`env-scratch::${account.id}`));
+  if (machine && anthropicWire) {
+    const sh = machineStainlessHeaders(machine);
+    headers["x-stainless-os"] = sh["x-stainless-os"];
+    headers["x-stainless-arch"] = sh["x-stainless-arch"];
+  }
   let path: string;
   let body: Json;
 
@@ -146,10 +163,12 @@ export function buildUpstreamRequest(
       // Claude Code 恒定带 ?beta=true（docs/claude-code-compat.md §2）
       path = "/v1/messages?beta=true";
       body = pinDeviceIdentity(normalizeThinking({ ...clientBody, model: upstreamModel }, upstreamModel), account);
+      if (machine) body = pinMachineEnvironment(body, machine, envUuid);
       break;
     case "chat-via-anthropic":
       path = "/v1/messages?beta=true";
       body = pinDeviceIdentity(normalizeThinking({ ...openaiChatToAnthropic(clientBody, upstreamModel), ...(upstreamSession ? { metadata: clientBody.metadata } : {}) }, upstreamModel), account);
+      if (machine) body = pinMachineEnvironment(body, machine, envUuid);
       break;
     case "passthrough-openai":
       path = "/chat/completions";
@@ -284,21 +303,75 @@ export function pinDeviceIdentity(body: Json, account: Pick<AccountRow, "id" | "
   const raw = meta && typeof meta === "object" ? (meta as Json).user_id : undefined;
   if (typeof raw !== "string" || !raw) return body;
   const deviceId = account.device_id ?? ensureDeviceId(account.id);
+  // Always overwrite account_uuid to the account's own (empty string when unknown — real Claude Code
+  // sends `account_uuid: ""` too, docs §5). Never let the *client's* account_uuid pass through: the
+  // bearer token belongs to this account, so a request declaring another account's uuid is a
+  // self-contradiction (14 mustardseed accounts with no stored uuid leaked the caller's, 2026-10-31).
+  const acctUuid = account.account_uuid ?? "";
   let next: string | null = null;
   const t = raw.trim();
   if (t.startsWith("{")) {
     try {
       const j = JSON.parse(t) as Json;
       j.device_id = deviceId;
-      if (account.account_uuid) j.account_uuid = account.account_uuid;
+      j.account_uuid = acctUuid;
       next = JSON.stringify(j);
     } catch {
       return body;
     }
   } else {
     next = t.replace(/^user_[0-9a-fA-F]+/, `user_${deviceId}`);
-    if (account.account_uuid) next = next.replace(/_account_[0-9a-fA-F-]+/, `_account_${account.account_uuid}`);
+    // The account segment runs up to the next `_` (`_session_…`); match every non-`_` char so a
+    // client value that is not a clean uuid is still fully replaced, never partly kept.
+    next = next.replace(/_account_[^_]*/, `_account_${acctUuid}`);
   }
   if (!next || next === raw) return body;
   return { ...body, metadata: { ...(meta as Json), user_id: next } };
+}
+
+/**
+ * Rewrite Claude Code's machine-identity `# Environment` block (a role:"system" message in messages[],
+ * or a block in system[]) to the account's synthetic Linux machine, so Platform/Shell/OS Version/cwd
+ * match the account's x-stainless-* headers and stay consistent across the account's requests. No-op
+ * when the body carries no such block (non-CC bodies). The model-catalog "# Environment" in the CC
+ * system prompt is NOT matched (isMachineEnvironmentBlock excludes it).
+ */
+function rewriteBlocksIn(content: unknown, machine: AccountMachine, sessionUuid: string): { content: unknown; changed: boolean } {
+  if (typeof content === "string") {
+    if (isMachineEnvironmentBlock(content)) return { content: rewriteEnvironmentBlock(content, machine, sessionUuid), changed: true };
+    return { content, changed: false };
+  }
+  if (Array.isArray(content)) {
+    let changed = false;
+    const next = content.map((b) => {
+      if (b && typeof b === "object" && typeof (b as Json).text === "string" && isMachineEnvironmentBlock((b as Json).text)) {
+        changed = true;
+        return { ...(b as Json), text: rewriteEnvironmentBlock((b as Json).text, machine, sessionUuid) };
+      }
+      return b;
+    });
+    return { content: next, changed };
+  }
+  return { content, changed: false };
+}
+
+export function pinMachineEnvironment(body: Json, machine: AccountMachine, sessionUuid: string): Json {
+  let out = body;
+  // messages[] system-role blocks (where 2.1.312 carries it)
+  if (Array.isArray(out.messages)) {
+    let changed = false;
+    const msgs = out.messages.map((m: Json) => {
+      if (!m || typeof m !== "object" || m.role !== "system") return m;
+      const r = rewriteBlocksIn(m.content, machine, sessionUuid);
+      if (r.changed) { changed = true; return { ...m, content: r.content }; }
+      return m;
+    });
+    if (changed) out = { ...out, messages: msgs };
+  }
+  // top-level system (string or array) — robustness for other CC shapes
+  if (out.system !== undefined) {
+    const r = rewriteBlocksIn(out.system, machine, sessionUuid);
+    if (r.changed) out = { ...out, system: r.content };
+  }
+  return out;
 }

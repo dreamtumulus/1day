@@ -4,10 +4,9 @@
  */
 
 import { randomBytes, randomUUID } from "node:crypto";
+import { sha256Hex } from "./crypto.js";
 
 export const CC_VERSION = "2.1.312";
-/** Build flag Claude Code appends to cc_version in the billing block (2.1.300 → "f23", 2.1.312 → "6b4"). */
-export const CC_BUILD_SUFFIX = "6b4";
 export const CC_SDK_VERSION = "0.128.0";
 export const CC_RUNTIME_VERSION = "v26.12.1";
 export const CC_ANTHROPIC_VERSION = "2023-06-01";
@@ -20,7 +19,8 @@ export const CC_BETAS = [
 /**
  * Canonical anthropic-beta list in the order a 2.1.312 client sends it: `oauth-2025-04-20` sits
  * right after `claude-code-20250219` on OAuth accounts (12 captures, docs/claude-code-compat.md §11),
- * not at the tail.
+ * not at the tail. Feature-dependent betas are passed through from genuine CC requests instead of
+ * being injected into bodies that do not use those features.
  */
 export function ccCanonicalBetas(oauth: boolean): string[] {
   const [first, ...rest] = CC_BETAS;
@@ -47,13 +47,183 @@ export const NODE_MACHINE_HEADERS: Readonly<Record<string, string>> = Object.fre
 export const CC_AUX_UA = `claude-code/${CC_VERSION}`;
 export const CC_AUX_ACCEPT = "application/json, text/plain, */*";
 
-/** 计费头 system 块与身份句（docs/claude-code-compat.md §5）；OAuth 订阅号缺计费块 → 上游 429。 */
-export const CC_BILLING_BLOCK = `x-anthropic-billing-header: cc_version=${CC_VERSION}.${CC_BUILD_SUFFIX}; cc_entrypoint=cli;`;
 export const CC_IDENTITY_BLOCK = "You are Claude Code, Anthropic's official CLI for Claude.";
+
+function firstUserText(messages: unknown): string {
+  if (!Array.isArray(messages)) return "";
+  const message = messages.find((m) => m && typeof m === "object" && (m.role === "user" || m.type === "user") && m.isMeta !== true);
+  const content = message?.content ?? message?.message?.content;
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  const block = content.find((b) => b && typeof b === "object" && b.type === "text" && typeof b.text === "string");
+  return block?.text ?? "";
+}
+
+/** Claude Code 2.1.312 derives the three-digit billing flag from the first user text and client version. */
+export function ccBuildSuffix(messages: unknown, version = CC_VERSION): string {
+  const text = firstUserText(messages);
+  const chars = [4, 7, 20].map((i) => text[i] ?? "0").join("");
+  return sha256Hex(`59cf53e54c78${chars}${version}`).slice(0, 3);
+}
+
+export function ccBillingBlock(messages: unknown, entrypoint = "cli", version = CC_VERSION): string {
+  return `x-anthropic-billing-header: cc_version=${version}.${ccBuildSuffix(messages, version)}; cc_entrypoint=${entrypoint};`;
+}
 
 /** metadata.user_id（JSON 字符串，docs/claude-code-compat.md §5）。 */
 export function ccMetadataUserId(sessionId: string = randomUUID()): string {
   return JSON.stringify({ device_id: randomBytes(32).toString("hex"), account_uuid: "", session_id: sessionId });
+}
+
+/**
+ * 把一段 hex（通常是会话 namespace 的 sha256）整形成一个**合法的 UUIDv4**：
+ * 第 13 位固定 `4`、第 17 位取 `8/9/a/b`。真 Claude Code 的 session_id 由 `randomUUID()`
+ * 生成，一定满足 v4 的 version/variant 位；此前我们直接 8-4-4-4-12 切片，约 15/16 不合法，
+ * 既出现在 metadata.user_id.session_id 里也出现在 x-claude-code-session-id 头里，是一条
+ * 一行正则就能命中的指纹（docs/claude-code-compat.md §5/§10）。确定性保留：同一 namespace 永远同值。
+ */
+export function sessionUuidFromHash(hash: string): string {
+  const h = hash.padEnd(32, "0").slice(0, 32);
+  const variant = ((parseInt(h[16], 16) & 0x3) | 0x8).toString(16);
+  return `${h.slice(0, 8)}-${h.slice(8, 12)}-4${h.slice(13, 16)}-${variant}${h.slice(17, 20)}-${h.slice(20, 32)}`;
+}
+
+/**
+ * metadata.user_id 占位串，字段顺序与真 Claude Code 2.1.312 完全一致
+ * （`device_id` → `account_uuid` → `session_id`）。device_id / account_uuid 先留空，
+ * 由 gateway `pinDeviceIdentity` 在请求离开前原位改写成账号自己的身份，顺序不变。
+ * 此前把 metadata 覆盖成只有 `{session_id}`、再由 pinDeviceIdentity 追加 device_id/account_uuid，
+ * 发出去是 `{session_id, device_id, account_uuid}` —— 顺序反了，又是一条精确指纹。
+ */
+export function sessionMetadataUserId(sessionId: string): string {
+  return JSON.stringify({ device_id: "", account_uuid: "", session_id: sessionId });
+}
+
+// ---------- 每账号合成机器画像（docs/claude-code-compat.md §10）----------
+//
+// Claude Code 每条请求在 messages[] 里带一条 role:"system" 的「# Environment」块，
+// 内含 Primary working directory / Platform / Shell / OS Version / Scratchpad directory。
+// 这个块由客户端本地生成、上游不校验其值（不在真伪硬检查清单里），但真 CC 永远带它，
+// 所以不能删、要像真的。直连路径此前原样透传客户真机（Mac 用户名、darwin/Darwin），
+// 与我们强制的 `x-stainless-os: Linux` 头自相矛盾，且同号的 worker 路径显示节点机器 → 一号两机。
+//
+// 对策：给每个账号一份**确定性**合成机器档（从 account id 派生，稳定、各实例一致、无需迁移）。
+// cwd/home 按号各异（强区分度，配合已按号唯一的 device_id），Platform/Shell 归一到节点同类（linux/bash）。
+// 这只改写直连 body；worker 遥测仍读取节点真实系统，不能把它当作按账号虚拟化后的主机事实。
+
+// 每账号「一台独立真实 Linux 开发机」——生成式，不是查表（sub2api 的 11 档会把几千个号聚成 11 个相同签名，
+// 本身就是号池特征）。关键约束（docs/claude-code-compat.md §8 + 实测）：
+//   1. CC 版本定死的字段统一、不做多样性：`x-stainless-runtime`=node、`x-stainless-runtime-version`（bundled node）、
+//      `x-stainless-package-version`（SDK）、UA 版本、beta 集——真 2.1.312 客户端全都发同一组值。
+//      billing 后缀不是版本常量，由首条用户文本计算，见 ccBuildSuffix。
+//   2. TLS 由 Bun 版本与 HTTP 配置决定，不从 body 的 OS 字段推导。机器档只覆盖生产 worker 的 Linux/x64 形态，
+//      不让同一账号在 worker 报 x64、直连却声明 arm64。
+//   3. 内核串、shell、工作目录可以按号派生；它们只影响直连 body，不会改变 TLS 或 worker 遥测。
+
+// 真实 Ubuntu/Debian 桌面与服务器常见内核线；-NN-generic 的 NN 按号从合理区间取。
+const MP_KERNEL_LINES = ["6.8.0", "6.8.0", "6.11.0", "6.5.0", "5.15.0", "6.2.0", "6.14.0", "6.12.0"];
+const MP_SHELLS = ["bash", "bash", "bash", "bash", "zsh"]; // ~80% bash / 20% zsh
+const MP_USERNAMES = [
+  "james", "mary", "robert", "patricia", "john", "jennifer", "michael", "linda",
+  "david", "elizabeth", "william", "barbara", "richard", "susan", "joseph", "jessica",
+  "thomas", "sarah", "charles", "karen", "daniel", "nancy", "matthew", "lisa",
+  "anthony", "betty", "mark", "margaret", "donald", "sandra", "steven", "ashley",
+  "paul", "kimberly", "andrew", "emily", "joshua", "michelle", "kevin", "amanda",
+  "dev", "alex", "chen", "wei", "li", "yuki", "raj", "omar", "nina", "leo",
+];
+const MP_REPOS = [
+  "website", "api-server", "mobile-app", "data-pipeline", "backend", "frontend",
+  "dashboard", "cli-tools", "scripts", "ml-project", "web-app", "microservices",
+  "monorepo", "infra", "auth-service", "payment-gateway", "analytics", "chatbot",
+  "ecommerce", "blog-engine", "task-queue", "file-sync", "search-service", "cms",
+  "app", "api", "server", "core", "platform", "sdk", "bot", "pipeline",
+];
+// 工作目录版式：{u}=用户名 {r}=仓库名。覆盖真实开发者常见布局。
+const MP_LAYOUTS = [
+  "/home/{u}/projects/{r}", "/home/{u}/code/{r}", "/home/{u}/dev/{r}", "/home/{u}/work/{r}",
+  "/home/{u}/src/{r}", "/home/{u}/repos/{r}", "/home/{u}/{r}", "/home/{u}/go/src/{r}",
+  "/home/{u}/workspace/{r}", "/opt/{r}", "/srv/{r}",
+];
+
+export interface MachineProfile {
+  stainlessOS: string; // x-stainless-os
+  stainlessArch: string; // x-stainless-arch
+  platform: string; // # Environment Platform
+  osVersion: string; // # Environment OS Version（完整串）
+}
+
+/** 一个账号的完整机器身份：机器档 + shell + 工作目录 + 家目录（Scratchpad 用）。 */
+export interface AccountMachine {
+  profile: MachineProfile;
+  shell: string;
+  workingDir: string;
+  home: string;
+}
+
+/** 从 accountId + 盐 派生一个 [0,2^48) 的确定性整数，用于各维度独立选取（不同盐 → 不相关）。 */
+function deriveN(salt: string, accountId: string): number {
+  return parseInt(sha256Hex(`${salt}${accountId}`).slice(0, 12), 16);
+}
+function pickFrom<T>(arr: readonly T[], salt: string, accountId: string): T {
+  return arr[deriveN(salt, accountId) % arr.length];
+}
+
+/** 按 accountId 确定性派生直连机器身份（同号恒定、不随机、不依赖缓存/Redis）。 */
+export function accountMachine(accountId: string, _osField?: string | null): AccountMachine {
+  const line = pickFrom(MP_KERNEL_LINES, "cc-mach-kline::", accountId);
+  const nn = 20 + (deriveN("cc-mach-knn::", accountId) % 60); // -20..-79-generic
+  const shell = pickFrom(MP_SHELLS, "cc-mach-shell::", accountId);
+  const user = pickFrom(MP_USERNAMES, "cc-mach-user::", accountId);
+  const repo = pickFrom(MP_REPOS, "cc-mach-repo::", accountId);
+  const workingDir = pickFrom(MP_LAYOUTS, "cc-mach-layout::", accountId).replace("{u}", user).replace("{r}", repo);
+  const profile: MachineProfile = {
+    stainlessOS: "Linux",
+    stainlessArch: "x64",
+    platform: "linux",
+    osVersion: `Linux ${line}-${nn}-generic`,
+  };
+  return { profile, shell, workingDir, home: `/home/${user}` };
+}
+
+/**
+ * 该账号机器身份对应的 x-stainless-* 头（与 body 的 # Environment 同源）。
+ * runtime / runtime-version 是 CC 版本定死的（真 2.1.312 恒定），由调用方用 CC 常量补齐；os/arch 与机器档一致。
+ */
+export function machineStainlessHeaders(m: AccountMachine): Record<string, string> {
+  return {
+    "x-stainless-os": m.profile.stainlessOS,
+    "x-stainless-arch": m.profile.stainlessArch,
+    "x-stainless-runtime": "node",
+    "x-stainless-runtime-version": CC_RUNTIME_VERSION,
+  };
+}
+
+const ENV_BLOCK_HEAD = "# Environment";
+const ENV_BLOCK_MARK = "invoked in the following environment";
+
+/** True when a text block is Claude Code's machine-identity Environment block (not the model-catalog one in system[]). */
+export function isMachineEnvironmentBlock(text: unknown): boolean {
+  return typeof text === "string" && text.startsWith(ENV_BLOCK_HEAD) && text.includes(ENV_BLOCK_MARK);
+}
+
+/**
+ * 把 Claude Code 机器身份 Environment 块的机器行改写成该账号的合成机器（移植 sub2api
+ * `rewriteEnvironmentFields`，但按 1dayapi 实测 2.1.312 的 ` - <字段>: ` 行格式，见
+ * ops/cc-capture 抓包）。只改已存在的字段行，保留全部其余 guidance 文本。
+ * Scratchpad 行若存在，把其中的家目录路径换成合成家目录（去掉真实用户名泄露）。
+ */
+export function rewriteEnvironmentBlock(text: string, m: AccountMachine, sessionUuid: string): string {
+  if (!isMachineEnvironmentBlock(text)) return text;
+  let out = text;
+  out = out.replace(/^( - Primary working directory: ).*$/m, `$1${m.workingDir}`);
+  out = out.replace(/^( - Platform: ).*$/m, `$1${m.profile.platform}`);
+  out = out.replace(/^( - Shell: ).*$/m, `$1${m.shell}`);
+  out = out.replace(/^( - OS Version: ).*$/m, `$1${m.profile.osVersion}`);
+  // Scratchpad 行（若有）：只换路径令牌（到 " — " guidance 分隔符之前），家目录风格随平台。
+  const sep = m.profile.platform === "win32" ? "\\" : "/";
+  const scratch = `${m.home}${sep}.claude${sep}projects${sep}${sessionUuid}${sep}scratchpad`;
+  out = out.replace(/^( - Scratchpad directory: )[^\n]*?( — )/m, `$1${scratch}$2`);
+  return out;
 }
 
 /**
@@ -147,9 +317,9 @@ export function normalizeCcSoftware(
     const text = typeof b0 === "string" ? b0 : b0 && typeof b0 === "object" && (b0 as Json).type === "text" ? String((b0 as Json).text ?? "") : null;
     if (text !== null && BILLING_LINE_RE.test(text)) {
       let line = text;
-      // Pinned to the node's own build: carry its build flag too (a 2.1.300 client rewritten to 2.1.312 must not
-      // say ".f23", which no 2.1.312 build sends). Pinned to another version: keep the client's flag.
-      if (changed.includes("version")) line = line.replace(/(cc_version=)\d+\.\d+\.\d+(\.[0-9a-z]+)?/, (_m, pre, suf) => `${pre}${version}${version === CC_VERSION ? `.${CC_BUILD_SUFFIX}` : (suf ?? "")}`);
+      // Pinned to the node's own build: recompute the prompt-dependent flag using the same algorithm as CC 2.1.312.
+      // Pinned to another version: keep the client's flag because that build's salt is not asserted here.
+      if (changed.includes("version")) line = line.replace(/(cc_version=)\d+\.\d+\.\d+(\.[0-9a-z]+)?/, (_m, pre, suf) => `${pre}${version}${version === CC_VERSION ? `.${ccBuildSuffix(body.messages, version)}` : (suf ?? "")}`);
       if (entrypoint) line = line.replace(/(cc_entrypoint=)[^;]*/, `$1${entrypoint}`);
       if (line !== text) {
         const nb0 = typeof b0 === "string" ? line : { ...(b0 as Json), text: line };

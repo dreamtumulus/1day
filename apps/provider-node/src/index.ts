@@ -28,7 +28,7 @@ function assertBunRuntime(): void {
   console.error(
     "[provider-node] fatal: this node must run under Bun (https://bun.sh) — " +
       "the v2 HTTP egress relies on Bun's TLS fingerprint. " +
-      "Install: curl -fsSL https://bun.sh/install | bash -s \"bun-v1.4.3\". " +
+      "Install: curl -fsSL https://bun.sh/install | bash -s \"bun-v1.4.4\". " +
       "For local development only, set NODE_ALLOW_NODE_RUNTIME=1 to bypass.",
   );
   process.exit(1);

@@ -125,9 +125,13 @@ if [ "$(id -u)" -eq 0 ] && ! command -v unzip >/dev/null 2>&1; then
   echo "[deploy] installing unzip"
   (DEBIAN_FRONTEND=noninteractive apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq unzip) >/dev/null 2>&1 || echo "[deploy] WARN: unzip install failed"
 fi
-if ! command -v bun >/dev/null 2>&1 || ! bun --version 2>/dev/null | grep -q '^1\\.4\\.3$'; then
-  echo "[deploy] installing bun 1.4.3"
-  curl -fsSL https://bun.sh/install | bash -s bun-v1.4.3
+if [ "$(id -u)" -eq 0 ] && { ! command -v cc >/dev/null 2>&1 || ! command -v unshare >/dev/null 2>&1 || ! command -v setpriv >/dev/null 2>&1; }; then
+  echo "[deploy] installing machine-identity prerequisites"
+  (DEBIAN_FRONTEND=noninteractive apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq gcc libc6-dev util-linux) >/dev/null 2>&1 || { echo "[deploy] ERROR: machine-identity prerequisites failed" >&2; exit 1; }
+fi
+if ! command -v bun >/dev/null 2>&1 || ! bun --version 2>/dev/null | grep -q '^1\\.4\\.4$'; then
+  echo "[deploy] installing bun 1.4.4"
+  curl -fsSL https://bun.sh/install | bash -s bun-v1.4.4
   export PATH="$HOME/.bun/bin:$PATH"
   hash -r 2>/dev/null || true
 fi
@@ -209,9 +213,16 @@ RestartSec=3
 [Install]
 WantedBy=$WANTED
 EOF
+if [ "$(id -u)" -eq 0 ]; then
+  echo "Environment=CC_WORKER_MACHINE_IDENTITY=1" >> "$UNIT"
+fi
 if ! $SYSCTL daemon-reload || ! $SYSCTL enable --now 1dayapi-node; then
   echo "[deploy] WARN: systemd unavailable; starting node with nohup"
-  nohup "$HOME/.bun/bin/bun" "$APP_DIR/node-bundle.js" >> "$APP_DIR/node.log" 2>&1 &
+  if [ "$(id -u)" -eq 0 ]; then
+    CC_WORKER_MACHINE_IDENTITY=1 nohup "$HOME/.bun/bin/bun" "$APP_DIR/node-bundle.js" >> "$APP_DIR/node.log" 2>&1 &
+  else
+    nohup "$HOME/.bun/bin/bun" "$APP_DIR/node-bundle.js" >> "$APP_DIR/node.log" 2>&1 &
+  fi
 else
   if [ "$(id -u)" -ne 0 ]; then
     loginctl enable-linger "$(whoami)" 2>/dev/null \\

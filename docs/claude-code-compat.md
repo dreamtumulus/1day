@@ -144,8 +144,7 @@ Accept: application/json
 
 ## 7. 已知差异（未对齐项）
 
-1. **TLS 客户端特征**：CC 是 Bun/BoringSSL；Node/undici(OpenSSL) 的 ClientHello 不同。
-   协议 v2 已把出口移到 provider-node 的 Bun fetch（同族 BoringSSL），直连路径仍有差异。
+1. **TLS 客户端特征**：CC 2.1.312 官方 ELF 与 Bun 1.4.4 都是 Bun/BoringSSL；2026-10-31 本地 ClientHello 实测二者逐字段一致（同一 JA3 `5a368a3bea40c00dd915a96cb58fdf89`、ALPN `http/1.1`、相同签名算法列表）。Bun 1.4.3 的 JA3 虽相同，但签名算法列表与记录长度不同，故节点运行时固定 1.4.4。协议 v2 已把订阅号出口移到 provider-node 的 Bun fetch；网关自己直连的非 node 账号仍是 Node/OpenSSL，与官方不同。JA3 是客户端软件族指纹，不是账号或组织标识，不应按账号随机化。
 2. **Accept-Encoding**：CC 发 `gzip, deflate, br, zstd`。节点出口（route=node，所有订阅账号）自 2026-10-16 起发**完全相同**的值：节点对
    `/v1/*` 不再解压（Bun `decompress: false`），把压缩体和 `content-encoding` 原样经隧道交给网关，由网关用 Node zlib 流式解码
    （gzip / deflate / br / zstd，Node ≥ 22.15）。动机：Bun 的 fetch 解 brotli 流会把已到数据扣到下一块压缩数据到达（oven-sh/bun#41439），
@@ -153,7 +152,7 @@ Accept: application/json
 3. **X-Claude-Code-Session-Id**：客户端发则透传；注入模式下不合成（合成固定值反而异常）。
 4. **HTTP 头顺序**：undici 与 Bun 的头块顺序不同，不做对齐（无证据表明上游校验顺序）。
 5. 后台小模型调用（话题摘要等）、`count_tokens`、遥测流量由客户端直连，与网关无关。
-6. **`# Environment` 块**（2026-10-29 实测 2.1.312）：worker 路径每个请求的 `messages[1]`（role=system）带节点内核版本（`os.release()`）与会话工作目录（`/var/lib/1dayapi-cc-worker/...` 前缀），同节点所有账号同值。无环境变量开关（`CLAUDE_CODE_DISABLE_ATTACHMENTS` 只管附件；`CLAUDE_CODE_SIMPLE`/`--bare` 会丢 OAuth 凭证）。可做的：工作目录改成类似开发者的路径布局、`SHELL=/bin/bash`（已做）；内核串只能接受。
+6. **按账号机器身份**（2026-10-31 实现）：core 与 provider-node 使用同一 `accountMachine(accountId)`。root 节点设置 `CC_WORKER_MACHINE_IDENTITY=1` 后，worker 在独立 mount namespace 中绑定该账号的 `machine-os-release` / `machine-proc-version`，并通过只读兼容层让 `uname` 与 `os.release()` 返回同一内核和架构；Shell 也按账号对齐。直连 body 与 worker 的 `# Environment`、event_logging `env` 因而使用同一机器档。编译器和 `unshare`/`setpriv` 缺失、非 root 或自检失败会拒绝 worker，不静默退回节点共享值。它是呈现给 Claude Code 的机器身份，不是独立 VM；每会话 0700 scratch 与每组织 Linux UID 仍是实际权限边界，工作目录继续使用每会话私有 scratch。
 
 ## 8. 辅助端点（非 /v1/messages）指纹
 
@@ -168,8 +167,8 @@ CC 对非 SDK 线端点的调用**不走**不锈钢头集，而是 axios 辅助�
 
 - console 巡检 `probeHeaders` 与刷新 `refreshOAuthCredential` 按上表发送（`CC_AUX_UA` / `CC_AUX_ACCEPT` / `refreshScopes` 常量）。
 - provider-node 出口的不锈钢指纹补齐**只作用于 `/v1/*` 路径（`/v1/oauth/*` 除外，2026-10-29）**；`/api/oauth/*` 与 `/v1/oauth/*` 保持调用方原样（调用方自带 `CC_AUX_UA`），否则辅助调用会被"过度装扮"成异常指纹。节点上没有 UA 的请求会带 Bun 默认 `Bun/x`：代理健康探测因此显式带 `CC_AUX_UA`；**刷新例外**——带该 UA 的刷新被令牌端点一律 429（2026-10-29 实测），刷新不发 UA。
-- 节点 CC 进程**保留遥测**（2026-10-29 本地 MITM 实测 2.1.312 共 8 个会话）：正常会话会调 `/api/claude_cli/bootstrap`、`/api/eval/*`、`/mcp-registry/v0/servers` 并上报一批 `/api/event_logging/v2/batch`（≈120 事件、≈230 KB），载荷含固定 device_id、session_id 与机器 `env` 块（内核、发行版、架构、内存），不含主机名/用户名/路径；关掉后这些调用整体消失，比保留更显眼。只关 `DISABLE_ERROR_REPORTING`（Sentry 在正常与 API 500 会话中都未触发，崩溃报告会带主机名）与 `DISABLE_AUTOUPDATER`（-p 会话未见升级检查）。另设 `SHELL=/bin/bash`。
-- **`# Environment` 系统块（2.1.312）**：`messages[1]` 以 `role=system` 携带「Primary working directory / Is a git repository / Platform / Shell / OS Version(内核)」，`CLAUDE_CODE_DISABLE_ATTACHMENTS` 不再覆盖它。节点上所有账号共享同一内核串与 worker 根路径前缀——已知未对齐项，见 §7。
+- 节点 CC 进程**保留遥测**（2026-10-29 本地 MITM 实测 2.1.312 共 8 个会话）：正常会话会调 `/api/claude_cli/bootstrap`、`/api/eval/*`、`/mcp-registry/v0/servers` 并上报一批 `/api/event_logging/v2/batch`（≈120 事件、≈230 KB），载荷含固定 device_id、session_id 与机器 `env` 块，不含主机名/用户名/路径；关掉后这些调用整体消失，比保留更显眼。只关 `DISABLE_ERROR_REPORTING`（Sentry 在正常与 API 500 会话中都未触发，崩溃报告会带主机名）与 `DISABLE_AUTOUPDATER`（-p 会话未见升级检查）。启用按账号机器身份后，event_logging 的内核、发行版、架构和 Shell 与直连机器档一致，不再读取节点共享值。
+- **`# Environment` 系统块（2.1.312）**：`messages[1]` 以 `role=system` 携带「Primary working directory / Is a git repository / Platform / Shell / OS Version(内核)」，`CLAUDE_CODE_DISABLE_ATTACHMENTS` 不再覆盖它。按账号机器身份覆盖内核与 Shell；工作目录仍是每会话私有的 0700 scratch，不能为了伪装路径而共享会话数据。
 - OAuth 订阅号的 `/v1/messages` 测试/探测必须带 §5 的计费头 system 块 + 身份句 + `metadata.user_id`（JSON 字符串），否则上游 429（2026-10-16 实测）：console 账号「测试」与 `/root/monitor/func.py` 的 `cc_dual_mode` 均已按此改造。
 
 ## 9. 版本升级 SOP
@@ -213,7 +212,7 @@ CC 发版频繁（周级）。升级常量时：
 | `User-Agent` | `claude-cli/2.1.300 (external, sdk-cli)` | `claude-cli/2.1.312 (external, sdk-cli)` |
 | `X-Stainless-Package-Version` | 0.128.0 | 0.128.0（不变） |
 | `X-Stainless-Runtime-Version` | v26.3.0 | **v26.12.1**（内嵌 Bun 1.4.3 → 1.4.4，`HEAD /api/hello` 的 UA 同步变为 `Bun/1.4.4`） |
-| 计费头 | `cc_version=2.1.300.f23; cc_entrypoint=sdk-cli;` | `cc_version=2.1.312.6b4; …`（构建标志 `.f23` → `.6b4`，常量 `CC_BUILD_SUFFIX`） |
+| 计费头（本节固定提示词的采样值） | `cc_version=2.1.300.f23; cc_entrypoint=sdk-cli;` | `cc_version=2.1.312.6b4; …`（后缀随首条用户文本变化，不是版本常量） |
 | `anthropic-beta`（同参数） | claude-code, oauth, interleaved-thinking, thinking-token-count, context-management, **prompt-caching-scope**, per-turn-control, effort, **dangerous-tool-use**, thinking-display-updates, **afk-mode**, extended-cache-ttl | claude-code, oauth, interleaved-thinking, context-management, per-turn-control, thinking-token-count, effort, thinking-display-updates, extended-cache-ttl |
 | body | 含 `safeguards`（dangerous_tool_use 分类器上下文） | 无 `safeguards`；其余键相同（`output_config.effort=medium`、`thinking.adaptive`、`context_management` 同） |
 | OAuth scope / 凭据文件 / token 端点 | 同 | 同（`user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload`、`.credentials.json`、`platform.claude.com/v1/oauth/token`） |
@@ -223,23 +222,26 @@ CC 发版频繁（周级）。升级常量时：
 
 | 项 | 2.1.300 | 2.1.312 |
 |---|---|---|
-| 计费头 | `cc_version=2.1.300.f23; cc_entrypoint=cli;` | `cc_version=2.1.312.6b4; cc_entrypoint=cli;` |
+| 计费头（本节固定提示词的采样值） | `cc_version=2.1.300.f23; cc_entrypoint=cli;` | `cc_version=2.1.312.6b4; cc_entrypoint=cli;` |
 | `anthropic-beta` | claude-code, oauth, interleaved-thinking, thinking-token-count, context-management, **prompt-caching-scope**, per-turn-control, mid-conversation-tool-changes, effort, dangerous-tool-use, thinking-display-updates, afk-mode, extended-cache-ttl | claude-code, oauth, interleaved-thinking, context-management, per-turn-control, mid-conversation-tool-changes, thinking-token-count, **advanced-tool-use**, effort, dangerous-tool-use, thinking-display-updates, afk-mode, extended-cache-ttl |
 
 同一会话里 Claude Code 还会发两类辅助请求：无 system 的小请求（beta 只有 claude-code/oauth/interleaved-thinking/redact-thinking/context-management）
-和标题生成（structured-outputs，计费头后缀不同：2.1.300 为 `.0e6`，2.1.312 为 `.058`）。**构建标志不是版本常量而是按请求类型变化**，
-平台模拟的是主对话请求，故取 `.6b4`（sdk-cli 与 cli 主请求一致）。
+和标题生成（structured-outputs，计费头后缀不同：2.1.300 为 `.0e6`，2.1.312 为 `.058`）。2026-10-31 对官方 2.1.312 ELF 的
+内嵌源码复核确认：后缀取首条非 meta 用户消息的第一段文本，把 UTF-16 下标 4、7、20 的字符（缺失填 `0`）与版本拼接后做
+`sha256("59cf53e54c78" + chars + version)`，取前三位 hex。固定提示词 `Reply with the single word OK.` 得到 `.6b4`；换成其他提示词会得到
+其他值。因此 `.6b4` 与 `.fb2` 都只是各自提示词的采样结果，不能任一写死。
 
 `prompt-caching-scope-2026-01-05`：2.1.312 的 12 次采样（sdk-cli 4 种条件 × 1、交互 2 模型 × 主请求 2 次 + 辅助请求）全部不发送；
 2.1.300 的对应采样全部发送。字符串仍在两版的 beta 注册表里，不再加入请求头的条件在压缩代码的其他分块，未继续反编译；
 远程功能开关能否重新打开它无法从二进制排除（两版采样环境相同）。
 
-**常量改动**：`CC_VERSION` 2.1.312、`CC_RUNTIME_VERSION` v26.12.1、新增 `CC_BUILD_SUFFIX` "6b4"、`CC_BETAS` 取 2.1.312 主请求里
+**常量与函数改动**：`CC_VERSION` 2.1.312、`CC_RUNTIME_VERSION` v26.12.1；不再有 `CC_BUILD_SUFFIX` / `CC_BILLING_BLOCK` 常量，
+改由 `ccBuildSuffix(messages, version)` 与 `ccBillingBlock(messages, entrypoint, version)` 按官方算法生成。`CC_BETAS` 仍取主请求里
 **与工具 / 功能无关的核心项**并按其顺序排列：`claude-code-20250219, [oauth-2025-04-20], interleaved-thinking-2025-05-14,
-context-management-2025-06-27, thinking-token-count-2026-05-13`（与 2.1.300 时代的取舍一致：per-turn-control / mid-conversation-tool-changes /
-advanced-tool-use / effort / dangerous-tool-use / thinking-display-updates / afk-mode / extended-cache-ttl 都跟着工具或功能走，非 CC 客户端的
-请求体里没有对应字段，不注入）。`normalizeCcSoftware` 把客户端版本钉到节点版本时连构建标志一起改成节点的；钉到其他版本时保留客户端的标志。
-节点部署脚本 `CLAUDE_VERSION=2.1.312`，探针 `func.py` 的 UA 与计费头同步。
+context-management-2025-06-27, thinking-token-count-2026-05-13`。完整 beta 注册表不等于每次请求的发送集：per-turn-control /
+mid-conversation-tool-changes / advanced-tool-use / effort / dangerous-tool-use / thinking-display-updates / afk-mode / extended-cache-ttl
+等随模型、工具和启用功能动态裁剪，真实 CC 请求透传，非 CC 请求不错误注入未启用的功能。`normalizeCcSoftware` 钉到 2.1.312 时重算
+后缀；钉到其他版本时保留客户端标志。节点部署脚本 `CLAUDE_VERSION=2.1.312`，探针 `func.py` 的 UA 与计费头同步。
 
 **采样工具**（本次补进仓库，`ops/cc-capture/`）：`capsrv.mjs` 本地采样服务、`capture-sdk.sh`（-p 模式，worker 参数）、
 `capture-interactive.py`（伪终端交互模式，预置 onboarding 跳过首启向导）；两版二进制用 `bun add -g @anthropic-ai/claude-code@<ver>`

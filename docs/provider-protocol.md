@@ -167,7 +167,7 @@ v3 的变化：
 
 # 协议 v2：http-egress（节点侧 HTTP 出口 + 强制代理 + TLS 指纹）
 
-> 2026-10-15 起生效。动机：v1 隧道里 TLS 在**网关**侧终止（OpenSSL），上游看到的 ClientHello 不是 Claude Code 的 Bun/BoringSSL。v2 把完整 HTTP 请求下沉到节点执行，**TLS 在节点终止**，配合 Bun 1.4.3 运行时（与 CC 2.1.300 同版本族）使 TLS 指纹与官方客户端一致。指纹头 canonical 集由节点上的 vendored `fingerprint.ts` 兜底注入——**节点更新即指纹更新**。
+> 2026-10-15 起生效。动机：v1 隧道里 TLS 在**网关**侧终止（OpenSSL），上游看到的 ClientHello 不是 Claude Code 的 Bun/BoringSSL。v2 把完整 HTTP 请求下沉到节点执行，**TLS 在节点终止**，配合 Bun 1.4.4 运行时（与 CC 2.1.312 内嵌运行时一致）使完整 ClientHello 与官方客户端一致。指纹头 canonical 集由节点上的 vendored `fingerprint.ts` 兜底注入——**节点更新即指纹更新**。
 
 ## 信任模型变化（重要）
 
@@ -218,6 +218,8 @@ bunVersion, nodeVersion, bundleHash, draining}`（`bundleHash` = 运行中 bundl
 4. `Bun.fetch(url, {proxy, headers, body, ...})` 发请求，流式读回，按到达顺序写入管道。运行时必须是 Bun（`typeof Bun !== "undefined"`），Node 下启动直接拒绝服务（防指纹退化）。
 5. 代理粘性：`assignments[accountId]=proxyUrl` 存配置（加密落盘）；代理失效时重hash到下一个存活代理并上报新分配。
 
+`cc_worker` 另有按账号机器身份：`CC_WORKER_MACHINE_IDENTITY=1` 时，core 与节点使用同一 `accountMachine(accountId)`，worker 的 mount namespace 绑定该账号的 os-release/proc-version，`uname` 兼容层统一内核与架构，Shell 也一致。直连 body、Claude Code `# Environment` 和 event_logging `env` 不再分别暴露客户机、随机档与节点真机。root、gcc、libc6-dev、util-linux 和启动自检为硬前提；这不是独立 VM，UID/scratch 仍是权限边界。
+
 ## 代理池
 
 - 来源：(a) 平台管理台录入 → WS 推送 `proxies.set` → 节点加密落盘；(b) 节点本地配置文件 `proxies` 数组。
@@ -240,7 +242,7 @@ bunVersion, nodeVersion, bundleHash, draining}`（`bundleHash` = 运行中 bundl
 - `GET /api/admin/nodes`：节点列表（在线、版本、容量、账号数、代理数、部署元数据）。
 - `PUT /api/admin/nodes/:id/proxies` `{proxies:[{url,label}]}`：整体替换代理池，落库并推送在线节点。
 - `GET /api/admin/nodes/:id/proxies`：脱敏列表 + 存活状态 + 分配数。
-- `POST /api/admin/nodes/deploy` `{host, port?, username, password?|privateKey?, name?, proxies?[]}`：服务器侧 SSH 自动部署（装 Bun 1.4.3 → 拉 bundle → 写配置 → systemd → 回连验证），返回 `{nodeId, online}`。
+- `POST /api/admin/nodes/deploy` `{host, port?, username, password?|privateKey?, name?, proxies?[]}`：服务器侧 SSH 自动部署（装 Bun 1.4.4 → 拉 bundle → 写配置 → systemd → 回连验证），返回 `{nodeId, online}`。
 - `POST /api/admin/nodes/local` `{name?, proxies?[]}`：在**本服务器**直接起一个节点（同 install 流程，host=127.0.0.1）。
 - `GET /internal/provider/bundle?code=<bindCode>`：节点安装包（tar.gz：dist + 生产 node_modules + install.sh），bind code 做一次性认证。
 - 账户绑定节点：`PATCH /api/admin/accounts/:id` `{route:"node", nodeId}`，校验节点容量（≤100）。
