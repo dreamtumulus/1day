@@ -43,16 +43,19 @@ export type Mode =
   | "chat-via-anthropic" // client chat, upstream anthropic
   | "anthropic-via-chat" // client anthropic, upstream chat
   | "ccr-anthropic" // client anthropic, cloud session (docs/ccr-supply.md)
-  | "ccr-chat"; // client chat, cloud session
+  | "ccr-chat" // client chat, cloud session
+  | "ccr-responses" // client Responses API, worker (spec WP4.3, adapters/responses.ts)
+  | "responses-via-anthropic"; // client Responses API → direct Anthropic account
 
 export function isCcrMode(mode: Mode): boolean {
-  return mode === "ccr-anthropic" || mode === "ccr-chat";
+  return mode === "ccr-anthropic" || mode === "ccr-chat" || mode === "ccr-responses";
 }
 
 /** The Anthropic-wire mode a CCR response is delivered as (the executor synthesizes Anthropic wire). */
 export function wireModeFor(mode: Mode): Mode {
   if (mode === "ccr-anthropic") return "passthrough-anthropic";
   if (mode === "ccr-chat") return "chat-via-anthropic";
+  if (mode === "ccr-responses") return "responses-via-anthropic";
   return mode;
 }
 
@@ -71,11 +74,11 @@ export function modeFor(
   if (isCcrExecutor(a.executor) && !ccClient) {
     if (format === "anthropic") return "ccr-anthropic";
     if (format === "openai-chat") return "ccr-chat";
-    return null; // Responses API has no cloud-session/worker translation
+    return "ccr-responses"; // Responses API first tier (spec WP4.3): mapped to Messages for the worker
   }
   const openaiOauth = a.type === "oauth" && a.platform === "openai";
   if (openaiOauth) return format === "responses" ? "passthrough-responses" : null;
-  if (format === "responses") return a.protocol === "openai" ? "passthrough-responses" : null;
+  if (format === "responses") return a.protocol === "openai" ? "passthrough-responses" : a.protocol === "anthropic" ? "responses-via-anthropic" : null;
   if (format === "anthropic") return a.protocol === "anthropic" ? "passthrough-anthropic" : "anthropic-via-chat";
   return a.protocol === "openai" ? "passthrough-openai" : "chat-via-anthropic";
 }
@@ -164,7 +167,7 @@ export function buildUpstreamRequest(
   const base = accountBaseUrl(account);
   if (!base) return null;
   const secret = cred.apiKey ?? cred.accessToken ?? "";
-  const anthropicWire = mode === "passthrough-anthropic" || mode === "chat-via-anthropic";
+  const anthropicWire = mode === "passthrough-anthropic" || mode === "chat-via-anthropic" || mode === "responses-via-anthropic";
   // Raw passthrough (gateway.md §4a, 官Key 分组 2026-10-23): a same-protocol request to a relay account
   // goes out as the client sent it — its headers (minus transport / credential), its body byte for
   // byte (since 2026-10-26 not even the model is rewritten: the account's model mapping is ignored),
@@ -249,6 +252,12 @@ export function buildUpstreamRequest(
       body = pinDeviceIdentity(normalizeThinking({ ...openaiChatToAnthropic(clientBody, upstreamModel), ...(upstreamSession ? { metadata: clientBody.metadata } : {}) }, upstreamModel), account, { canonicalOrder: shaping.canonicalFields });
       if (machine) body = pinMachineEnvironment(body, machine, envUuid);
       break;
+    case "responses-via-anthropic":
+      // Responses API over a direct Anthropic account (spec WP4.3): same treatment as chat-via-anthropic.
+      path = "/v1/messages?beta=true";
+      body = pinDeviceIdentity(normalizeThinking({ ...responsesToAnthropic(clientBody, upstreamModel), ...(upstreamSession ? { metadata: clientBody.metadata } : {}) }, upstreamModel), account, { canonicalOrder: shaping.canonicalFields });
+      if (machine) body = pinMachineEnvironment(body, machine, envUuid);
+      break;
     case "passthrough-openai":
       path = "/chat/completions";
       body = { ...clientBody, model: upstreamModel };
@@ -314,6 +323,7 @@ export function buildUpstreamRequest(
 // §1/§6.2: all platform-side requests of a bound account leave on that proxy);
 // a failed/unavailable tunnel keeps the old token (core returns null).
 import { abortable } from "./lifecycle.js";
+import { responsesToAnthropic } from "./adapters/responses.js";
 import { freshCredential as coreFreshCredential, readCredential } from "@1dayapi/core";
 import { pinnedTunnelTransport, type IsolationContext } from "./tunnel.js";
 

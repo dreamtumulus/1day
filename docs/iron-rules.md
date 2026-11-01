@@ -48,6 +48,7 @@
   | `cc_client_response_profile` | 对 Claude Code UA 不下发 `x-1day-*` 诊断头（只影响下游） | `0` |
   | `key_policy_auto` | Key 策略判断器的 auto 层生效（spec §6.2 / WP8） | `0` |
   | `canonical_history_import` | canonical 新会话导入外部历史（CC transcript 形态、剥 thinking，spec WP3 / G3） | `0` |
+  | `raw_preserve_headers` | 原样透传账号到节点出口不补 Claude Code 指纹头（raw-v1，spec WP5.4） | `0` |
   | `telemetry_evidence_required` | native-required 的 Key 开 canonical 会话前要求账号×profile 遥测证据 ≥ secondary（spec §6.4 / WP6） | `0` |
   | `worker_canonical` | 车道 B canonical 进程：节点官方 CC 原生身份 + `--restricted` + caller MCP + 原生 session，客户 system 追加（spec WP2；节点还需 `CC_WORKER_CANONICAL=1`） | `0` |
 - 灰度组：控制台「设置 → 灰度测试账号组」选择；账号加入该组 = 账号页编辑分组；测试 Key = 该组下的 consumer Key。

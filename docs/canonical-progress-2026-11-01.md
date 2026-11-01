@@ -14,7 +14,8 @@
 | WP3 原生会话 | `TurnMemory.native`（session / revision / state）；continue 失配 → 节点 `--resume`，无可 resume → `session_lost`；外部历史导入 `buildNativeTranscript`（剥 thinking）+ 节点落盘 `--resume` | `canonical_history_import` | `canonical-worker.test`（transcript / 导入路径）、provider-node `cc-worker.test` WP3 段 |
 | WP6 遥测证据 | `telemetry_evidence` 表（迁移 36：real / controlled 行，secondary 由"profile 结构证据 + 账号连续 N 天健康"算出）；管理接口录入/查看；网关在 native-required + 开关下按证据等级放行 canonical | `telemetry_evidence_required`、`telemetry_health_days` | `org-guard-telemetry.test` |
 | WP7 组织预算/熔断 | `upstream_teams` 预算列（迁移 37）只拦新对话绑定；组织级错误文本 → 整组织 `suspended` + `[ALERT][org]` + 事件，人工 `PATCH status=active` 解除；直连/worker 同一套 | 预算默认 null（不限）；熔断无开关（只减少上游流量） | 同上 |
-| WP5（部分） | I12 裸 `429 "Error"` 请求级；`responseMode=strict` 不提前 200 / 不心跳；`anthropic-ratelimit-*` 本就不转发 | Key `responseMode` | `key-policy-auto.test`（I12） |
+| WP4 适配与 strict | Responses API 第一档（`adapters/responses.ts`：请求/非流式/流式状态机，worker `ccr-responses` + 直连 `responses-via-anthropic`）；未实现字段 400 `unsupported_parameter`；strict 参数契约（Key `parameterPolicy=strict`）；`count_tokens` 带 `x-1day-estimated:1` | Key `parameterPolicy`（默认 warn） | `responses-adapter.test`（golden 向量 + 事件序列 + strict 矩阵） |
+| WP5 | I12 裸 `429 "Error"` 请求级；`responseMode=strict` 不提前 200 / 不心跳；raw-v1 `preserveHeaders`（节点 capability `raw-v1`）；`anthropic-ratelimit-*` 本就不转发 | Key `responseMode`；`raw_preserve_headers` | `key-policy-auto.test`（I12） |
 
 ## WP1 第 4 项的决定
 
@@ -30,8 +31,12 @@
 
 ## 未做（按 spec 顺序）
 
+- R5（legacy 关闭、观察两周后删代码）：依赖线上观察，今天做不了。
+- WP4 余项：`response_format` / `text.format json_schema` → `--json-schema`（G8 已通过，映射未做，目前 strict 下 400）；refusal 语义文档化；三协议 golden 用真实 Key 跑（需灰度 Key）。
+
 - WP3 余项：`--resume` + stream-json 输入的真二进制探针；fork 分支；AWAITING_CALLER 回收后的 resume（G5 证明不重跑，但模型只得到"结果未知"）→ 仍走 409 `tool_continuation_after_reset` 兜底。
 - WP6 余项：节点心跳 `telemetryEvidence` 元数据、账号页/组织页前端展示（目前只有管理 API）；G10-B 真实受理需专用测试账号 + 受控 CA 出口后录入 `source=real`。
+- WP5 余项：`raw_passthrough_header_mutation_total` 需节点上报（现只有节点日志）。
 - WP2 余项：合成 cwd（mount namespace bind → attachments 可开）、遥测 `CLAUDE_CODE_DISABLE_ATTACHMENTS` 按 G9 决定、节点 bundle 发到 worker。WP3 原生会话（G4 的"无 transcript 崩溃窗口"与 G3 的 thinking 剥离已有证据）、WP4 strict 参数契约 / Responses 第一档、WP5 raw-v1 节点能力、WP6 `telemetry_evidence` 表、WP7 组织预算与组织级熔断。
 - 2.1.316 / 2.1.314 的 profile 采样（mirasim 客户版本），否则严格模式下它们是 `cc_profile_unknown`。
 - 判断器缺的观测：外来历史比例、`ignored-params` 命中、探针形态（需在 usage_logs 加列，迁移只增）。

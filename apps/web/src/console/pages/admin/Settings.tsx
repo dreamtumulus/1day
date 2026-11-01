@@ -198,6 +198,7 @@ function SettingsForm({ initial, groups, onSaved }: { initial: Settings; groups:
                 ["worker_canonical", "workerCanonical"],
                 ["telemetry_evidence_required", "telemetryEvidenceRequired"],
                 ["canonical_history_import", "canonicalHistoryImport"],
+                ["raw_preserve_headers", "rawPreserveHeaders"],
               ] as const
             ).map(([key, label]) => (
               <Field key={key} label={t(`admin.settings.${label}`)} hint={t(`admin.settings.${label}Hint`)}>

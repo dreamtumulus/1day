@@ -71,3 +71,19 @@ CC_PROBE_HOME=<home> CC_PROBE_SESSION=<session> node tests/e2e/cc-probe/run-gate
 
 - 开发侧（本会话）正在做 WP1（车道 A profile / Key 白名单 / 再校验）与 Key policy 两层结构，**只依赖 T4 的 `profiles.json`**（用于填 `CC_PROFILES` 表）；T4 没出来之前用 `baseline.json`/compat.md §11 的值占位，字段 `evidence[].source` 标 `interim`。
 - T1–T3 的结论决定 WP3 的方案选择（stream-json 续轮 / transcript 导入 / 明确拒绝），请把"不能做"写得和"能做"一样清楚。
+
+
+## 6. 第二批（2026-11-01 晚，开发侧 WP2/WP3 落地后新增；同样只用假上游、假凭据）
+
+### T7 `--resume` + `--input-format stream-json`（WP3 依赖，必做）
+节点 canonical 续轮失配时用 `claude -p --resume <id> --input-format stream-json --output-format stream-json …`，新一轮从 stdin 喂。Pi 的 T1 用的是位置参数提示词。
+请在 `run-gate.mjs` 增 gate `resume-streamjson`：第一步 `session` 落 transcript，第二步以上述参数 resume 且只喂一条 `{"type":"user",…}`。通过标准：REQ0 messages = 历史 + 新一轮，无重复、无 "No response requested."。
+
+### T8 `--append-system-prompt-file` × `--resume`（必做）
+resume 时再次带 `--append-system-prompt-file`：追加文本是否只出现一次（主提示词块尾部），还是被重复追加。记录 system 三块长度。
+
+### T9 historyImport 真机验证（必做）
+用 `apps/gateway/dist/ccr/native-session.js` 的 `buildNativeTranscript`（node 可直接 import）把一段含 tool_use/tool_result 的客户 messages 生成 transcript，按 T3 方法写入后 `--resume` + stdin 新一轮；确认工具对与顺序保真、无 thinking。
+
+### T10 `mid-conversation-tool-changes-2026-07-01` 触发条件（选做）
+cli 入口 12 次采样未见该 beta，而 10-28 采样见过；试 `--mcp-config` 带一个假 MCP server 的交互会话，看是否出现。结论写进 `profiles.json` 的 `betaPolicy.byFeature`。

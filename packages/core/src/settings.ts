@@ -82,6 +82,8 @@ export const SETTING_DEFAULTS = {
   // canonical 外部历史导入（spec WP3 / G3）：开 → 带着外部多轮历史的 canonical 新会话由网关按 Claude Code transcript 格式构造
   // （剥掉 thinking：G3 证明零校验、真上游会 400）、节点写入后 --resume；关 → 409 history_import_unsupported。上游可见（导入的历史会上行）。
   canonical_history_import: "0",
+  // raw-v1（spec WP5.4）：原样透传账号的请求到节点出口也不补 Claude Code 指纹头（preserveHeaders）。默认 0 = 节点照旧补齐。上游可见。
+  raw_preserve_headers: "0",
   telemetry_evidence_required: "0",
   telemetry_health_days: "7",
   direct_cc_version_pin: "2.1.312",

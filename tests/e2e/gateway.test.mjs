@@ -54,7 +54,10 @@ r = await post("/v1/responses", { model: "gpt-5.5", input: "hi", stream: true })
 check("responses stream", r.status === 200 && r.text.includes("response.completed"), r.text);
 
 r = await post("/v1/responses", { model: "claude-sonnet-5", input: "hi" });
-check("responses on anthropic-only -> 400", r.status === 400 && r.text.includes("unsupported_endpoint"), r.text);
+// spec WP4.3 (2026-11-01): Responses over an Anthropic account = responses-via-anthropic (Messages wire, Responses object back).
+check("responses on anthropic account -> 200 response object", r.status === 200 && r.text.includes('"object":"response"') && r.text.includes('"output_text"'), r.text);
+r = await post("/v1/responses", { model: "claude-sonnet-5", input: "hi", stream: true });
+check("responses on anthropic account stream", r.status === 200 && r.text.includes("event: response.created") && r.text.includes("response.output_text.delta") && r.text.includes("response.completed"), r.text);
 
 r = await post("/v1/chat/completions", { model: "no-such-model", messages: msgs });
 check("unknown model 404", r.status === 404 && r.text.includes("model_not_found"), r.text);

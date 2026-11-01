@@ -31,14 +31,14 @@ test("Claude Code UA detection (same rule as the fingerprint layer)", () => {
 test("R1: CC client + executor=ccr account -> direct mode, never a ccr mode", () => {
   assert.equal(modeFor("anthropic", ccrAcc, true), "passthrough-anthropic");
   assert.equal(modeFor("openai-chat", ccrAcc, true), "chat-via-anthropic");
-  assert.equal(modeFor("responses", ccrAcc, true), null, "anthropic-protocol account cannot serve responses");
+  assert.equal(modeFor("responses", ccrAcc, true), "responses-via-anthropic", "Responses API first tier (spec WP4.3): mapped to Messages on the direct path");
   assert.ok(!isCcrMode(modeFor("anthropic", ccrAcc, true)));
 });
 
 test("R2: non-CC client + executor=ccr -> cloud session (unchanged)", () => {
   assert.equal(modeFor("anthropic", ccrAcc), "ccr-anthropic");
   assert.equal(modeFor("openai-chat", ccrAcc), "ccr-chat");
-  assert.equal(modeFor("responses", ccrAcc), null);
+  assert.equal(modeFor("responses", ccrAcc), "ccr-responses", "Responses API first tier: worker path");
   assert.ok(isCcrMode(modeFor("anthropic", ccrAcc, false)));
 });
 
@@ -61,7 +61,7 @@ test("executor=ccr_worker follows the same dual-mode rule (§5.2 R1 + §8.1)", (
   // on-node worker happens on executor in proxy.ts, not on Mode).
   assert.equal(modeFor("anthropic", workerAcc), "ccr-anthropic");
   assert.equal(modeFor("openai-chat", workerAcc), "ccr-chat");
-  assert.equal(modeFor("responses", workerAcc), null);
+  assert.equal(modeFor("responses", workerAcc), "ccr-responses");
   // CC client: direct mode, never the worker.
   assert.equal(modeFor("anthropic", workerAcc, true), "passthrough-anthropic");
   assert.equal(modeFor("openai-chat", workerAcc, true), "chat-via-anthropic");

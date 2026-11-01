@@ -377,6 +377,8 @@ export async function fetchViaTunnel(
   method?: string,
   isolation?: IsolationContext,
   signal?: AbortSignal,
+  /** spec WP5.4 raw-v1: the node forwards these headers untouched (no Claude Code fingerprint fill-in); raw passthrough accounts only. */
+  preserveHeaders = false,
 ): Promise<Response | null> {
   const sessionId = await openTunnelSession(accountId, proxyId, isolation, signal);
   if (!sessionId) return null;
@@ -389,6 +391,7 @@ export async function fetchViaTunnel(
     headers,
     bodyBase64: Buffer.from(body, "utf8").toString("base64"),
     ...(proxyId ? { proxyId } : {}),
+    ...(preserveHeaders ? { preserveHeaders: true } : {}),
   })}\n`;
   duplex.write(Buffer.from(spec, "utf8"));
 

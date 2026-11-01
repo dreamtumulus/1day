@@ -89,7 +89,11 @@ check("image -> 400 ccr_unsupported_content", r.status === 400 && r.text.include
 r = await messages(ccrKey, { tools: [{ name: "t", input_schema: { type: "object" } }], tool_choice: { type: "any" } });
 check("tool_choice any -> 400 ccr_unsupported_tool_choice", r.status === 400 && r.text.includes("ccr_unsupported_tool_choice"), r.text);
 r = await post(ccrKey, "/v1/responses", { model: "claude-sonnet-5", input: `ccr ${uniq()}` });
-check("responses -> 400 unsupported_endpoint", r.status === 400 && r.text.includes("unsupported_endpoint"), r.text);
+// spec WP4.3 (2026-11-01): the Responses API first tier is served by the worker (ccr-responses) — mapped to Messages and back.
+check("responses on worker -> 200 response object", r.status === 200 && r.text.includes('"object":"response"') && r.text.includes('"output_text"'), r.text);
+// (previous_response_id is handled earlier by the conversation reset logic — gateway.md §2b — not here.)
+r = await post(ccrKey, "/v1/responses", { model: "claude-sonnet-5", input: "x", store: true });
+check("responses store:true -> 400 unsupported_parameter", r.status === 400 && r.text.includes("unsupported_parameter") && r.text.includes("store"), r.text);
 const directFallback=await createAccount({name:"ccr-direct-fallback",platform:"anthropic",type:"oauth",baseUrl:MOCK,
   accessToken:"direct-fallback",executor:"direct",priority:100,groupIds:["default"]});
 check("same-team direct fallback created",directFallback.status===201,directFallback);

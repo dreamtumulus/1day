@@ -802,6 +802,7 @@ export interface Settings {
   worker_canonical?: string;
   telemetry_evidence_required?: string;
   canonical_history_import?: string;
+  raw_preserve_headers?: string;
   telemetry_health_days?: string;
   history_policy_default?: string;
   history_policy_canary?: string;

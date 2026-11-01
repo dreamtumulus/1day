@@ -36,6 +36,8 @@ interface EgressSpec {
   bodyBase64?: string;
   /** Pinned pool proxy id; overrides sticky assignment (docs/onboarding.md §6.2). */
   proxyId?: string;
+  /** raw-v1 (spec WP5.4): forward headers exactly as given. */
+  preserveHeaders?: boolean;
 }
 
 interface EgressSession {
@@ -336,10 +338,11 @@ export class HttpEgressManager {
     // /v1/oauth/* (authorize + token exchange during onboarding) is an axios-style auxiliary call in the
     // real client, not an SDK-wire request: no x-stainless-*/x-app dressing there (audit 2026-10-29).
     const rawBody = isAnthropicHost(url.hostname) && url.pathname.startsWith("/v1/") && !url.pathname.startsWith("/v1/oauth/");
-    if (rawBody) {
+    // raw-v1 (spec WP5.4): a raw passthrough relay asks for its headers untouched — no fingerprint fill-in at all.
+    if (rawBody && spec.preserveHeaders !== true) {
       const fp = anthropicFingerprintHeaders(headers);
       for (const [k, v] of Object.entries(fp)) headers[k] = v;
-    }
+    } else if (rawBody) this.log(`${session.sessionId} raw-v1: headers preserved (${Object.keys(headers).length})`);
 
     const method = (spec.method ?? (spec.bodyBase64 ? "POST" : "GET")).toUpperCase();
     const body = spec.bodyBase64 && method !== "GET" && method !== "HEAD" ? Buffer.from(spec.bodyBase64, "base64") : undefined;

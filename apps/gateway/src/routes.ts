@@ -32,6 +32,8 @@ async function handleCountTokens(req: FastifyRequest, reply: FastifyReply): Prom
   const caller = authenticate(req, reply, "anthropic", false);
   if (!caller) return reply;
   const body = (req.body ?? {}) as Record<string, unknown>;
+  // spec WP4.4: the count is the platform's estimate, not Anthropic's tokenizer — say so.
+  reply.header("x-1day-estimated", "1");
   return { input_tokens: estimateRequestTokens({ system: body.system, messages: body.messages, tools: body.tools }) };
 }
 

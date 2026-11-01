@@ -1,6 +1,6 @@
 /** WS protocol message shapes (docs/provider-protocol.md, json_base64_v1 only). */
 
-export const PROTOCOL_CAPABILITIES = ["official_exit", "http_egress", "cc_worker", "team_isolation_v1"] as const;
+export const PROTOCOL_CAPABILITIES = ["official_exit", "http_egress", "cc_worker", "team_isolation_v1", "raw-v1"] as const;
 
 export interface IsolationContext { teamId: string; conversationId: string; generation: number }
 export interface IsolationReset { type: "isolation.reset"; isolation: IsolationContext; resetId: string }

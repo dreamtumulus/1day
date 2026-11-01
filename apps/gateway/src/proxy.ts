@@ -103,6 +103,7 @@ import {
 } from "./upstream.js";
 import { wait, responseBytes } from "./lifecycle.js";
 import { bump } from "./metrics.js";
+import { AnthropicToResponsesStream, ResponsesUnsupported, anthropicMessageToResponses, responsesToAnthropic, strictUnsupportedParams } from "./adapters/responses.js";
 import { UsageAccumulator, collectText, estimateRequestTokens } from "./usage.js";
 import { orderByMerklePrefix, rememberMerklePrefix } from "./merkle-affinity.js";
 
@@ -752,6 +753,20 @@ async function proxyRequest(req: FastifyRequest, reply: FastifyReply, format: Cl
     reject(403, "model_not_allowed", `Model '${model}' is not allowed for group '${caller.groupName}'.`, "permission_error");
     return;
   }
+  // Responses API first tier (spec WP4.3): validate → map before any account is touched; what the tier does not
+  // implement is a named 400, never a silent drop (I: strict 零静默).
+  if (format === "responses" && !rawGroup) {
+    // Validate what the CLIENT sent: a reset conversation forwards a rebuilt body (scope.originalBody keeps the original).
+    try { responsesToAnthropic(scope?.originalBody ?? body, model); }
+    catch (err) {
+      if (err instanceof ResponsesUnsupported) {
+        bump("unsupported_parameter_total", { parameter: err.parameter });
+        reject(400, "unsupported_parameter", `Unsupported parameter '${err.parameter}': ${err.reason}.`, "invalid_request_error");
+        return;
+      }
+      throw err;
+    }
+  }
 
   const firstResponse = !scope?.responseCtx;
   const ctx: Ctx = scope?.responseCtx ?? {
@@ -986,7 +1001,7 @@ async function proxyRequest(req: FastifyRequest, reply: FastifyReply, format: Cl
   let ccrBody: Json | null = null;
   let ccrUnsupported: CcrUnsupported | null = null;
   const ccrRequest = (): Json => {
-    if (!ccrBody) ccrBody = format === "openai-chat" ? openaiChatToAnthropic(body, model) : body;
+    if (!ccrBody) ccrBody = format === "openai-chat" ? openaiChatToAnthropic(body, model) : format === "responses" ? responsesToAnthropic(body, model) : body;
     return ccrBody;
   };
 
@@ -1046,6 +1061,15 @@ async function proxyRequest(req: FastifyRequest, reply: FastifyReply, format: Cl
         }
         // Path transparency (audit 2026-11-01 B14): which execution path answers — the client could only guess from
         // the message id prefix before. Set before the early 200 so hijacked SSE/JSON heads carry it too.
+        // Strict parameter contract (spec WP4.2, key parameterPolicy=strict): nothing a path cannot honour is dropped silently.
+        if (caller.policy.parameterPolicy === "strict" && !raw) {
+          const bad = strictUnsupportedParams(ctx.body, format, ignoredParams(ctx.body, format, mode), isCcrMode(mode));
+          if (bad.length) {
+            bump("unsupported_parameter_total", { parameter: bad[0].parameter });
+            fail(ctx, null, 400, "unsupported_parameter", `Unsupported parameter${bad.length > 1 ? "s" : ""}: ${bad.map((b) => `'${b.path}' (${b.reason})`).join("; ")}. This key uses the strict parameter contract; remove the parameter or ask for parameterPolicy=warn.`, "invalid_request_error");
+            return;
+          }
+        }
         if (!ctx.reply.raw.headersSent && !ctx.hideDiagHeaders) {
           ctx.reply.header("x-1day-mode", isCcrMode(mode) ? "worker" : raw ? "relay" : "direct");
           const ignored = ignoredParams(ctx.body, format, mode);
@@ -1143,7 +1167,9 @@ async function proxyRequest(req: FastifyRequest, reply: FastifyReply, format: Cl
             if (account.route === "node") {
               // Bound proxy (docs/onboarding.md §1/§6.2): all platform-side
               // requests of a bound account egress on that proxy.
-              res = await fetchViaTunnel(account.id, ureq.url, ureq.headers, ureq.body, account.bound_proxy_id ?? undefined, undefined, isolation, ctx.abort.signal);
+              // Raw passthrough (§4a) + raw_preserve_headers (spec WP5.4, three-state): the node relays the client's headers as
+              // they are instead of filling in the Claude Code fingerprint. Default 0 = today's node behaviour.
+              res = await fetchViaTunnel(account.id, ureq.url, ureq.headers, ureq.body, account.bound_proxy_id ?? undefined, undefined, isolation, ctx.abort.signal, raw && featureFor("raw_preserve_headers", { groupId: caller.groupId, accountId: account.id }));
               if (!res) break; // no online node: infra state, try next account without counting
             } else {
               // 原生 http 而非 fetch：避免 undici 强加 accept-language/sec-fetch-mode。
@@ -1515,13 +1541,16 @@ function logFailure(ctx: Ctx, account: AccountRow | null, status: number, code: 
  * `temperature`/`top_p` (one of them), `stop`, tools and `tool_choice` are mapped, the rest is not.
  */
 const WORKER_IGNORED_ANTHROPIC = ["temperature", "top_p", "top_k", "service_tier", "context_management", "mcp_servers", "container"];
+const WORKER_IGNORED_RESPONSES = ["temperature", "top_p", "reasoning", "truncation", "parallel_tool_calls", "service_tier", "user", "metadata", "include", "prompt_cache_key", "safety_identifier"];
+const CONVERT_IGNORED_RESPONSES = ["reasoning", "truncation", "parallel_tool_calls", "service_tier", "user", "metadata", "include", "prompt_cache_key", "safety_identifier"];
 const WORKER_IGNORED_CHAT = ["temperature", "top_p", "n", "logprobs", "top_logprobs", "seed", "presence_penalty", "frequency_penalty", "logit_bias", "service_tier", "response_format", "parallel_tool_calls", "reasoning_effort", "prediction", "web_search_options"];
 const CONVERT_IGNORED_CHAT = ["n", "logprobs", "top_logprobs", "seed", "presence_penalty", "frequency_penalty", "logit_bias", "service_tier", "response_format", "parallel_tool_calls", "reasoning_effort", "prediction", "web_search_options"];
 const CONVERT_IGNORED_ANTHROPIC = ["top_k", "thinking", "context_management", "service_tier", "mcp_servers", "container"];
 export function ignoredParams(body: Json, format: ClientFormat, mode: Mode): string[] {
   let names: string[];
-  if (isCcrMode(mode)) names = format === "anthropic" ? WORKER_IGNORED_ANTHROPIC : WORKER_IGNORED_CHAT;
+  if (isCcrMode(mode)) names = format === "anthropic" ? WORKER_IGNORED_ANTHROPIC : format === "responses" ? WORKER_IGNORED_RESPONSES : WORKER_IGNORED_CHAT;
   else if (mode === "chat-via-anthropic") names = CONVERT_IGNORED_CHAT;
+  else if (mode === "responses-via-anthropic") names = CONVERT_IGNORED_RESPONSES;
   else if (mode === "anthropic-via-chat") names = CONVERT_IGNORED_ANTHROPIC;
   else return [];
   return names.filter((n) => body[n] !== undefined && body[n] !== null);
@@ -1730,7 +1759,7 @@ function settleSuccess(
 }
 
 function upstreamWire(mode: Mode): "anthropic" | "chat" | "responses" {
-  if (mode === "passthrough-anthropic" || mode === "chat-via-anthropic") return "anthropic";
+  if (mode === "passthrough-anthropic" || mode === "chat-via-anthropic" || mode === "responses-via-anthropic") return "anthropic";
   if (mode === "passthrough-responses") return "responses";
   return "chat";
 }
@@ -1812,6 +1841,7 @@ async function deliver(
     acc.addText(collectText(json));
     let transformed: Json = json;
     if (mode === "chat-via-anthropic") transformed = anthropicMessageToOpenai(json, ctx.model);
+    else if (mode === "responses-via-anthropic") transformed = anthropicMessageToResponses(json, ctx.model, ctx.body);
     else if (mode === "anthropic-via-chat") transformed = openaiChatToAnthropicMessage(json, ctx.model);
     else if (upstreamModel !== ctx.model && typeof json.model === "string") transformed = { ...json, model: ctx.model };
     if (transformed !== json) out = Buffer.from(JSON.stringify(transformed), "utf8");
@@ -1939,12 +1969,13 @@ async function deliverStream(
 
   const clientWantsUsage = ctx.body.stream_options?.include_usage === true;
   const toOpenai = mode === "chat-via-anthropic" ? new AnthropicToOpenaiStream(ctx.model, clientWantsUsage) : null;
+  const toResponses = mode === "responses-via-anthropic" ? new AnthropicToResponsesStream(ctx.model, ctx.body) : null;
   const toAnthropic = mode === "anthropic-via-chat" ? new OpenaiToAnthropicStream(ctx.model) : null;
   const rewriteModel = upstreamModel !== ctx.model;
 
   const handle = async (ev: SseEvent): Promise<void> => {
     if (!ev.data) {
-      if (!toOpenai && !toAnthropic) await write(`${ev.raw}\n\n`);
+      if (!toOpenai && !toAnthropic && !toResponses) await write(`${ev.raw}\n\n`);
       return;
     }
     if (ev.data === "[DONE]" && (mode === "passthrough-openai" || mode === "anthropic-via-chat")) {
@@ -1960,7 +1991,8 @@ async function deliverStream(
     }
     switch (mode) {
       case "passthrough-anthropic":
-      case "chat-via-anthropic": {
+      case "chat-via-anthropic":
+      case "responses-via-anthropic": {
         if (j) {
           if (j.type === "message_start") {
             acc.observeModel(j.message?.model);
@@ -1973,6 +2005,8 @@ async function deliverStream(
         }
         if (toOpenai) {
           if (j) for (const s of toOpenai.push(j)) await write(s);
+        } else if (toResponses) {
+          if (j) for (const s of toResponses.push(j)) await write(s);
         } else if (rewriteModel && j?.type === "message_start" && j.message) {
           await write(`event: message_start\ndata: ${JSON.stringify({ ...j, message: { ...j.message, model: ctx.model } })}\n\n`);
         } else {

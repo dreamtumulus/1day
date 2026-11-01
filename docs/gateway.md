@@ -286,6 +286,19 @@ ChatGPT OAuth 账户（`type=oauth, platform=openai`）只接 `/v1/responses`，
   - OpenAI 线协议：`Authorization: Bearer`；ChatGPT OAuth 另加 `chatgpt-account-id`、`openai-beta: responses=experimental`、
     `originator: codex_cli_rs`，请求体置 `store=false`。
 
+### 4.1 Responses API 第一档与 strict 参数契约（2026-11-01，spec WP4，`apps/gateway/src/adapters/responses.ts`）
+
+- **Responses 第一档**：`POST /v1/responses` 对 Anthropic 账号可用——内部表示是 Messages：`responsesToAnthropic`（`instructions` → system；`input` 字符串/数组：message（user/assistant/system/developer）、
+  `input_text`/`output_text`/`input_image`（data: 或 URL）、`function_call` → tool_use、`function_call_output` → tool_result、`reasoning` 跳过；function tools；`tool_choice` auto/required/none/function）→
+  worker（新模式 `ccr-responses`）或直连（`responses-via-anthropic`）→ 回程 `anthropicMessageToResponses`（非流式 Responses 对象）/ `AnthropicToResponsesStream`
+  （`response.created/in_progress/output_item.added/content_part.added/output_text.delta/…/function_call_arguments.*/output_item.done/response.completed|incomplete`，带 `sequence_number`；上游错误 → `event: error`）。
+  用量 `input_tokens`(含缓存)/`output_tokens`/`total_tokens` + `input_tokens_details.cached_tokens`。
+- **未实现 → 400 `unsupported_parameter`**（请求进入号池前就拒绝）：`previous_response_id`（注：对话重置逻辑 §2b 会先把它当作"新对话"处理，所以实际看到的是重置而非 400）、`background`、`store:true`、`conversation`、`item_reference`、内置 OpenAI 工具（web_search 等）、`input_file`/`file_id`、`text.format` 非 text。
+- **strict 契约**（Key `parameterPolicy=strict`，默认 warn = 老行为）：路径无法实现的参数不再静默——`x-1day-ignored-params` 名单 + 显式项（`n>1`、`logprobs`、`seed`、非零 penalties、`service_tier`、
+  `parallel_tool_calls`、`response_format`/`output_format` 非 text、worker 上的 temperature/top_p/top_k、worker 上的强制 `tool_choice`）→ 400 `unsupported_parameter`（message 列出 `path (reason)`），计 `unsupported_parameter_total`。
+  `n=1`、`tool_choice:auto`、零 penalty 等无语义默认值接受。
+- `count_tokens` 响应带 `x-1day-estimated: 1`（本地估算，非 Anthropic tokenizer）。
+
 ## 4a. 原样透传账号（`accounts.raw_passthrough`，迁移 19，2026-10-23）
 
 给第三方中转（官Key 分组 / api-key.xyz）用：账号勾选「原样透传」后，**同协议**的请求（`passthrough-anthropic` / `passthrough-openai` /
@@ -305,6 +318,9 @@ ChatGPT OAuth 账户（`type=oauth, platform=openai`）只接 `/v1/responses`，
   网络错误答一次 502 `upstream_error`，同样不冷却；流中断 / 正文读取失败只记失败行，不冷却。
   失败行的 `error_code`：4xx `upstream_client_error`、429 `upstream_rate_limited`、5xx `upstream_error`。
 混有普通账号的分组仍走普通路径（透传账号在其中只少做请求改写）。
+
+**raw-v1（2026-11-01，spec WP5.4，开关 `raw_preserve_headers` 三态，默认 0）**：开时原样透传账号的 egress spec 带 `preserveHeaders:true`，节点（capability `raw-v1`）不再为 Anthropic 主机补
+Claude Code 指纹头（`anthropicFingerprintHeaders`），客户头原样到上游；关 = 节点照旧补齐（今天的行为）。节点日志 `raw-v1: headers preserved (N)`。
 
 ## 5. 上游错误处理
 
