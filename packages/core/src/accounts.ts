@@ -7,7 +7,7 @@ import { effectiveBaseUrl, type Executor, type Protocol } from "./platforms.js";
 import { getSetting } from "./settings.js";
 import { isoIn, nowIso } from "./time.js";
 import { modelScope, parseThresholdPercent, windowAllows, windowExhausted, windowReason, type WindowSnapshot } from "./window.js";
-import { normalizeTeamId, quarantineActive } from "./teams.js";
+import { normalizeTeamId, quarantineActive, recordProxyTeamEvent } from "./teams.js";
 
 export interface ModelCooldown {
   until?: string | null;
@@ -105,6 +105,13 @@ export interface AccountRow {
   last_profile_at: string | null;
   last_refresh_at: string | null;
   last_inference_at: string | null;
+  /**
+   * status 'proxy_down' (migration 33, operator rule 2026-11-01): the bound proxy failed (dead verdict, exit IP
+   * changed / conflicted, node refused the pin) and the account is frozen until an operator releases or rebinds it.
+   */
+  proxy_down_since: string | null;
+  proxy_down_reason: string | null;
+  proxy_down_proxy_id: string | null;
   /** direct = platform/node sends Messages requests; ccr = cloud session orchestration (docs/ccr-supply.md). */
   executor: Executor;
   /** Subscription window state (CCR only, written by the console poller). 0..1, NULL = never probed. */
@@ -454,10 +461,82 @@ export function clearAccountState(id: string): void {
   run(
     `UPDATE accounts SET status = 'active', error_message = NULL, rate_limited_until = NULL,
        overload_until = NULL, temp_unschedulable_until = NULL, window_exhausted_until = NULL, window_reason = NULL,
-       model_cooldowns = NULL, updated_at = ? WHERE id = ?`,
+       model_cooldowns = NULL, proxy_down_since = NULL, proxy_down_reason = NULL, proxy_down_proxy_id = NULL, updated_at = ? WHERE id = ?`,
     nowIso(),
     id,
   );
+}
+
+// ---------- proxy failure → frozen account (operator rule 2026-11-01, docs/onboarding.md §1.2) ----------
+//
+// "订阅账号代理批不通，暂停任何请求，不能私下换 IP 与直连，直接变为不可用状态，除非手动解除或手动更换 IP。"
+// Before this the account was merely skipped while node_proxies.status != 'live' and came back by itself.
+// Now: status 'proxy_down' (excluded by listCandidates, window poller and keepalive, which all select
+// status='active'); only releaseProxyFreeze / an operator rebind put it back. Idempotent, active → proxy_down only.
+
+export interface ProxyFreeze {
+  proxyId: string | null;
+  reason: string;
+  actorId?: string | null;
+}
+
+/** Freeze one account. Returns true when the row changed (was active). */
+export function freezeAccountForProxy(accountId: string, f: ProxyFreeze): boolean {
+  const now = nowIso();
+  const reason = f.reason.slice(0, 300);
+  const changed = run(
+    `UPDATE accounts SET status = 'proxy_down', proxy_down_since = ?, proxy_down_reason = ?, proxy_down_proxy_id = ?,
+       error_message = ?, updated_at = ? WHERE id = ? AND status = 'active'`,
+    now, reason, f.proxyId, `proxy_down: ${reason}`, now, accountId,
+  ).changes > 0;
+  if (!changed) return false;
+  const a = one<{ team_id: string | null; node_id: string | null; bound_proxy_id: string | null }>("SELECT team_id, node_id, bound_proxy_id FROM accounts WHERE id = ?", accountId);
+  const pid = f.proxyId ?? a?.bound_proxy_id ?? null;
+  const p = pid ? one<{ resource_key: string | null; node_id: string }>("SELECT resource_key, node_id FROM node_proxies WHERE id = ?", pid) : null;
+  recordProxyTeamEvent({ resourceKey: p?.resource_key ?? (pid ? `proxy:${pid}` : `account:${accountId}`), proxyId: pid, nodeId: p?.node_id ?? a?.node_id ?? null,
+    teamId: a?.team_id ?? null, accountId, actorId: f.actorId ?? null, event: "account_frozen_proxy_down", reason });
+  return true;
+}
+
+/** Freeze every active account bound to (or stickily assigned on) this proxy. Returns the frozen account ids. */
+export function freezeAccountsOnProxy(proxyId: string, reason: string): string[] {
+  const ids = all<{ id: string }>(
+    `SELECT id FROM accounts WHERE status = 'active' AND (bound_proxy_id = ?
+        OR id IN (SELECT account_id FROM node_proxy_assignments WHERE proxy_id = ?))`, proxyId, proxyId).map((r) => r.id);
+  return ids.filter((id) => freezeAccountForProxy(id, { proxyId, reason }));
+}
+
+export class ProxyFreezeError extends Error {
+  constructor(public code: string, message: string) { super(message); }
+}
+
+/**
+ * Operator release: the account goes back to 'active' only when its bound proxy is live again, not quarantined,
+ * and (team accounts) still claimed by the account's organization — i.e. exactly what the scheduler checks. Any
+ * other situation is refused with the reason, so the operator rebinds instead.
+ */
+export function releaseProxyFreeze(accountId: string, actorId: string | null, note?: string | null): void {
+  const a = one<AccountRow>("SELECT * FROM accounts WHERE id = ?", accountId);
+  if (!a) throw new ProxyFreezeError("account_not_found", "account not found");
+  if (a.status !== "proxy_down") throw new ProxyFreezeError("not_proxy_down", `account status is ${a.status}, nothing to release`);
+  if (a.bound_proxy_id) {
+    const p = one<{ status: string; last_error: string | null; exit_ip: string | null }>("SELECT status, last_error, exit_ip FROM node_proxies WHERE id = ?", a.bound_proxy_id);
+    if (!p) throw new ProxyFreezeError("proxy_missing", "the bound proxy no longer exists in the node pool; rebind the account to another proxy");
+    if (p.status !== "live") throw new ProxyFreezeError("proxy_not_live", `the bound proxy is ${p.status}${p.last_error ? ` (${p.last_error})` : ""}; wait for a live heartbeat or rebind`);
+    if (boundProxyDown(a)) throw new ProxyFreezeError("proxy_not_schedulable", "the bound proxy is live but not schedulable for this account (quarantine, organization claim or node mismatch); rebind the account");
+  }
+  const now = nowIso();
+  run(`UPDATE accounts SET status = 'active', error_message = NULL, proxy_down_since = NULL, proxy_down_reason = NULL, proxy_down_proxy_id = NULL,
+         temp_unschedulable_until = NULL, updated_at = ? WHERE id = ? AND status = 'proxy_down'`, now, accountId);
+  const p = a.bound_proxy_id ? one<{ resource_key: string | null; node_id: string }>("SELECT resource_key, node_id FROM node_proxies WHERE id = ?", a.bound_proxy_id) : null;
+  recordProxyTeamEvent({ resourceKey: p?.resource_key ?? (a.bound_proxy_id ? `proxy:${a.bound_proxy_id}` : `account:${accountId}`), proxyId: a.bound_proxy_id, nodeId: p?.node_id ?? a.node_id,
+    teamId: accountTeamId(a), accountId, actorId, event: "account_proxy_released", reason: `operator released the proxy freeze (frozen since ${a.proxy_down_since ?? "?"}: ${a.proxy_down_reason ?? "?"})${note ? `; ${note.slice(0, 200)}` : ""}` });
+}
+
+/** Admin list / dashboard: how many accounts are frozen and since when the oldest. */
+export function proxyDownSummary(): { count: number; oldestSince: string | null } {
+  const r = one<{ n: number; oldest: string | null }>("SELECT COUNT(*) AS n, MIN(proxy_down_since) AS oldest FROM accounts WHERE status = 'proxy_down'");
+  return { count: r?.n ?? 0, oldestSince: r?.oldest ?? null };
 }
 
 /**

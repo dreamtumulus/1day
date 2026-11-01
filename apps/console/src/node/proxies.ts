@@ -1,5 +1,5 @@
 import { isIP } from "node:net";
-import { all, claimProxyResource, decryptString, encryptString, ensureUpstreamTeam, getSetting, isoIn, liftQuarantine, normalizeTeamId, nowIso, one, quarantineActive, quarantineResource, recordProxyTeamEvent, run, tx } from "@1dayapi/core";
+import { all, claimProxyResource, decryptString, encryptString, ensureUpstreamTeam, getSetting, isoIn, liftQuarantine, normalizeTeamId, nowIso, one, quarantineActive, quarantineResource, recordProxyTeamEvent, run, tx, freezeAccountsOnProxy } from "@1dayapi/core";
 import { expireJobReservations, liveReservationSql } from "../onboard/reservations.js";
 import { proxyIdFromUrl } from "./registry.js";
 import { canonicalProxyUrl, describeProxy, parseProxyInput, proxyFingerprint, proxyUrlFingerprint } from "./proxy-parse.js";
@@ -357,11 +357,12 @@ export function recordNodeProxyExit(nodeId:string,proxyId:string,ip:string):bool
   return tx(()=>{
     const p=one<IsolatedProxy>("SELECT * FROM node_proxies WHERE id=? AND node_id=? AND isolation_version=1",proxyId,nodeId);
     if(!p)return false;
+    const freeze=(why:string)=>{const f=freezeAccountsOnProxy(proxyId,why);if(f.length)console.warn(`[proxies] ${proxyId} ${why} → ${f.length} account(s) frozen (proxy_down)`);};
     if(quarantineActive(`proxy:${p.id}`)){
-      run("UPDATE node_proxies SET status='dead',last_error='exit resource quarantined' WHERE id=?",proxyId);return false;
+      run("UPDATE node_proxies SET status='dead',last_error='exit resource quarantined' WHERE id=?",proxyId);freeze("exit resource quarantined");return false;
     }
     const key=canonicalProxyResourceKey(ip);
-    if(!key){run("UPDATE node_proxies SET status='dead',last_error='exit identity unavailable' WHERE id=?",proxyId);return false;}
+    if(!key){run("UPDATE node_proxies SET status='dead',last_error='exit identity unavailable' WHERE id=?",proxyId);if(p.exit_ip)freeze("exit identity unavailable (the proxy stopped reporting a measurable exit IP)");return false;}
     const owner=one<{team_id:string}>("SELECT team_id FROM proxy_team_claims WHERE resource_key=?",key);
     const reservedByOther=!!p.team_id && one(`SELECT 1 FROM onboarding_jobs WHERE proxy_resource_key=?
       AND ${liveReservationSql('onboarding_jobs')} AND (team_id IS NULL OR team_id<>?)`,key,p.team_id);
@@ -369,15 +370,20 @@ export function recordNodeProxyExit(nodeId:string,proxyId:string,ip:string):bool
     if(conflict){
       quarantineResource(`proxy:${p.id}`,"observed exit organization conflict");
       recordProxyTeamEvent({resourceKey:key,proxyId:p.id,nodeId,teamId:p.team_id,event:"exit_conflict",reason:"observed IP belongs to another organization"});
-      run("UPDATE node_proxies SET status='dead',last_error='exit identity conflict' WHERE id=?",proxyId);return false;
+      run("UPDATE node_proxies SET status='dead',last_error='exit identity conflict' WHERE id=?",proxyId);freeze(`exit identity conflict (observed ${key.slice(3)} belongs to another organization)`);return false;
     }
     if(p.team_id)claimProxyResource(key,p.team_id);
     run("UPDATE node_proxies SET exit_ip=?,resource_key=? WHERE id=?",key.slice(3),key,proxyId);
     if(proxyOccupancy(key).total>3){
       quarantineResource(`proxy:${p.id}`,"exit capacity exceeded after observation");
-      run("UPDATE node_proxies SET status='dead',last_error='exit capacity exceeded' WHERE id=?",proxyId);return false;
+      run("UPDATE node_proxies SET status='dead',last_error='exit capacity exceeded' WHERE id=?",proxyId);freeze("exit capacity exceeded after observation");return false;
     }
-    if(p.resource_key!==key)recordProxyTeamEvent({resourceKey:key,proxyId:p.id,nodeId,teamId:p.team_id,event:"exit_observed",reason:p.resource_key?"provider exit changed":"first measured exit"});
+    if(p.resource_key!==key){
+      recordProxyTeamEvent({resourceKey:key,proxyId:p.id,nodeId,teamId:p.team_id,event:"exit_observed",reason:p.resource_key?"provider exit changed":"first measured exit"});
+      // Operator rule 2026-11-01: a provider that moved the exit changed the account's IP. The new exit is recorded
+      // (so a release can accept it), but the accounts stop until an operator says so.
+      if(p.resource_key)freeze(`exit IP changed ${p.exit_ip??"?"} → ${key.slice(3)} (release to accept the new exit, or rebind)`);
+    }
     return true;
   });
 }

@@ -1,6 +1,6 @@
 import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { WebSocketServer, type WebSocket } from "ws";
-import { all, boundProxyDown, decryptString, ensureDeviceId, isConversationGenerationActive, nowIso, one, run, sha256Hex, type AccountRow } from "@1dayapi/core";
+import { all, boundProxyDown, decryptString, ensureDeviceId, isConversationGenerationActive, nowIso, one, run, sha256Hex, type AccountRow, freezeAccountsOnProxy, freezeAccountForProxy } from "@1dayapi/core";
 import { nodeProxyConfig, recordNodeProxyExit } from "./proxies.js";
 import { isTrustedExecutionNode } from "./trust.js";
 
@@ -551,6 +551,12 @@ function recordProxyHealth(nodeId: string, msg: Record<string, unknown>): void {
         nodeId,
         id.slice(0, 40),
       );
+      if (live === false) {
+        // Operator rule 2026-11-01: a dead proxy freezes its accounts (status proxy_down) until an operator
+        // releases or rebinds them — the account never silently comes back or moves to another exit.
+        const frozen = freezeAccountsOnProxy(id.slice(0, 40), `node ${nodeId} reported the bound proxy dead${typeof err === "string" && err ? `: ${err.slice(0, 200)}` : ""}`);
+        if (frozen.length) console.warn(`[registry] proxy ${id.slice(0, 12)} on ${nodeId} dead → ${frozen.length} account(s) frozen (proxy_down): ${frozen.join(",")}`);
+      }
       const isolated = one<{ exit_ip: string | null }>("SELECT exit_ip FROM node_proxies WHERE node_id=? AND id=? AND isolation_version=1", nodeId, id);
       if (isolated && live === true) {
         const ip = (p as Record<string, unknown>).exitIp;
@@ -876,7 +882,13 @@ export async function openTunnel(
   );
 
   return response.then((res) => {
-    if (!res.accepted) { closeTunnel(sessionId, res.reasonCode ?? "open_rejected"); return null; }
+    if (!res.accepted) {
+      closeTunnel(sessionId, res.reasonCode ?? "open_rejected");
+      // The node refused the account's pinned proxy (missing / dead in its pool): same rule as a dead heartbeat.
+      if (res.reasonCode === "no_proxy_available" && freezeAccountForProxy(acc.id, { proxyId: proxyId ?? acc.bound_proxy_id ?? null, reason: `node ${conn.nodeId} refused the session: no_proxy_available (pinned proxy ${proxyId ?? acc.bound_proxy_id ?? "?"} missing or dead)` }))
+        console.warn(`[registry] account ${acc.id} frozen (proxy_down): node ${conn.nodeId} answered no_proxy_available`);
+      return null;
+    }
     if (isolation && !activeIsolation(isolation)) {
       send(conn.socket, { type: "isolation.reset", isolation, resetId: randomUUID() });
       closeTunnel(sessionId, "isolation_retired");

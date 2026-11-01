@@ -49,7 +49,7 @@ const HEALTHCHECK_CONCURRENCY = 4;
  * bound accounts taken out of scheduling, only after this many in a row
  * (default 3 = 15 min of failed 5-min probes). Env PROXY_DEAD_AFTER.
  */
-export const DEFAULT_PROXY_DEAD_AFTER = Math.max(1, Number(process.env.PROXY_DEAD_AFTER ?? 3) || 3);
+export const DEFAULT_PROXY_DEAD_AFTER = Math.max(1, Number(process.env.PROXY_DEAD_AFTER ?? 2) || 2); // 3 → 2 on 2026-11-01 (operator rule: a failing proxy freezes its accounts quickly)
 
 /**
  * Bun.fetch accepts a `proxy` init option (http/https/socks5/socks5h URLs)
@@ -277,6 +277,13 @@ export class ProxyPool {
     if (assigned && this.health.has(assigned) && this.health.get(assigned)?.live !== false && !this.store.data.proxyTeams?.[proxyId(assigned)]) {
       return assigned;
     }
+    // Operator rule 2026-11-01: an account that already has a sticky proxy keeps it. Dead → no_proxy_available
+    // (the platform freezes the account); the assignment is only ever changed by an operator (pool replace /
+    // rebind), never by this picker. Only a never-assigned account gets a first pick below.
+    if (assigned && this.health.has(assigned)) {
+      this.log(`account ${accountId}: sticky proxy ${proxyId(assigned)} is dead; refusing (no rehash, operator must act)`);
+      return null;
+    }
     const candidates = [...this.health.keys()].filter((u) => this.health.get(u)?.live !== false && !this.store.data.proxyTeams?.[proxyId(u)]);
     if (candidates.length === 0) return null;
     candidates.sort((a, b) => proxyId(a).localeCompare(proxyId(b)));
@@ -323,22 +330,16 @@ export class ProxyPool {
     h.lastError = null;
   }
 
-  /** Drop sticky assignments of a now-dead proxy (accounts rehash on next pick). */
+  /**
+   * A proxy was judged dead. Its sticky assignments are KEPT (2026-11-01): the accounts on it stop
+   * (pickForAccount → null → no_proxy_available) instead of rehashing onto another exit; recovery returns
+   * them to the same proxy. Only the health flag changes here.
+   */
   private withdraw(url: string): void {
     const h = this.health.get(url);
     if (!h) return;
-    const assignments = this.store.data.proxyAssignments;
-    if (assignments) {
-      let changed = false;
-      for (const [accountId, assigned] of Object.entries(assignments)) {
-        if (assigned === url) {
-          delete assignments[accountId];
-          changed = true;
-        }
-      }
-      if (changed) this.store.save();
-    }
-    this.log(`proxy ${proxyId(url)} marked dead after ${h.failStreak} consecutive failures: ${h.lastError}`);
+    const stuck = Object.entries(this.store.data.proxyAssignments ?? {}).filter(([, u]) => u === url).map(([a]) => a);
+    this.log(`proxy ${proxyId(url)} marked dead after ${h.failStreak} consecutive failures: ${h.lastError}${stuck.length ? `; ${stuck.length} sticky account(s) kept on it and now refused: ${stuck.join(",")}` : ""}`);
   }
 
   /** Heartbeat payload: redacted status (null = not probed yet) + accountId -> proxyId assignments. */

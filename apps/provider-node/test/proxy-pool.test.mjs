@@ -27,15 +27,33 @@ assert.equal(pool.getPinned(id1), P1, "suspect pinned proxy still resolves (1/3)
 pool.markAlive(P1);
 pool.markDead(P1, "test: blip");
 assert.equal(pool.getPinned(id1), P1, "a success in between cleared the streak (1/3 again)");
-// deadAfter consecutive strikes withdraw it; a known-dead pin is rejected and does NOT fall back to sticky.
+// deadAfter (default 2 since 2026-11-01) consecutive strikes withdraw it; a known-dead pin is rejected and does NOT fall back to sticky.
 pool.markDead(P1, "test: dead");
 pool.markDead(P1, "test: dead");
-assert.equal(pool.getPinned(id1), null, "dead pinned proxy -> null after 3 consecutive failures");
+assert.equal(pool.getPinned(id1), null, "dead pinned proxy -> null after deadAfter consecutive failures");
 assert.equal(pool.getPinned(proxyId(P3)), P3, "other pool members unaffected");
 
 // Sticky assignment still works alongside pinning.
 assert.equal(pool.pickForAccount("acct-1"), pool.pickForAccount("acct-1"), "sticky is stable");
-assert.notEqual(pool.pickForAccount("acct-1"), P1, "sticky never rehashes onto a dead proxy");
+assert.notEqual(pool.pickForAccount("acct-1"), P1, "a first pick never lands on a dead proxy");
+
+// Operator rule 2026-11-01: an account whose sticky proxy dies is refused (no_proxy_available), never rehashed
+// onto another exit; when the proxy comes back the same assignment serves again.
+{
+  const store = fakeStore();
+  const sticky = new ProxyPool(store, { autoCheck: false });
+  sticky.replaceAll([P1, P2]);
+  const first = sticky.pickForAccount("acct-sticky");
+  assert.ok(first === P1 || first === P2);
+  sticky.markDead(first, "test: dead");
+  sticky.markDead(first, "test: dead");
+  assert.equal(sticky.pickForAccount("acct-sticky"), null, "dead sticky proxy → refused, not rehashed");
+  assert.equal(store.data.proxyAssignments["acct-sticky"], first, "assignment kept for the operator / recovery");
+  assert.notEqual(sticky.pickForAccount("acct-fresh"), null, "a never-assigned account still gets a first pick");
+  assert.notEqual(sticky.pickForAccount("acct-fresh"), first);
+  sticky.markAlive(first);
+  assert.equal(sticky.pickForAccount("acct-sticky"), first, "recovery returns the same proxy");
+}
 
 // Pool replacement drops the pinned id.
 pool.replaceAll([P3]);

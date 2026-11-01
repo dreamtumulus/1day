@@ -356,7 +356,7 @@ export interface NodeMonitorRow {
     } | null;
     proxies: { total: number; live: number; dead: number; unknown: number };
   } | null;
-  accounts: { total: number; active: number; onLiveProxy: number; cooling: number };
+  accounts: { total: number; active: number; onLiveProxy: number; cooling: number; proxyDown?: number; proxyDownOldestSince?: string | null };
   proxies: { total: number; live: number };
   traffic: { req1h: number; err1h: number; avgMs1h: number | null; req24h: number; err24h: number; cost24h: number };
 }
@@ -430,7 +430,8 @@ export interface ProviderAccount {
   nodeId: string | null;
   reviewStatus: "pending" | "approved" | "rejected";
   reviewNote: string | null;
-  status: "active" | "disabled" | "error";
+  /** proxy_down (2026-11-01): frozen because the bound proxy failed; only an operator release / rebind re-enables it. */
+  status: "active" | "disabled" | "error" | "proxy_down";
   errorMessage: string | null;
   payoutRate: number;
   accountEmail: string | null;
@@ -470,6 +471,10 @@ export interface AdminAccount extends ProviderAccount {
   lastInferenceAt?: string | null;
   rateLimitedUntil: string | null;
   overloadUntil: string | null;
+  /** status proxy_down: frozen since / why / which proxy (null otherwise). */
+  proxyDownSince?: string | null;
+  proxyDownReason?: string | null;
+  proxyDownProxyId?: string | null;
   /** Admin view: scheduler verdict + first failing gate (apps/console/src/pool-state.ts). */
   poolState?: "online" | "cooling" | "error" | "offline" | "unmanaged" | "unavailable" | "busy";
   poolReason?: string | null;
@@ -517,7 +522,7 @@ export interface AccountUsage {
 
 export type AccountKind = "api" | "subscription";
 export interface AdminAccountList extends Paged<AdminAccount> {
-  counts: { api: number; subscription: number; pending: number };
+  counts: { api: number; subscription: number; pending: number; count?: number; oldestSince?: string | null };
 }
 export interface AdminAccountQuery {
   kind?: AccountKind;

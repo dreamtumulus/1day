@@ -162,3 +162,7 @@ Q6（上游错误呈现）按建议落地：4xx 透传、限流 429、其余 502
 **下一阶段（2026-10-17 起）**：`worker-sessions.md` 阶段 2 原生工具 → 阶段 3 thinking → 阶段 4 document（§7 开工清单）；
 并行小项：心跳 `ccWorker.pool` 透传到 console `deploy_meta` 与节点页、探活失败 strike 60 s 最小间隔、持久进程第 2 轮多出的
 约 3.8k 上下文抓包核实、Cloudflare 1010 规则对裸 `Python-urllib` UA 的 403 是否放开、X-4 Verify 页、X-8 加固。
+
+| X-31（2026-11-01） | **铁律：代理不通即冻结** | 用户定：订阅账号代理批不通→暂停任何请求，不能私下换 IP 或直连，账号直接不可用，除非人工解除或人工更换 IP，并有明显、带时间的提醒。实现：`accounts.status='proxy_down'`（迁移 33），三处触发（心跳 dead / `no_proxy_available` / 出口变化冲突），节点 `PROXY_DEAD_AFTER` 3→2、sticky 不再改派；解除只有 `proxy-release`（代理须已 live）与 `proxy-rebind`；控制台徽标/横幅、`1day-health` 行、`proxy-down-alert.py` 每小时提醒。废止 10-18 的"恢复后自动回到调度" | ✅ 代码落地，待发布（含节点 bundle） |
+| X-32（2026-11-01） | 第二份审计（真实性 × API 保真）跟进 | gate 随 `direct_cc_entrypoint_normalize` 放行自定义入口；reset 对话边界后历史完整时仍可直连；直连删客户 `# userEmail`；默认 historyPolicy=passthrough；平台 429/503 带 Retry-After；`request-id` / `x-1day-mode` / `x-1day-ignored-params`；count_tokens 口径。决定留待：B1 `/v1/responses`、B8 测活、B9 safeguards 400、A3 跨版本 pin、A5 号池结构、A6 worker cwd 合成（下一个节点 bundle） | ✅ 已发布 `20261101T094444Z` |
+

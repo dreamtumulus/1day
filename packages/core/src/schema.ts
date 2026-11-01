@@ -97,6 +97,10 @@ CREATE TABLE accounts (
   last_profile_at TEXT,
   last_refresh_at TEXT,
   last_inference_at TEXT,
+  -- migration 33 (operator rule 2026-11-01): status 'proxy_down' bookkeeping — frozen since / why / which proxy
+  proxy_down_since TEXT,
+  proxy_down_reason TEXT,
+  proxy_down_proxy_id TEXT,
   -- CCR (docs/ccr-supply.md §5.2/§7): executor + subscription window state
   executor TEXT NOT NULL DEFAULT 'direct',
   window_used REAL,

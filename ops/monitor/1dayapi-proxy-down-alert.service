@@ -1,0 +1,8 @@
+[Unit]
+Description=1dayAPI frozen-account (proxy_down) reminder
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/root/monitor
+ExecStart=/usr/bin/python3 /root/monitor/proxy-down-alert.py

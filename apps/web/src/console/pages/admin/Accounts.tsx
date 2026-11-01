@@ -55,7 +55,7 @@ import {
   useNow,
   useRelTime,
   useToast,
-  type Column,
+  type Column, fmtDuration,
 } from "../../ui";
 import { AccountFormModal } from "./_p2AccountForm";
 
@@ -447,6 +447,7 @@ export function AdminAccounts() {
 
   function healthDot(a: AdminAccount) {
     if (a.status === "disabled") return <Dot color="var(--outline)" title={t("status.disabled")} />;
+    if (a.status === "proxy_down") return <Dot color="var(--warning)" title={proxyDownTitle(a)} />;
     if (a.status === "error") return <Dot color="var(--error)" title={a.errorMessage ?? t("status.error")} />;
     if (a.reviewStatus !== "approved") return <Dot color="var(--warning)" title={t(`status.${a.reviewStatus}`)} />;
     if (a.coolingUntil || isFuture(a.windowExhaustedUntil) || isFuture(a.rateLimitedUntil))
@@ -508,15 +509,55 @@ export function AdminAccounts() {
     );
   }
 
+  function proxyDownTitle(a: AdminAccount): string {
+    const since = a.proxyDownSince ?? "";
+    return t("admin.accounts.proxyDownTitle", { since: since.replace("T", " ").replace("Z", "Z"), dur: since ? fmtDuration(now - Date.parse(since)) : "?", proxy: a.proxyDownProxyId ?? a.boundProxyId ?? "?", reason: a.proxyDownReason ?? "" });
+  }
+
+  async function releaseFreeze(a: AdminAccount) {
+    setToggling(a.id);
+    try {
+      await api.post(`/api/admin/accounts/${a.id}/proxy-release`, {});
+      toast.success(t("admin.accounts.proxyReleasedToast"));
+      list.reload();
+    } catch (e) {
+      toast.error(e);
+    } finally {
+      setToggling(null);
+    }
+  }
+
+  async function rebindProxy(a: AdminAccount) {
+    setToggling(a.id);
+    try {
+      const r = await api.post<{ data: { newProxyId: string; exitIp: string | null } }>(`/api/admin/accounts/${a.id}/proxy-rebind`, {});
+      toast.success(t("admin.accounts.proxyRebindToast", { proxy: r.data.newProxyId, ip: r.data.exitIp ?? "?" }));
+      list.reload();
+    } catch (e) {
+      toast.error(e);
+    } finally {
+      setToggling(null);
+    }
+  }
+
   function statusCell(a: AdminAccount) {
-    // Cooldowns have their own column now; this note only carries error / review state.
-    const note = a.status === "error" ? a.errorMessage : a.reviewStatus !== "approved" ? t(`status.${a.reviewStatus}`) : null;
+    // Cooldowns have their own column now; this note only carries error / review / proxy-freeze state.
+    const frozen = a.status === "proxy_down";
+    const note = frozen
+      ? t("admin.accounts.proxyDownNote", { since: (a.proxyDownSince ?? "").slice(5, 16).replace("T", " "), dur: a.proxyDownSince ? fmtDuration(now - Date.parse(a.proxyDownSince)) : "?" })
+      : a.status === "error" ? a.errorMessage : a.reviewStatus !== "approved" ? t(`status.${a.reviewStatus}`) : null;
     return (
       <div className="flex flex-col items-start gap-1.5">
         <div className="flex items-center gap-2.5">
-          <Toggle checked={a.status === "active"} disabled={toggling === a.id} onChange={(on) => void setEnabled(a, on)} />
+          {/* A frozen account is not re-enabled by the switch (the server refuses); release / rebind live in the actions menu. */}
+          <Toggle checked={a.status === "active"} disabled={toggling === a.id || frozen} onChange={(on) => void setEnabled(a, on)} />
           {healthDot(a)}
         </div>
+        {frozen && (
+          <Badge tone="warning" title={proxyDownTitle(a)}>
+            {t("status.proxy_down")}
+          </Badge>
+        )}
         {note && (
           <span
             className={`max-w-[118px] truncate text-[11px] ${a.status === "error" ? "font-medium text-error" : "text-warning"}`}
@@ -700,7 +741,12 @@ export function AdminAccounts() {
         },
       });
     }
-    items.push({ label: a.status === "active" ? t("common.disable") : t("common.enable"), onClick: () => void setEnabled(a, a.status !== "active") });
+    if (a.status === "proxy_down") {
+      // Operator rule 2026-11-01: the only two ways out of a proxy freeze.
+      items.push({ label: t("admin.accounts.proxyRelease"), primary: true, disabled: toggling === a.id, onClick: () => void releaseFreeze(a) });
+      items.push({ label: t("admin.accounts.proxyRebind"), primary: true, disabled: toggling === a.id, onClick: () => void rebindProxy(a) });
+      items.push({ label: t("common.disable"), onClick: () => void setEnabled(a, false) });
+    } else items.push({ label: a.status === "active" ? t("common.disable") : t("common.enable"), onClick: () => void setEnabled(a, a.status !== "active") });
     if (!isOps) items.push({ label: t("common.delete"), danger: true, onClick: () => setDeleting(a) });
     return (
       <div className="flex justify-end">
@@ -769,6 +815,26 @@ export function AdminAccounts() {
       />
       <AccountTabs />
 
+      {(counts?.count ?? 0) > 0 && (
+        <div
+          className="mb-4 flex flex-wrap items-center gap-3 rounded-lg px-4 py-3"
+          style={{ background: "var(--warning-container)", border: "1px solid color-mix(in oklab, var(--warning) 30%, transparent)" }}
+        >
+          <div className="min-w-0 flex-1 text-sm font-semibold text-on-surface">
+            {t("admin.accounts.proxyDownBanner", {
+              n: counts!.count!,
+              since: (counts!.oldestSince ?? "").slice(5, 16).replace("T", " "),
+              dur: counts!.oldestSince ? fmtDuration(now - Date.parse(counts!.oldestSince)) : "?",
+            })}
+          </div>
+          {status !== "proxy_down" && (
+            <Button size="sm" variant="primary" onClick={() => setParam({ status: "proxy_down", kind })}>
+              {t("admin.accounts.proxyDownBannerFilter")}
+            </Button>
+          )}
+        </div>
+      )}
+
       <div className="space-y-4">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <Segmented<AccountKind>
@@ -807,7 +873,7 @@ export function AdminAccounts() {
               <Select
                 value={status}
                 onChange={(e) => setParam({ status: e.target.value })}
-                options={[{ value: "", label: t("common.all") }, ...["active", "disabled", "error"].map((s) => ({ value: s, label: t(`status.${s}`) }))]}
+                options={[{ value: "", label: t("common.all") }, ...["active", "disabled", "error", "proxy_down"].map((s) => ({ value: s, label: t(`status.${s}`) }))]}
               />
             </Field>
             <Field label={t("admin.accounts.filterReview")} className="w-[calc(50%-6px)] sm:w-32">

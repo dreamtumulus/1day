@@ -247,6 +247,15 @@ export function PageTabs({ tabs }: { tabs: Array<{ to: string; label: ReactNode;
 }
 
 /** Re-renders every `everyMs` so countdowns stay fresh; returns Date.now(). */
+/** Compact elapsed-time label: 12m · 3h 5m · 2d 4h. */
+export function fmtDuration(ms: number): string {
+  const m = Math.max(0, Math.round(ms / 60_000));
+  if (m < 60) return `${m}m`;
+  const h = Math.floor(m / 60);
+  if (h < 48) return m % 60 ? `${h}h ${m % 60}m` : `${h}h`;
+  return `${Math.floor(h / 24)}d ${h % 24}h`;
+}
+
 export function useNow(everyMs = 30_000): number {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {

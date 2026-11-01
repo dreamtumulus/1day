@@ -6,3 +6,6 @@
   单元文件 `1dayapi-extprobe.{service,timer}`。主服务器整机挂掉时只有它能发现。
 - 通道配置 `alert.conf`（见 `alert.conf.example`）：Telegram 或通用 webhook。`python3 alert.py test` 发一条测试消息。
 - 状态文件 `alert-state-<source>.json`；阈值 `ALERT_THRESHOLD`（默认 2）。
+- `proxy-down-alert.py`（主服务器 `/root/monitor/`，单元 `1dayapi-proxy-down-alert.{service,timer}`，每 10 分钟）：只读主库，
+  列出 `status='proxy_down'`（代理失联被冻结，铁律 2026-11-01）的账号；新增即告警，之后**每小时重复提醒**（`REMIND_MINUTES`）直到清零，清零时通知一次。
+  安装：`cp proxy-down-alert.py /root/monitor/ && cp 1dayapi-proxy-down-alert.* /etc/systemd/system/ && systemctl enable --now 1dayapi-proxy-down-alert.timer`。

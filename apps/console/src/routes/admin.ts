@@ -42,6 +42,10 @@ import {
   type Role,
   type SettingKey,
   hasSubscriptionWindow,
+  releaseProxyFreeze,
+  proxyDownSummary,
+  ProxyFreezeError,
+  recordProxyTeamEvent,
 } from "@1dayapi/core";
 import { importOAuthCredential } from "../onboard/jobs.js";
 import { parseAccountFields } from "../account-input.js";
@@ -62,7 +66,7 @@ import {
   strArray,
 } from "../http.js";
 import { deployNodeLocal, deployNodeViaSsh } from "../node/deploy.js";
-import { ProxyInputError, addNodeProxies, removeNodeProxies, listNodeProxies, listNodeProxyGroups, listProxiesForPicker, nodeExists, nodeProxyUrls, normalizeProxyGroup, releaseAccountProxies, releaseNodeResources, replaceNodeProxies, setNodeProxyGroup, unquarantineProxy, validateProxies, type AddProxiesResult, type ProxyInput, type ReplaceProxiesResult } from "../node/proxies.js";
+import { ProxyInputError, addNodeProxies, rebindAccountProxy, removeNodeProxies, listNodeProxies, listNodeProxyGroups, listProxiesForPicker, nodeExists, nodeProxyUrls, normalizeProxyGroup, releaseAccountProxies, releaseNodeResources, replaceNodeProxies, setNodeProxyGroup, unquarantineProxy, validateProxies, type AddProxiesResult, type ProxyInput, type ReplaceProxiesResult } from "../node/proxies.js";
 import { requestViaNode } from "../node/egress-request.js";
 import { disconnectNode, pushProxies } from "../node/registry.js";
 import { createUser, dropSessions, requireAdmin, requireOps, resetLoginKey } from "../session.js";
@@ -342,6 +346,8 @@ export function registerAdminRoutes(app: FastifyInstance): void {
               SUM(CASE WHEN status='active' AND review_status='approved' THEN 1 ELSE 0 END) AS active,
               SUM(CASE WHEN review_status='pending' THEN 1 ELSE 0 END) AS pending,
               SUM(CASE WHEN status='error' THEN 1 ELSE 0 END) AS error,
+              SUM(CASE WHEN status='proxy_down' THEN 1 ELSE 0 END) AS proxyDown,
+              MIN(CASE WHEN status='proxy_down' THEN proxy_down_since END) AS proxyDownOldestSince,
               SUM(CASE WHEN rate_limited_until > ? OR overload_until > ? OR temp_unschedulable_until > ? OR window_exhausted_until > ? THEN 1 ELSE 0 END) AS cooling
        FROM accounts`,
       now,
@@ -389,6 +395,9 @@ export function registerAdminRoutes(app: FastifyInstance): void {
           pending: acc?.pending ?? 0,
           error: acc?.error ?? 0,
           cooling: acc?.cooling ?? 0,
+          /** Operator rule 2026-11-01: accounts frozen because their proxy failed, and since when the oldest. */
+          proxyDown: acc?.proxyDown ?? 0,
+          proxyDownOldestSince: (acc as Record<string, unknown> | undefined)?.proxyDownOldestSince ?? null,
         },
         nodes: { total: nodes?.total ?? 0, online: nodes?.online ?? 0 },
         balances: { consumerTotalUsd: balances?.c ?? 0, providerUnsettledUsd: balances?.p ?? 0, creditLimitTotalUsd: balances?.cl ?? 0, creditOutstandingUsd: balances?.cu ?? 0 },
@@ -795,7 +804,7 @@ export function registerAdminRoutes(app: FastifyInstance): void {
           total,
           p,
         ),
-        counts: { api: counts?.api ?? 0, subscription: counts?.subscription ?? 0, pending: counts?.pending ?? 0 },
+        counts: { api: counts?.api ?? 0, subscription: counts?.subscription ?? 0, pending: counts?.pending ?? 0, ...proxyDownSummary() },
       },
     };
   });
@@ -938,6 +947,9 @@ export function registerAdminRoutes(app: FastifyInstance): void {
     const payout = num(b, "payoutRate", { min: 0, max: 1 });
     if (payout !== undefined) set("payout_rate", payout);
     const status = oneOf(b, "status", ["active", "disabled"] as const);
+    // Operator rule 2026-11-01: a proxy-frozen account is not re-enabled by the generic status switch; the
+    // dedicated release (checks the proxy is live again) or rebind routes are the only ways back.
+    if (status === "active" && a.status === "proxy_down") bad("proxy_down_use_release", "This account is frozen because its proxy failed; use proxy-release (after the proxy is live again) or proxy-rebind instead of enabling it");
     tx(() => {
       if(nextRoute==="node" && nextNodeId && (a.route!=="node" || a.node_id!==nextNodeId))assertNodeCapacity(nextNodeId,id);
       run(`UPDATE accounts SET ${sets.join(", ")} WHERE id = ?`, ...params, id);
@@ -947,6 +959,45 @@ export function registerAdminRoutes(app: FastifyInstance): void {
       if (groupIds) setAccountGroups(id, groupIds, priority ?? a.priority);
     });
     return { data: accountOut(id,req.user!.role==='admin') };
+  });
+
+  // ---------- proxy freeze (operator rule 2026-11-01): the only two ways out of status 'proxy_down' ----------
+  app.post("/api/admin/accounts/:id/proxy-release", pre, async (req) => {
+    const { id } = req.params as { id: string };
+    loadAccount(id);
+    const b = body(req);
+    try {
+      releaseProxyFreeze(id, req.user!.id, typeof b.note === "string" ? b.note : null);
+    } catch (err) {
+      if (err instanceof ProxyFreezeError) bad(err.code, err.message);
+      throw err;
+    }
+    return { data: accountOut(id, true) };
+  });
+  app.post("/api/admin/accounts/:id/proxy-rebind", pre, async (req) => {
+    const { id } = req.params as { id: string };
+    const a = loadAccount(id);
+    const b = body(req);
+    const proxyId = typeof b.proxyId === "string" && b.proxyId ? b.proxyId : undefined;
+    let moved: { oldProxyId: string | null; newProxyId: string; exitIp: string | null };
+    try {
+      moved = tx(() => {
+        const r = rebindAccountProxy(id, req.user!.id, { proxyId });
+        if (a.status === "proxy_down") {
+          run(`UPDATE accounts SET status = 'active', error_message = NULL, proxy_down_since = NULL, proxy_down_reason = NULL, proxy_down_proxy_id = NULL,
+                 temp_unschedulable_until = NULL, updated_at = ? WHERE id = ? AND status = 'proxy_down'`, nowIso(), id);
+          recordProxyTeamEvent({ resourceKey: `proxy:${r.newProxyId}`, proxyId: r.newProxyId, nodeId: a.node_id, teamId: a.team_id, accountId: id, actorId: req.user!.id,
+            event: "account_proxy_released", reason: `operator rebound the frozen account from ${r.oldProxyId ?? "-"} to ${r.newProxyId} (frozen since ${a.proxy_down_since ?? "?"}: ${a.proxy_down_reason ?? "?"})` });
+        }
+        return r;
+      });
+    } catch (err) {
+      if (err instanceof ProxyInputError) bad("proxy_rebind_failed", err.message);
+      throw err;
+    }
+    const nodeId = a.node_id ?? one<{ node_id: string }>("SELECT node_id FROM node_proxies WHERE id = ?", moved.newProxyId)?.node_id;
+    if (nodeId) pushProxies(nodeId, nodeProxyUrls(nodeId));
+    return { data: { ...moved, account: accountOut(id, true) } };
   });
 
   app.post("/api/admin/accounts/:id/review", pre, async (req) => {

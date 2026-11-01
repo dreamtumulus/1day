@@ -38,6 +38,7 @@ export type PoolStateName = "online" | "cooling" | "error" | "offline" | "unmana
  */
 export function poolVerdict(r: PoolRow, now: string, nodeOnline: Map<string, boolean>): { state: PoolStateName; reason: string | null } {
   if(!r.team_id)return {state:"unmanaged",reason:"legacy_no_team"};
+  if(r.status==="proxy_down")return {state:"unavailable",reason:"proxy_down"};
   if(r.status!=="active")return {state:"error",reason:`status_${r.status}`};
   if(!r.node_id)return {state:"offline",reason:"no_node"};
   if(!nodeOnline.get(r.node_id))return {state:"offline",reason:"node_offline"};

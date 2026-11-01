@@ -4,7 +4,7 @@ import { ArrowRightIcon, BellIcon, ChartIcon, PlugIcon, ShieldIcon, TerminalIcon
 import { api, type DailyPoint, type Totals } from "../../api";
 import { BarChart, ShareBars } from "../../charts";
 import { useCT } from "../../i18n";
-import { Async, Card, PageHeader, Segmented, StatCard, fmtNum, fmtPct, fmtUsd, useAsync } from "../../ui";
+import { Async, Card, PageHeader, Segmented, StatCard, fmtDuration, fmtNum, fmtPct, fmtUsd, useAsync } from "../../ui";
 
 interface Dashboard {
   users: { consumer: number; provider: number; admin: number; ops?: number; disabled: number };
@@ -13,7 +13,7 @@ interface Dashboard {
   daily: DailyPoint[];
   topModels: Array<{ model: string; requests: number; costUsd: number }>;
   topUsers: Array<{ userId: string; name: string | null; requests: number; costUsd: number }>;
-  accounts: { total: number; active: number; pending: number; error: number; cooling: number };
+  accounts: { total: number; active: number; pending: number; error: number; cooling: number; proxyDown?: number; proxyDownOldestSince?: string | null };
   nodes: { total: number; online: number };
   balances: { consumerTotalUsd: number; providerUnsettledUsd: number; creditLimitTotalUsd: number; creditOutstandingUsd: number };
 }
@@ -53,6 +53,27 @@ export function AdminDashboard() {
                   </div>
                   <Link to="/console/admin/accounts?reviewStatus=pending" className="wk-btn wk-btn-sm wk-btn-primary">
                     {t("admin.dashboard.review")}
+                    <ArrowRightIcon width={14} height={14} />
+                  </Link>
+                </div>
+              )}
+              {(d.accounts.proxyDown ?? 0) > 0 && (
+                <div
+                  className="flex flex-wrap items-center gap-3 rounded-lg px-4 py-3"
+                  style={{ background: "var(--warning-container)", border: "1px solid color-mix(in oklab, var(--warning) 45%, transparent)" }}
+                >
+                  <ShieldIcon className="h-5 w-5 shrink-0 text-warning" />
+                  <div className="min-w-0 flex-1">
+                    <div className="text-sm font-semibold text-on-surface">{t("admin.dashboard.proxyDownTitle", { n: d.accounts.proxyDown ?? 0 })}</div>
+                    <div className="text-[13px] text-on-surface-variant">
+                      {t("admin.dashboard.proxyDownDesc", {
+                        since: (d.accounts.proxyDownOldestSince ?? "").slice(5, 16).replace("T", " "),
+                        dur: d.accounts.proxyDownOldestSince ? fmtDuration(Date.now() - Date.parse(d.accounts.proxyDownOldestSince)) : "?",
+                      })}
+                    </div>
+                  </div>
+                  <Link to="/console/admin/accounts?status=proxy_down" className="wk-btn wk-btn-sm wk-btn-primary">
+                    {t("admin.dashboard.proxyDownLink")}
                     <ArrowRightIcon width={14} height={14} />
                   </Link>
                 </div>

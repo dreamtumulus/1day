@@ -318,6 +318,7 @@ const MIGRATIONS: Array<{ version: number; up: (d: DatabaseSync, log: Log) => vo
   { version: 30, up: migration30 },
   { version: 31, up: migration31 },
   { version: 32, up: migration32 },
+  { version: 33, up: migration33 },
 ];
 
 // 上号员令牌（独立鉴权的上号站点 /onboard）：admin 签发，绑定目标节点；
@@ -908,6 +909,18 @@ function migration31(d: DatabaseSync, log: Log): void {
 
 // Structured failure provenance, control-plane/inference readiness and request observability (2026-11-01).
 // Every credential rewrite, including direct SQL in onboarding, advances credential_version.
+// Operator rule 2026-11-01 (铁律 1): a subscription account whose bound proxy stops working is frozen
+// (status 'proxy_down') until an operator releases it or moves it to another proxy — never an automatic
+// return to scheduling, never a silent proxy change, never direct egress. These columns carry since/why/which.
+function migration33(d: DatabaseSync, log: Log): void {
+  addColumns(d, log, "accounts", [
+    ["proxy_down_since", "TEXT"],
+    ["proxy_down_reason", "TEXT"],
+    ["proxy_down_proxy_id", "TEXT"],
+  ]);
+  log("migration 33: accounts.proxy_down_* (proxy failure freezes the account until an operator acts)");
+}
+
 function migration32(d: DatabaseSync, log: Log): void {
   addColumns(d, log, "accounts", [
     ["credential_version", "INTEGER NOT NULL DEFAULT 1"],

@@ -258,6 +258,10 @@ export function adminAccountShape(
     rateLimitedUntil: a.rate_limited_until,
     overloadUntil: a.overload_until,
     tempUnschedulableUntil: a.temp_unschedulable_until,
+    /** status 'proxy_down' (operator rule 2026-11-01): frozen since / why / which proxy; null otherwise. */
+    proxyDownSince: a.proxy_down_since ?? null,
+    proxyDownReason: a.status === "proxy_down" ? (a.proxy_down_reason ?? null) : null,
+    proxyDownProxyId: a.status === "proxy_down" ? (a.proxy_down_proxy_id ?? null) : null,
     windowUsed: a.window_used,
     windowResetAt: a.window_reset_at,
     windowCheckedAt: a.window_checked_at,

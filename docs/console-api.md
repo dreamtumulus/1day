@@ -126,6 +126,9 @@
 | `POST /accounts/:id/review` | `{action: approve\|reject, groupIds?, priority?, payoutRate?, note?}` | 通过时若未挂任何组则挂默认组 |
 | `POST /accounts/:id/test` | `{mode?: profile\|inference, model?}` | Anthropic 订阅号默认 `mode=profile`：只经固定节点/代理做 `GET /api/oauth/profile` + `GET /api/oauth/claude_cli/roles`，**不发推理**；显式 `mode=inference` 才发原来的 8-token 最小请求。返回带 `validation`，成功分别更新 `lastProfileAt` / `lastInferenceAt` 与 `readiness`。`route=node` 均经该账户节点；ChatGPT OAuth 不支持 |
 | `POST /accounts`（补充） | `nodeId` 给出时：`route` 缺省为 `node`；号商节点 → `ownerId` 缺省取该号商（给了且不一致 → 400）；平台节点（管理员部署）→ 账户保持平台自有（给了 `ownerId` → 400）；节点不存在 → 400 `node_not_found`；节点账号数达 `capacity` → 400 `node_at_capacity`。PATCH 改 `nodeId` 同样校验 | — |
+| `POST /accounts/:id/proxy-release` | `{note?}` | 解除代理失联冻结（`status='proxy_down'` → `active`）。要求绑定代理当前 `live` 且对该账号可调度（未隔离、组织认领一致、同节点），否则 400：`not_proxy_down` / `proxy_missing` / `proxy_not_live` / `proxy_not_schedulable`。记 `proxy_team_events.account_proxy_released`。铁律 2026-11-01（onboarding.md §1.2） |
+| `POST /accounts/:id/proxy-rebind` | `{proxyId?}` | 把账号改绑到另一条代理（缺省自动选：同组织、同节点、已实测、容量内），同时解除冻结；返回 `{oldProxyId,newProxyId,exitIp,account}`；失败 400 `proxy_rebind_failed`（message 为原因） |
+| `PATCH /accounts/:id {status:"active"}` 对 `proxy_down` 账号 | — | 400 `proxy_down_use_release`：冻结只能经上面两条路径解除 |
 | `POST /accounts/:id/window` | — | 立即探测该账户的订阅窗口（`GET /api/oauth/usage`，仿 sub2api；`route=node` 的经其节点发出）并回写 `window*` 列，返回探测后的 `AdminAccount`。仅 Anthropic OAuth 账户（否则 400 `invalid_request`）；探测失败（网络 / 非 2xx / 无法解析）400 `window_probe_failed`（message 为失败原因）；401 会把账户置 `error`（令牌失效需重新授权） |
 | `POST /accounts/:id/profile` | — | 经账号节点/绑定代理拉 OAuth profile，回填 `accountEmail` / `subscriptionType`（onboarding.md） |
 | `PATCH /keys/:id` / `PATCH /user/keys/:id`（补充） | `policy`（仅管理员）：`{historyPolicy: reset\|reject\|passthrough, directOnly: bool, probeIntercept: bool}`（gateway.md §2b / §2c；`null` 清回默认；`probeIntercept` 缺省 true） | — |

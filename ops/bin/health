@@ -77,6 +77,12 @@ const cooled = db.prepare(`SELECT name, substr(node_id,6,8) node,
   substr(COALESCE(window_reason, error_message, ''),1,70) why FROM accounts WHERE status='active' AND (rate_limited_until>? OR overload_until>? OR window_exhausted_until>? OR temp_unschedulable_until>?) ORDER BY 3 LIMIT 15`).all(nowIso,nowIso,nowIso,nowIso,nowIso,nowIso,nowIso,nowIso);
 console.log(`-- cooling detail (${cooled.length} shown): ` + (cooled.length ? "" : "none"));
 for (const r of cooled) console.log(`   ${r.name} @${r.node} ${r.state} | ${r.why}`);
+// Operator rule 2026-11-01: accounts frozen because their proxy failed. They never return by themselves —
+// this line must read 0 or somebody has to release / rebind them (docs/onboarding.md §1.2).
+const pd = db.prepare("SELECT name, substr(node_id,6,8) node, proxy_down_since since, substr(proxy_down_reason,1,80) why FROM accounts WHERE status='proxy_down' ORDER BY proxy_down_since").all();
+const oldest = pd.length ? Math.round((Date.now() - Date.parse(pd[0].since)) / 60000) : 0;
+console.log(`-- proxy_down (frozen, needs operator): ${pd.length} account(s)${pd.length ? `, oldest ${Math.floor(oldest/60)}h${oldest%60}m` : ""}`);
+for (const r of pd.slice(0, 10)) console.log(`   ${r.name} @${r.node} since ${r.since} | ${r.why}`);
 const byStatus = db.prepare("SELECT status, COUNT(*) n FROM accounts GROUP BY status").all();
 const byNode = db.prepare("SELECT substr(node_id,6,8) node, COUNT(*) n FROM accounts WHERE status='active' GROUP BY 1").all();
 console.log(`-- accounts by status: ${byStatus.map(r=>`${r.status} ${r.n}`).join(", ")}; active per node: ${byNode.map(r=>`${r.node} ${r.n}`).join(", ")}`);
