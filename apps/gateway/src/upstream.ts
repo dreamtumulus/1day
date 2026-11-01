@@ -18,6 +18,9 @@ import {
   type AccountRow,
   type Credential,
   featureFor,
+  classifyCcRequest,
+  ccTransportFor,
+  type CcShape,
   alignBillingSuffix,
   billingVersionOf,
   billingSuffixOf,
@@ -117,14 +120,33 @@ export interface UpstreamShaping {
   stripUserEmail: boolean;
   /** direct_cc_canonical_fields: oauth beta after claude-code, metadata.user_id in Claude Code key order. */
   canonicalFields: boolean;
+  /**
+   * direct_profile_strict (spec §6.1 / WP1): the request keeps its own Claude Code version — `direct_cc_version_pin`
+   * is ignored, so the body is never a mix of two builds — and proxy.ts re-runs the shape gate on the outgoing
+   * request. Resolved by key group only (the gate runs before an account is chosen; both ends must agree).
+   */
+  strictProfile?: boolean;
 }
 
-export function shapingFor(ctx: { groupId?: string | null; accountId?: string | null } = {}): UpstreamShaping {
+export function shapingFor(ctx: { groupId?: string | null; accountId?: string | null; customEntrypointAdmitted?: boolean } = {}): UpstreamShaping {
   return {
-    normalizeEntrypoint: featureFor("direct_cc_entrypoint_normalize", { groupId: ctx.groupId }),
+    // A customer-made entrypoint admitted by the key's allowlist (spec §6.2) is always rewritten to (external, cli):
+    // the allowlist replaces the migration-period global switch, it does not reopen the pre-2026-10-20 passthrough.
+    normalizeEntrypoint: featureFor("direct_cc_entrypoint_normalize", { groupId: ctx.groupId }) || ctx.customEntrypointAdmitted === true,
     stripUserEmail: featureFor("direct_strip_user_email", ctx),
     canonicalFields: featureFor("direct_cc_canonical_fields", ctx),
+    strictProfile: featureFor("direct_profile_strict", { groupId: ctx.groupId }),
   };
+}
+
+/**
+ * Second gate of the direct path (spec WP1 §2): classify the request as it will leave. `sameProfile` is true only
+ * when the outgoing request is genuine and belongs to the profile the client's request belonged to — normalisation
+ * may change transport / device / machine / customer entrypoint, never the build or the entrypoint family.
+ */
+export function outgoingProfileCheck(ureq: UpstreamRequest, inbound: CcShape): CcShape & { sameProfile: boolean } {
+  const out = classifyCcRequest(ureq.headers, JSON.parse(ureq.body) as Json, { allowCustomEntrypoint: true, requireKnownProfile: true });
+  return { ...out, sameProfile: out.verdict === "genuine" && out.profileId !== null && out.profileId === inbound.profileId };
 }
 
 export function buildUpstreamRequest(
@@ -165,7 +187,9 @@ export function buildUpstreamRequest(
   // One account = one software (docs/gateway.md §3): a Claude Code client's UA entrypoint
   // and version are aligned with the node's Claude Code before the fingerprint layer.
   if (mode === "passthrough-anthropic") {
-    const pin = getSetting("direct_cc_version_pin").trim();
+    // Strict profile mode never pins across versions (spec §6.1: "禁止跨版本 pin"); the suffix is still realigned
+    // below for the one version whose algorithm is known, and left untouched for any other.
+    const pin = shaping.strictProfile ? "" : getSetting("direct_cc_version_pin").trim();
     const n = normalizeCcSoftware(clientHeaders, clientBody, {
       normalizeEntrypoint: shaping.normalizeEntrypoint,
       versionPin: pin || null,
@@ -184,6 +208,18 @@ export function buildUpstreamRequest(
     const sh = machineStainlessHeaders(machine);
     headers["x-stainless-os"] = sh["x-stainless-os"];
     headers["x-stainless-arch"] = sh["x-stainless-arch"];
+  }
+  // Strict profile (spec §6.1): the runtime / SDK versions are properties of the client's build, not of the node.
+  // Without the cross-version pin the node's 2.1.312 constants (NODE_MACHINE_HEADERS) would otherwise mix into a
+  // 2.1.300 request; keep the pair the sampled profile of the client's version says.
+  if (shaping.strictProfile && mode === "passthrough-anthropic") {
+    const ua = typeof clientHeaders["user-agent"] === "string" ? clientHeaders["user-agent"] : "";
+    const v = /^(?:claude-cli|claude-code)\/(\d+\.\d+\.\d+)/.exec(ua)?.[1];
+    const t = v ? ccTransportFor(v) : null;
+    if (t) {
+      headers["x-stainless-runtime-version"] = t.runtimeVersion;
+      headers["x-stainless-package-version"] = t.sdkVersion;
+    }
   }
   let path: string;
   let body: Json;

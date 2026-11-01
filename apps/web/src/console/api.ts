@@ -92,7 +92,21 @@ export interface ApiKey {
   createdAt: string;
   revealable: boolean;
   /** Routing policy (admin-only edit): history handling on upstream switch + direct-only. */
-  policy?: { historyPolicy: "reset" | "reject" | "passthrough"; directOnly: boolean; probeIntercept?: boolean; teamAffinity?: "spread" | "pack" | null };
+  policy?: KeyPolicyFields;
+  /** Two layers (spec §6.2): judge's `auto` + administrator `override`; `policy` is the effective merge. */
+  policyLayers?: { auto: Partial<KeyPolicyFields> & { decidedAt?: string; basis?: string }; override: Partial<KeyPolicyFields> & { by?: string; reason?: string; at?: string } };
+}
+
+export interface KeyPolicyFields {
+  historyPolicy: "reset" | "reject" | "passthrough";
+  directOnly: boolean;
+  probeIntercept?: boolean;
+  teamAffinity?: "spread" | "pack" | null;
+  workerMode?: "legacy" | "canonical";
+  telemetryPolicy?: "native-required" | "passthrough-isolated";
+  parameterPolicy?: "warn" | "strict";
+  responseMode?: "keepalive" | "strict";
+  allowedCustomEntrypoints?: string[];
 }
 
 export interface UsageRow {
@@ -782,6 +796,9 @@ export interface Settings {
   direct_strip_user_email?: string;
   direct_cc_canonical_fields?: string;
   worker_prompt_hide_platform_path?: string;
+  direct_profile_strict?: string;
+  cc_client_response_profile?: string;
+  key_policy_auto?: string;
   history_policy_default?: string;
   history_policy_canary?: string;
   default_group_id: string;

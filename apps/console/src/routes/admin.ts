@@ -718,7 +718,7 @@ export function registerAdminRoutes(app: FastifyInstance): void {
     const { id } = req.params as { id: string };
     const k = one<ApiKeyRow>(`${API_KEY_SELECT} WHERE k.id = ?`, id);
     if (!k) notFound("key");
-    updateKey(id, applyKeyFields(body(req), k.user_id, false));
+    updateKey(id, applyKeyFields(body(req), k.user_id, false, req.user!.id));
     return { data: apiKeyShape(one<ApiKeyRow>(`${API_KEY_SELECT} WHERE k.id = ?`, id)!) };
   });
 
@@ -1793,6 +1793,11 @@ function validateSetting(key: SettingKey, v: string): void {
       if (!Number.isInteger(n) || n < 0 || n > 86400) bad("invalid_request", `${key} must be an integer 0..86400 (seconds)`);
       return;
     }
+    case "direct_cc_entrypoint_normalize": case "direct_strip_user_email": case "direct_cc_canonical_fields": case "worker_prompt_hide_platform_path":
+    case "direct_profile_strict": case "cc_client_response_profile": case "key_policy_auto":
+      // 铁律 2 three-state switches
+      if (v !== "0" && v !== "canary" && v !== "1") bad("invalid_request", `${key} must be 0 | canary | 1`);
+      return;
     case "cc_shape_policy":
       if (!(CC_SHAPE_POLICIES as readonly string[]).includes(v)) bad("invalid_request", `cc_shape_policy must be one of ${CC_SHAPE_POLICIES.join(", ")}`);
       return;

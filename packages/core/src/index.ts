@@ -12,6 +12,7 @@ export * from "./billing.js";
 export * from "./cache-refund.js";
 export * from "./affinity.js";
 export * from "./fingerprint.js";
+export * from "./cc-profile.js";
 export * from "./cc-shape.js";
 export * from "./profile.js";
 export * from "./window.js";

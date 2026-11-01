@@ -17,7 +17,7 @@ test("feature values: 0 / canary / 1, anything else reads as 0", () => {
 });
 
 test("defaults are the old behaviour: every upstream-visible switch is off, history policy reset", () => {
-  for (const k of ["direct_cc_entrypoint_normalize", "direct_strip_user_email", "direct_cc_canonical_fields", "worker_prompt_hide_platform_path"]) {
+  for (const k of ["direct_cc_entrypoint_normalize", "direct_strip_user_email", "direct_cc_canonical_fields", "worker_prompt_hide_platform_path", "direct_profile_strict", "cc_client_response_profile", "key_policy_auto"]) {
     assert.equal(featureFor(k), false, k);
     assert.equal(featureFor(k, { groupId: "g-any", accountId: "a-any" }), false, k);
   }

@@ -14,6 +14,7 @@
  */
 
 import { ccBuildSuffix } from "./fingerprint.js";
+import { CC_KNOWN_VERSIONS, CC_MIN_VERSION_BY_MODEL, ccProfileFor } from "./cc-profile.js";
 
 type Headers = Record<string, string | string[] | undefined>;
 type Json = Record<string, any>;
@@ -28,6 +29,14 @@ export interface CcShape {
   missing: string[];
   /** Soft checks that failed (informational). */
   soft: string[];
+  /** UA entrypoint ("cli", "sdk-cli", "mirasim"…); null when the UA is not Claude Code. */
+  entrypoint: string | null;
+  /** The entrypoint is not one a real Claude Code build sends (customer-made embedding). */
+  customEntrypoint: boolean;
+  /** A custom entrypoint was refused because neither the global switch nor the key's allowlist admits it. */
+  customEntrypointDenied: boolean;
+  /** Known profile this request belongs to (spec §6.1, cc-profile.ts), null = no sampled profile for version × entrypoint. */
+  profileId: string | null;
 }
 
 export const CC_SHAPE_POLICIES = ["observe", "downgrade", "reject"] as const;
@@ -68,18 +77,30 @@ export interface CcShapeOptions {
    * each other — the gate downgraded 8.4k requests/day that the normalizer was written for). Default false.
    */
   allowCustomEntrypoint?: boolean;
+  /**
+   * Per-key allowlist of customer-made entrypoints (spec §6.2 `allowedCustomEntrypoints`, WP1): admits exactly these
+   * UA entrypoints for this key even when the global switch is off. Case-sensitive, matched against the UA value.
+   */
+  allowedCustomEntrypoints?: readonly string[];
+  /**
+   * spec §6.1 `requireKnownProfile` (settings `direct_profile_strict`): a version × entrypoint without a sampled
+   * profile hard-fails `cc_profile_unknown` instead of being forwarded on the client's say-so.
+   */
+  requireKnownProfile?: boolean;
 }
 
 export function classifyCcRequest(headers: Headers, body: Json, opts: CcShapeOptions = {}): CcShape {
   const ua = h(headers, "user-agent");
   const m = UA_RE.exec(ua);
-  if (!m) return { verdict: "not_cc", version: null, missing: [], soft: [] };
+  if (!m) return { verdict: "not_cc", version: null, missing: [], soft: [], entrypoint: null, customEntrypoint: false, customEntrypointDenied: false, profileId: null };
   const version = m[1];
   const missing: string[] = [];
   const soft: string[] = [];
   const uaEntrypoint = UA_ENTRYPOINT_RE.exec(ua)?.[1]?.trim() ?? "";
   const customEntrypoint = uaEntrypoint !== "" && !KNOWN_ENTRYPOINTS.test(uaEntrypoint);
-  if (!uaEntrypoint || (customEntrypoint && !opts.allowCustomEntrypoint)) missing.push("ua_entrypoint");
+  const customAdmitted = customEntrypoint && (opts.allowCustomEntrypoint === true || (opts.allowedCustomEntrypoints ?? []).includes(uaEntrypoint));
+  const customEntrypointDenied = customEntrypoint && !customAdmitted;
+  if (!uaEntrypoint || customEntrypointDenied) missing.push("ua_entrypoint");
   else if (customEntrypoint) soft.push("ua_entrypoint_custom");
 
   // ---- hard: headers every CC build sends (docs/claude-code-compat.md §3) ----
@@ -98,6 +119,8 @@ export function classifyCcRequest(headers: Headers, body: Json, opts: CcShapeOpt
     if (!billingEntrypoint) missing.push("billing_entrypoint");
     if (billing[1] !== version) missing.push("billing_version_mismatch");
     if (version === "2.1.312" && billing[2] !== ccBuildSuffix(body.messages)) missing.push("billing_suffix");
+    // Other sampled builds share the algorithm (2.1.300's captured .f23 reproduces); reported only until ≥12 samples confirm it.
+    else if (version !== "2.1.312" && CC_KNOWN_VERSIONS.includes(version) && billing[2] !== ccBuildSuffix(body.messages, version)) soft.push("billing_suffix");
   }
   if (uaEntrypoint && billingEntrypoint && uaEntrypoint !== billingEntrypoint) missing.push("entrypoint_mismatch");
 
@@ -161,17 +184,21 @@ export function classifyCcRequest(headers: Headers, body: Json, opts: CcShapeOpt
   if (!body?.thinking || typeof body.thinking !== "object") soft.push("thinking");
   if (!body?.context_management) soft.push("context_management");
 
-  return { verdict: missing.length === 0 ? "genuine" : "suspect", version, missing, soft };
+  // ---- profile (spec §6.1): which sampled build × entrypoint this request belongs to ----
+  const prof = ccProfileFor(version, uaEntrypoint, identity);
+  if (!prof) {
+    if (opts.requireKnownProfile) missing.push("cc_profile_unknown");
+    else soft.push("cc_profile_unknown");
+  }
+
+  return { verdict: missing.length === 0 ? "genuine" : "suspect", version, missing, soft, entrypoint: uaEntrypoint || null, customEntrypoint, customEntrypointDenied, profileId: prof?.profileId ?? null };
 }
 
 /**
  * Minimum Claude Code version Anthropic accepts per model (from its own 400s, `claude_code_version_too_old`):
  * opus-5-5 → 2.1.280 (2026-10-19), fable-5-1 → 2.1.251 (2026-10-19). Prefix match covers dated snapshots.
  */
-export const CC_MIN_VERSION_BY_MODEL: Record<string, string> = {
-  "claude-opus-5-5": "2.1.280",
-  "claude-fable-5-1": "2.1.251",
-};
+export { CC_MIN_VERSION_BY_MODEL } from "./cc-profile.js";
 
 export function ccMinVersionForModel(model: string): string | null {
   for (const [prefix, v] of Object.entries(CC_MIN_VERSION_BY_MODEL)) {

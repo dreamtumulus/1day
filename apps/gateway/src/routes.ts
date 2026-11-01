@@ -2,6 +2,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { INTERNAL_HEADER, isModelAllowed, listRegistry, publicPricing, verifyInternalToken } from "@1dayapi/core";
 import { authenticate } from "./auth.js";
 import { sendError } from "./http.js";
+import { countersSnapshot } from "./metrics.js";
 import { inFlightSnapshot, proxy } from "./proxy.js";
 import { estimateRequestTokens } from "./usage.js";
 
@@ -39,7 +40,7 @@ function notImplemented(req: FastifyRequest, reply: FastifyReply): void {
 }
 
 export function registerRoutes(app: FastifyInstance): void {
-  app.get("/health", async () => ({ status: "ok", service: "1dayapi-gateway", time: new Date().toISOString() }));
+  app.get("/health", async () => ({ status: "ok", service: "1dayapi-gateway", time: new Date().toISOString(), counters: countersSnapshot() }));
 
   // Console loopback: live per-account in-flight counts (docs/console-api.md, admin accounts list).
   app.get("/internal/inflight", async (req, reply) => {

@@ -192,6 +192,9 @@ function SettingsForm({ initial, groups, onSaved }: { initial: Settings; groups:
                 ["direct_strip_user_email", "directStripUserEmail"],
                 ["direct_cc_canonical_fields", "directCanonicalFields"],
                 ["worker_prompt_hide_platform_path", "workerHidePlatformPath"],
+                ["direct_profile_strict", "directProfileStrict"],
+                ["cc_client_response_profile", "ccClientResponseProfile"],
+                ["key_policy_auto", "keyPolicyAuto"],
               ] as const
             ).map(([key, label]) => (
               <Field key={key} label={t(`admin.settings.${label}`)} hint={t(`admin.settings.${label}Hint`)}>

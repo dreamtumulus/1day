@@ -64,6 +64,15 @@ export const SETTING_DEFAULTS = {
   // Key 没显式配置 historyPolicy 时的默认值（reset | reject | passthrough）；history_policy_canary 非空时灰度组的 Key 用它。
   history_policy_default: "reset",
   history_policy_canary: "",
+  // ---- canonical 实施（docs/canonical-implementation-spec-2026-11-01.md WP1 / WP5 / WP8），全部三态，默认老行为 ----
+  // 车道 A profile 严格模式：开 → 直连不再跨版本 pin（忽略 direct_cc_version_pin，客户版本必须有已采样 profile，否则按
+  // cc_shape_policy 当 suspect 处理，missing=cc_profile_unknown）；归一化之后再过一遍形态 gate 并断言 profile 不变，
+  // 不 genuine → 400 cc_profile_mismatch（上游不会收到混拼体）。上游可见（版本不再被改写）。
+  direct_profile_strict: "0",
+  // 真 Claude Code 客户的下游响应 profile：开 → 不向 CC UA 的客户下发 x-1day-* 诊断头（request-id / retry-after 保留）。
+  cc_client_response_profile: "0",
+  // Key 策略判断器（spec §6.2）：0 = 只记录建议（auto 层写入但不生效）；canary = 灰度组 Key 生效；1 = 全部生效。
+  key_policy_auto: "0",
   direct_cc_version_pin: "2.1.312",
   // CCR 路径（worker / 云端会话）客户可见缓存 = 上游缓存 − 身份上下文基线（docs/ccr-supply.md §7.1）。
   // 基线 = 真 Claude Code 系统提示词 + 工具集的 token 数，按执行模式实测（worker 2026-10-16：16608–16777）；0 = 上游缓存全额计给客户。

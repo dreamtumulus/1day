@@ -162,6 +162,15 @@ function EditKeyModal({
   const [directOnly, setDirectOnly] = useState(apiKey.policy?.directOnly ?? false);
   const [probeIntercept, setProbeIntercept] = useState(apiKey.policy?.probeIntercept ?? true);
   const [teamAffinity, setTeamAffinity] = useState<"" | "spread" | "pack">(apiKey.policy?.teamAffinity ?? "");
+  // spec §6.2: these are edited as the OVERRIDE layer only; "" = no override (judge's auto / system default applies).
+  const ov = apiKey.policyLayers?.override ?? {};
+  const auto = apiKey.policyLayers?.auto ?? {};
+  const [telemetryPolicy, setTelemetryPolicy] = useState<"" | "native-required" | "passthrough-isolated">(ov.telemetryPolicy ?? "");
+  const [workerMode, setWorkerMode] = useState<"" | "legacy" | "canonical">(ov.workerMode ?? "");
+  const [parameterPolicy, setParameterPolicy] = useState<"" | "warn" | "strict">(ov.parameterPolicy ?? "");
+  const [responseMode, setResponseMode] = useState<"" | "keepalive" | "strict">(ov.responseMode ?? "");
+  const [entrypoints, setEntrypoints] = useState((ov.allowedCustomEntrypoints ?? []).join(", "));
+  const autoSummary = Object.entries(auto).filter(([k]) => !["decidedAt", "basis"].includes(k)).map(([k, v]) => `${k}=${Array.isArray(v) ? v.join("|") : String(v)}`).join("  ");
   const [busy, setBusy] = useState(false);
 
   return (
@@ -185,7 +194,14 @@ function EditKeyModal({
                   quotaUsd: Number(quota) || 0,
                   expiresAt: expires ? new Date(expires).toISOString() : null,
                   status,
-                  policy: { historyPolicy, directOnly, probeIntercept, teamAffinity: teamAffinity || null },
+                  policy: {
+                    historyPolicy, directOnly, probeIntercept, teamAffinity: teamAffinity || null,
+                    ...(telemetryPolicy ? { telemetryPolicy } : {}),
+                    ...(workerMode ? { workerMode } : {}),
+                    ...(parameterPolicy ? { parameterPolicy } : {}),
+                    ...(responseMode ? { responseMode } : {}),
+                    allowedCustomEntrypoints: entrypoints.split(/[\s,]+/).map((e) => e.trim()).filter(Boolean),
+                  },
                 });
                 toast.success(t("admin.keys.updated"));
                 onSaved();
@@ -280,6 +296,56 @@ function EditKeyModal({
                 { value: "pack", label: t("admin.keys.teamAffinityPack") },
               ]}
             />
+          </Field>
+          <Field label={t("admin.keys.telemetryPolicy")} hint={t("admin.keys.telemetryPolicyHint")}>
+            <Select
+              value={telemetryPolicy}
+              onChange={(e) => setTelemetryPolicy(e.target.value as "" | "native-required" | "passthrough-isolated")}
+              options={[
+                { value: "", label: t("admin.keys.policyAuto") },
+                { value: "native-required", label: t("admin.keys.telemetryNative") },
+                { value: "passthrough-isolated", label: t("admin.keys.telemetryIsolated") },
+              ]}
+            />
+          </Field>
+          <Field label={t("admin.keys.workerMode")} hint={t("admin.keys.workerModeHint")}>
+            <Select
+              value={workerMode}
+              onChange={(e) => setWorkerMode(e.target.value as "" | "legacy" | "canonical")}
+              options={[
+                { value: "", label: t("admin.keys.policyAuto") },
+                { value: "legacy", label: t("admin.keys.workerLegacy") },
+                { value: "canonical", label: t("admin.keys.workerCanonical") },
+              ]}
+            />
+          </Field>
+          <Field label={t("admin.keys.parameterPolicy")} hint={t("admin.keys.parameterPolicyHint")}>
+            <Select
+              value={parameterPolicy}
+              onChange={(e) => setParameterPolicy(e.target.value as "" | "warn" | "strict")}
+              options={[
+                { value: "", label: t("admin.keys.policyAuto") },
+                { value: "warn", label: t("admin.keys.parameterWarn") },
+                { value: "strict", label: t("admin.keys.parameterStrict") },
+              ]}
+            />
+          </Field>
+          <Field label={t("admin.keys.responseMode")} hint={t("admin.keys.responseModeHint")}>
+            <Select
+              value={responseMode}
+              onChange={(e) => setResponseMode(e.target.value as "" | "keepalive" | "strict")}
+              options={[
+                { value: "", label: t("admin.keys.policyAuto") },
+                { value: "keepalive", label: t("admin.keys.responseKeepalive") },
+                { value: "strict", label: t("admin.keys.responseStrict") },
+              ]}
+            />
+          </Field>
+          <Field label={t("admin.keys.allowedEntrypoints")} hint={t("admin.keys.allowedEntrypointsHint")}>
+            <Input value={entrypoints} onChange={(e) => setEntrypoints(e.target.value)} placeholder="mirasim, my-agent" />
+          </Field>
+          <Field label={t("admin.keys.autoLayer")} hint={auto.basis ? `${auto.decidedAt ?? ""} ${auto.basis}` : t("admin.keys.autoLayerHint")}>
+            <div className="text-xs text-muted break-all">{autoSummary || t("admin.keys.autoLayerNone")}</div>
           </Field>
         </div>
       </div>

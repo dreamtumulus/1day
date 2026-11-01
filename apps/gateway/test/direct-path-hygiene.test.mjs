@@ -143,13 +143,13 @@ test("铁律 2: shapingFor resolves the three-state switches against the canary 
   core.run("INSERT OR IGNORE INTO groups(id,name) VALUES ('g-canary','灰度测试'),('g-main','main')");
   core.run("INSERT OR IGNORE INTO accounts(id,name,platform,type,protocol,credential_enc) VALUES ('acc-canary','c','anthropic','oauth','anthropic','x')");
   core.run("INSERT OR IGNORE INTO account_groups(account_id,group_id,priority) VALUES ('acc-canary','g-canary',50)");
-  assert.deepEqual(shapingFor({ groupId: "g-main", accountId: "acc-canary" }), { normalizeEntrypoint: false, stripUserEmail: false, canonicalFields: false }, "all off by default");
+  assert.deepEqual(shapingFor({ groupId: "g-main", accountId: "acc-canary" }), { normalizeEntrypoint: false, stripUserEmail: false, canonicalFields: false, strictProfile: false }, "all off by default");
   core.setSetting("canary_group_id", "g-canary");
   core.setSetting("direct_strip_user_email", "canary"); core.setSetting("direct_cc_canonical_fields", "canary"); core.setSetting("direct_cc_entrypoint_normalize", "canary");
-  assert.deepEqual(shapingFor({ groupId: "g-main" }), { normalizeEntrypoint: false, stripUserEmail: false, canonicalFields: false }, "ordinary key, ordinary account");
-  assert.deepEqual(shapingFor({ groupId: "g-canary" }), { normalizeEntrypoint: true, stripUserEmail: true, canonicalFields: true }, "canary key");
+  assert.deepEqual(shapingFor({ groupId: "g-main" }), { normalizeEntrypoint: false, stripUserEmail: false, canonicalFields: false, strictProfile: false }, "ordinary key, ordinary account");
+  assert.deepEqual(shapingFor({ groupId: "g-canary" }), { normalizeEntrypoint: true, stripUserEmail: true, canonicalFields: true, strictProfile: false }, "canary key");
   // the entrypoint rewrite follows the KEY's group only (it must match the gate decision taken before an account exists)
-  assert.deepEqual(shapingFor({ groupId: "g-main", accountId: "acc-canary" }), { normalizeEntrypoint: false, stripUserEmail: true, canonicalFields: true }, "canary account under an ordinary key");
+  assert.deepEqual(shapingFor({ groupId: "g-main", accountId: "acc-canary" }), { normalizeEntrypoint: false, stripUserEmail: true, canonicalFields: true, strictProfile: false }, "canary account under an ordinary key");
   core.setSetting("direct_strip_user_email", "1");
   assert.equal(shapingFor({ groupId: "g-main" }).stripUserEmail, true, "1 = everyone");
   for (const k of ["direct_strip_user_email", "direct_cc_canonical_fields", "direct_cc_entrypoint_normalize"]) core.setSetting(k, "0");

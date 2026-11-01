@@ -42,6 +42,7 @@ import {
   type WindowSnapshot,
   classifyCcRequest,
   parseCcShapePolicy,
+  isClaudeCodeUa,
   fableRejectedWindow,
   isCreditsRequired,
   ccLimitReset,
@@ -85,6 +86,7 @@ import { TunnelRequestError, fetchViaTunnel, resetConversationWorkers, type Isol
 import { applyResetBoundary, isToolContinuation, latestQuestion, resetBody, requestMessages, resolveConversationIdentity, conversationBranchKey, RESET_NOTICE } from "./conversation.js";
 import {
   buildUpstreamRequest,
+  outgoingProfileCheck,
   canRefresh,
   freshCredential,
   isCcrMode,
@@ -95,6 +97,7 @@ import {
   shapingFor,
 } from "./upstream.js";
 import { wait, responseBytes } from "./lifecycle.js";
+import { bump } from "./metrics.js";
 import { UsageAccumulator, collectText, estimateRequestTokens } from "./usage.js";
 import { orderByMerklePrefix, rememberMerklePrefix } from "./merkle-affinity.js";
 
@@ -386,6 +389,8 @@ interface Ctx {
   streamTruncated: boolean;
   /** Claude Code shape verdict (docs/gateway.md §2a); null = not a CC-UA request. */
   ccShape: "genuine" | "suspect" | null;
+  /** settings cc_client_response_profile (spec WP1 §6): a Claude Code client gets no x-1day-* diagnostic headers. */
+  hideDiagHeaders: boolean;
   /** Observability trace for the usage row: last path tried, its node, what upstream answered. */
   trace: { mode: Mode | null; nodeId: string | null; upstreamStatus: number | null; upstreamMessage: string | null; failure: UpstreamFailure | null };
   /**
@@ -455,8 +460,8 @@ function assertScope(scope?: ConversationScope): void {
   if (scope.lost || !current) throw new Error("conversation ownership changed");
 }
 
-function sendResetNotice(reply: FastifyReply, format: ClientFormat, body: Json): void {
-  if (!reply.raw.headersSent) reply.header("x-1day-context-reset", "1");
+function sendResetNotice(reply: FastifyReply, format: ClientFormat, body: Json, hideDiag = false): void {
+  if (!reply.raw.headersSent && !hideDiag) reply.header("x-1day-context-reset", "1");
   sendSyntheticMessage(reply, format, body, RESET_NOTICE);
 }
 
@@ -623,6 +628,10 @@ async function switchTeam(scope: ConversationScope, nextTeam: string, format: Cl
 async function proxyRequest(req: FastifyRequest, reply: FastifyReply, format: ClientFormat, endpoint: string, caller: CallerContext, scope?: ConversationScope): Promise<void> {
   assertScope(scope);
   let body = scope ? scope.originalBody : (req.body && typeof req.body === "object" ? req.body : {}) as Json;
+  // Response profile for Claude Code clients (spec WP1 §6, settings cc_client_response_profile, three-state): a real
+  // Claude Code sees an Anthropic-shaped answer — no x-1day-* diagnostic headers (request-id / retry-after stay).
+  // Decided on the UA before the shape gate so the conversation headers set below follow the same rule.
+  const hideDiag = isClaudeCodeUa(req.headers["user-agent"]) && featureFor("cc_client_response_profile", { groupId: caller.groupId });
   // Admission rejections after auth are logged as zero-cost usage rows so the
   // error log is complete (who asked for what, and why it was refused).
   const reject = (status: number, code: string, message: string, type: Parameters<typeof sendError>[5]): void => {
@@ -689,7 +698,7 @@ async function proxyRequest(req: FastifyRequest, reply: FastifyReply, format: Cl
         unlockScope(scope);
         if (scope.responseCtx) { stopEarlyKeepalive(scope.responseCtx); stopNonStreamHeartbeat(scope.responseCtx); }
         const toolRound = isToolContinuation(body, format);
-        if (!toolRound && justReset) { sendResetNotice(reply, format, scope.originalBody); return; }
+        if (!toolRound && justReset) { sendResetNotice(reply, format, scope.originalBody, hideDiag); return; }
         const [status, code, message] = toolRound
           ? [409, "tool_continuation_after_reset", justReset
             ? "This conversation's context was reset while a tool round was in progress (the previous upstream organization ran out of capacity); the pending tool_use was issued by that context and cannot be continued here. Start the task again with a new independent question; already executed tool actions are not redone."
@@ -700,7 +709,7 @@ async function proxyRequest(req: FastifyRequest, reply: FastifyReply, format: Cl
         return;
       }
     }
-    if (!reply.raw.headersSent) {
+    if (!reply.raw.headersSent && !hideDiag) {
       reply.header("x-1day-conversation-id", scope.row.id).header("x-1day-conversation-generation", String(scope.row.generation));
       if (scope.row.reset_active) reply.header("x-1day-context-reset", "1");
     }
@@ -756,6 +765,7 @@ async function proxyRequest(req: FastifyRequest, reply: FastifyReply, format: Cl
     credentialVersion: null,
     streamTruncated: false,
     ccShape: null,
+    hideDiagHeaders: hideDiag,
     trace: { mode: null, nodeId: null, upstreamStatus: null, upstreamMessage: null, failure: null },
     forceCacheBilling: false,
     clientGone: false,
@@ -793,15 +803,22 @@ async function proxyRequest(req: FastifyRequest, reply: FastifyReply, format: Cl
   // A reset conversation whose post-boundary history is forwarded intact is still classified — on the client's
   // original body, since the forwarded one starts mid-conversation — so a genuine Claude Code client is not
   // locked onto the worker path for the rest of the conversation by one reset (2026-11-01, audit B4).
+  const strictProfile = featureFor("direct_profile_strict", { groupId: caller.groupId });
   const shape = rawGroup || (!!scope?.row.reset_active && !resetHistoryIntact)
     ? null
     : classifyCcRequest(req.headers as Record<string, string | string[] | undefined>, resetHistoryIntact && scope ? scope.originalBody : body, {
         // three-state setting (铁律 2): "canary" admits custom entrypoints only for keys of the 灰度 group
         allowCustomEntrypoint: featureFor("direct_cc_entrypoint_normalize", { groupId: caller.groupId }),
+        // spec §6.2 / WP1: the key's own allowlist of customer-made entrypoints (admin override), independent of the switch
+        allowedCustomEntrypoints: caller.policy.allowedCustomEntrypoints,
+        // spec §6.1 / WP1 (direct_profile_strict): a version × entrypoint without a sampled profile is not forwarded as genuine
+        requireKnownProfile: strictProfile,
       });
   let ccClient = shape?.verdict === "genuine";
   if (shape && shape.verdict !== "not_cc") {
     ctx.ccShape = shape.verdict;
+    if (shape.customEntrypointDenied) bump("custom_entrypoint_denied_total", { entrypoint: shape.entrypoint });
+    if (shape.missing.includes("cc_profile_unknown")) bump("cc_profile_unknown_total", { version: shape.version });
     if (shape.verdict === "suspect") {
       const policy = parseCcShapePolicy(getSetting("cc_shape_policy"));
       console.warn(
@@ -1010,7 +1027,7 @@ async function proxyRequest(req: FastifyRequest, reply: FastifyReply, format: Cl
         }
         // Path transparency (audit 2026-11-01 B14): which execution path answers — the client could only guess from
         // the message id prefix before. Set before the early 200 so hijacked SSE/JSON heads carry it too.
-        if (!ctx.reply.raw.headersSent) {
+        if (!ctx.reply.raw.headersSent && !ctx.hideDiagHeaders) {
           ctx.reply.header("x-1day-mode", isCcrMode(mode) ? "worker" : raw ? "relay" : "direct");
           const ignored = ignoredParams(ctx.body, format, mode);
           if (ignored.length > 0) ctx.reply.header("x-1day-ignored-params", ignored.join(","));
@@ -1066,10 +1083,22 @@ async function proxyRequest(req: FastifyRequest, reply: FastifyReply, format: Cl
               });
             }
           } else {
-            const ureq = buildUpstreamRequest(account, cred, mode, body, upstreamModel, upstreamHeaders, req.url.includes("?") ? req.url.slice(req.url.indexOf("?")) : "", upstreamSession, shapingFor({ groupId: caller.groupId, accountId: account.id }));
+            const ureq = buildUpstreamRequest(account, cred, mode, body, upstreamModel, upstreamHeaders, req.url.includes("?") ? req.url.slice(req.url.indexOf("?")) : "", upstreamSession, shapingFor({ groupId: caller.groupId, accountId: account.id, customEntrypointAdmitted: !!shape && shape.verdict === "genuine" && shape.customEntrypoint }));
             if (!ureq) {
               markFailure(account.id, { kind: "auth", message: "account has no base URL" });
               break;
+            }
+            // Second gate (spec WP1 §2, I11's sibling): what leaves must still be a genuine request of the SAME profile
+            // the client sent. Normalisation may touch transport / device / machine / entrypoint only; anything that
+            // makes the outgoing body un-genuine or changes its profile is refused here, never sent upstream.
+            if (strictProfile && ccClient && !raw && mode === "passthrough-anthropic" && shape?.verdict === "genuine") {
+              const out = outgoingProfileCheck(ureq, shape);
+              if (!out.sameProfile) {
+                bump("cc_profile_mismatch_total", { in: shape.profileId, out: out.profileId });
+                console.error(`[cc-profile] ${ctx.requestId} key=${caller.apiKeyId} outgoing request is not genuine ${shape.profileId} → ${out.profileId ?? "unknown"} missing=${out.missing.join(",") || "-"}; not forwarded`);
+                fail(ctx, null, 400, "cc_profile_mismatch", `The normalised request no longer matches Claude Code profile ${shape.profileId} (${out.missing.join(", ") || "profile changed"}); it was not forwarded.`, "invalid_request_error");
+                return;
+              }
             }
             upstreamHost = ureq.url.host;
             if (account.route === "node") {

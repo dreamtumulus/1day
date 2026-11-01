@@ -17,7 +17,7 @@ import {
   parseIsoInput,
   pendingCacheRefund,
   run,
-  tx, HISTORY_POLICIES, type HistoryPolicy, TEAM_AFFINITIES, type TeamAffinity, defaultHistoryPolicy } from "@1dayapi/core";
+  tx, type KeyPolicyOverrideLayer, invalidKeyPolicyField, sanitizeKeyPolicyLayer, withKeyPolicyOverride } from "@1dayapi/core";
 import {
   Where,
   bad,
@@ -62,8 +62,9 @@ export function applyKeyFields(
   b: Body,
   ownerId: string,
   restrictGroups: boolean,
-): { name?: string; groupId?: string; quotaUsd?: number; expiresAt?: string | null; status?: string; policyJson?: string | null } {
-  const out: { name?: string; groupId?: string; quotaUsd?: number; expiresAt?: string | null; status?: string; policyJson?: string | null } = {};
+  actorId?: string,
+): { name?: string; groupId?: string; quotaUsd?: number; expiresAt?: string | null; status?: string; policyOverride?: KeyPolicyOverrideLayer | null } {
+  const out: { name?: string; groupId?: string; quotaUsd?: number; expiresAt?: string | null; status?: string; policyOverride?: KeyPolicyOverrideLayer | null } = {};
   const name = str(b, "name", { max: 64 });
   if (name !== undefined) out.name = name;
   const groupId = str(b, "groupId");
@@ -88,17 +89,22 @@ export function applyKeyFields(
     if (b.status !== "active" && b.status !== "disabled") bad("invalid_request", "status must be active | disabled");
     out.status = b.status;
   }
-  // Routing policy (docs/gateway.md §2b): admin-only; null clears it back to the defaults.
+  // Routing policy (docs/gateway.md §2b; two layers since 2026-11-01, spec §6.2): admin-only. `policy` is the
+  // OVERRIDE layer — flat fields (console form) or {override:{…}}; null clears the override. The judge's `auto` layer
+  // is kept either way (merged in updateKey).
   if (!restrictGroups && "policy" in b) {
     const p = b.policy;
-    if (p === null) out.policyJson = null;
+    if (p === null) out.policyOverride = null;
     else if (p && typeof p === "object") {
-      const { historyPolicy, directOnly, probeIntercept, teamAffinity } = p as Record<string, unknown>;
-      if (historyPolicy !== undefined && !(HISTORY_POLICIES as readonly string[]).includes(String(historyPolicy))) bad("invalid_request", "policy.historyPolicy must be reset | reject | passthrough");
-      if (directOnly !== undefined && typeof directOnly !== "boolean") bad("invalid_request", "policy.directOnly must be a boolean");
-      if (probeIntercept !== undefined && typeof probeIntercept !== "boolean") bad("invalid_request", "policy.probeIntercept must be a boolean");
-      if (teamAffinity !== undefined && teamAffinity !== null && !(TEAM_AFFINITIES as readonly string[]).includes(String(teamAffinity))) bad("invalid_request", "policy.teamAffinity must be spread | pack | null");
-      out.policyJson = JSON.stringify({ historyPolicy: (historyPolicy as HistoryPolicy | undefined) ?? defaultHistoryPolicy(), directOnly: directOnly === true, probeIntercept: probeIntercept !== false, teamAffinity: (teamAffinity as TeamAffinity | undefined) ?? null });
+      const r = p as Record<string, unknown>;
+      const layer = "override" in r ? r.override : r;
+      const badField = invalidKeyPolicyField(layer);
+      if (badField) bad("invalid_request", `policy.${badField} is invalid (see docs/gateway.md §2b)`);
+      const o: KeyPolicyOverrideLayer = { ...sanitizeKeyPolicyLayer(layer), at: nowIso() };
+      if (actorId) o.by = actorId;
+      const reason = typeof (layer as Record<string, unknown>).reason === "string" ? String((layer as Record<string, unknown>).reason).trim() : "";
+      if (reason) o.reason = reason.slice(0, 200);
+      out.policyOverride = o;
     } else bad("invalid_request", "policy must be an object or null");
   }
   return out;
@@ -112,7 +118,10 @@ export function updateKey(id: string, f: ReturnType<typeof applyKeyFields>): voi
   if (f.quotaUsd !== undefined) (sets.push("quota_usd = ?"), params.push(f.quotaUsd));
   if (f.expiresAt !== undefined) (sets.push("expires_at = ?"), params.push(f.expiresAt));
   if (f.status !== undefined) (sets.push("status = ?"), params.push(f.status));
-  if (f.policyJson !== undefined) (sets.push("policy_json = ?"), params.push(f.policyJson));
+  if (f.policyOverride !== undefined) {
+    const cur = one<{ policy_json: string | null }>("SELECT policy_json FROM api_keys WHERE id = ?", id)?.policy_json ?? null;
+    sets.push("policy_json = ?"); params.push(withKeyPolicyOverride(cur, f.policyOverride));
+  }
   if (sets.length) run(`UPDATE api_keys SET ${sets.join(", ")} WHERE id = ?`, ...params, id);
 }
 

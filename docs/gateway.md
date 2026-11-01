@@ -58,6 +58,18 @@
 `accept` 含 `application/json`；`anthropic-version: 2023-06-01`；UA 版本不低于 Anthropic 对该模型的最低 Claude Code 版本（`CC_MIN_VERSION_BY_MODEL`：opus-5-5 ≥ 2.1.280、
 fable-5-1 ≥ 2.1.251，来自上游 `claude_code_version_too_old` 400；低于门槛的请求直连只会收 400，走 worker 反而能用节点的 2.1.300）。
 2.1.312 还要求 `cc_version` 后缀等于 `ccBuildSuffix(messages)` 的结果，且主 Messages 请求 `stream:true`。其他版本不套用该后缀算法或强制流式，避免把未知构建误判为伪造。
+
+**Profile（2026-11-01，`packages/core/src/cc-profile.ts`，spec §6.1 / WP1）**：判定结果多了 `profileId`（`cc-<版本>-<cli|sdk-cli>`）、`entrypoint`、
+`customEntrypoint` / `customEntrypointDenied`。已采样的 profile：`cc-2.1.312-{cli,sdk-cli,restricted}`（`docs/evidence/cc-2.1.312/`）与 `cc-2.1.300-{cli,sdk-cli}`
+（compat.md §11；后缀算法同，`ccBuildSuffix(…, "2.1.300")` 复现实抓 `.f23`）。自定义入口（mirasim）按身份句归 profile。
+- **Key 白名单入口**：Key policy `allowedCustomEntrypoints: ["mirasim"]`（§2b）放行该 Key 的自定义入口，与全局三态开关 `direct_cc_entrypoint_normalize` 并列、独立；
+  被白名单放行的入口一律改写成 `(external, cli)` 上行（白名单取代迁移期的全局开关，不是回到 10-20 之前的原样透传）。被拒计 `custom_entrypoint_denied_total`。
+- **`direct_profile_strict`（三态，默认 `0`）**：开 → ① 不跨版本 pin（忽略 `direct_cc_version_pin`，x-stainless runtime/package 版本按客户版本的 profile 给）；
+  ② 没有 profile 的版本×入口硬失败 `cc_profile_unknown`（按 `cc_shape_policy` 处置：observe 仍直连但不改体、记 `cc_profile_unknown_total`）；
+  ③ `buildUpstreamRequest` 之后再过一遍 `classifyCcRequest`（`outgoingProfileCheck`），出站必须 genuine 且 `profileId` 与入站相同，否则 **400 `cc_profile_mismatch`**、
+  不上行、记 `cc_profile_mismatch_total`。关 → 老行为（pin 到 2.1.312，未知版本只记软项 `cc_profile_unknown`）。
+- **`cc_client_response_profile`（三态，默认 `0`）**：开 → 对 Claude Code UA 的响应不带任何 `x-1day-*` 诊断头（`request-id` / `retry-after` 保留）。
+- 计数器：网关进程内 `apps/gateway/src/metrics.ts`，`GET /health` 的 `counters` 字段可读（随进程重置）。
 注意 TLS 在 nginx 终止、网关重新发起，Anthropic 看到的 TLS 指纹永远是平台的，客户端差异只剩头和体。
 
 **小组织容错**（2026-11-01）：工具轮与并发满的等待时长对 ≤ `ACCOUNT_SMALL_TEAM_MAX_ACCOUNTS`（默认 2）个账号的组织取 `ACCOUNT_BUSY_WAIT_SMALL_TEAM_MS`（默认 30 s）而非 `ACCOUNT_BUSY_WAIT_MS`（15 s）：一号一组织时"忙"是两轮之间的常态，不是故障。仍不跨组织。
@@ -93,6 +105,16 @@ tools 字母序且无 `strict`、有 `thinking` / `context_management`。beta �
 | `teamAffinity` | `null`（默认）/ `spread` / `pack` | **新对话绑定到哪个组织**（2026-11-01）：默认按容量——各组织非冷却账号的空闲并发槽 × 订阅窗口余量（`pickTeam`）；`spread` 大组织优先（单账号组织只承接溢出），`pack` 小组织优先。此前取候选排序第一个账号所属组织，不看组织实时容量 |
 | `directOnly` | `false`（默认）/ `true` | 开启后非 genuine Claude Code 请求返回 **400 `direct_only`**（message 列出缺失项），不转 worker；原样透传分组（§4a）不受影响 |
 | `probeIntercept` | `true`（默认）/ `false` | 测活接管（§2c）：探测请求由平台按号池状态直接回复，不占用账号 |
+| `allowedCustomEntrypoints` | `[]`（默认）/ 入口名列表 | 2026-11-01（spec §6.2）：该 Key 允许的自定义 Claude Code UA 入口（如 `mirasim`），放行并改写成 `(external, cli)` 直连；与全局开关 `direct_cc_entrypoint_normalize` 独立 |
+| `telemetryPolicy` | `passthrough-isolated`（系统默认）/ `native-required` | 2026-11-01：真 CC 请求走哪条车道——直连（车道 A，无账号侧遥测）还是节点官方 CC（车道 B，WP2 落地后生效；落地前该字段只记录） |
+| `workerMode` | `legacy`（系统默认）/ `canonical` | 非直连请求用现有 worker（折叠历史、替换系统提示词）还是 canonical 原生会话（WP2） |
+| `parameterPolicy` | `warn`（系统默认）/ `strict` | 路径无法实现的参数：写 `x-1day-ignored-params`，还是 400 `unsupported_parameter`（WP4） |
+| `responseMode` | `keepalive`（系统默认）/ `strict` | 长非流式请求是否提前 200 + 心跳（WP5） |
+
+**两层结构（2026-11-01，spec §6.2）**：`policy_json = { "auto": {...}, "override": {...} }`。`auto` 由判断器（`key-policy-auto.ts`，WP8，待做）按 Key 的观测写入，
+`override` 由管理员在 Key 页写（`by / reason / at`）；生效值逐字段 = `override[k] ?? auto[k] ?? 系统默认`。`auto` 层是否生效由三态开关 `key_policy_auto`
+决定（`0` 只记录建议 / `canary` 灰度组 Key / `1` 全部）。旧的平铺文档（`{historyPolicy, directOnly, …}`）按 override 层读，含义不变；控制台 PATCH 只替换
+override 层（`withKeyPolicyOverride`），不动 auto。控制台 Key 页显示两层（`policyLayers`）与生效值（`policy`）。
 
 **工具轮不换组织（2026-11-01）**：请求是工具轮（最后一条非 system 消息是 `tool_result` / `tool` / `function_call_output`，`isToolContinuation`）时，
 网关不再因 `team_pool_exhausted` 切换组织：其 `tool_use` 只有发出它的组织能接，换组织后只能得到 409 `tool_continuation_after_reset`

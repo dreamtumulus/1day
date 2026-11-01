@@ -2,6 +2,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { classifyCcRequest, parseCcShapePolicy, ccMinVersionForModel, compareVersions } from "../dist/cc-shape.js";
+import { ccBuildSuffix } from "../dist/fingerprint.js";
 
 const UA = "claude-cli/2.1.300 (external, cli)";
 const genuineHeaders = {
@@ -21,7 +22,8 @@ const genuineBody = {
   model: "claude-sonnet-5-5",
   messages: [{ role: "user", content: [{ type: "text", text: "hi", cache_control: { type: "ephemeral" } }] }],
   system: [
-    { type: "text", text: "x-anthropic-billing-header: cc_version=2.1.300.f23; cc_entrypoint=cli;" },
+    // a real client's flag for this prompt (2.1.300 shares the suffix algorithm; the captured .f23 belonged to another prompt)
+    { type: "text", text: `x-anthropic-billing-header: cc_version=2.1.300.${ccBuildSuffix([{ role: "user", content: [{ type: "text", text: "hi" }] }], "2.1.300")}; cc_entrypoint=cli;` },
     { type: "text", text: "You are Claude Code, Anthropic's official CLI for Claude.", cache_control: { type: "ephemeral" } },
     { type: "text", text: "x".repeat(5000), cache_control: { type: "ephemeral" } },
   ],

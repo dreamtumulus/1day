@@ -44,6 +44,9 @@
   | `direct_cc_canonical_fields` | oauth beta 插到 claude-code 之后；`metadata.user_id` 键序重建 | `0` |
   | `worker_prompt_hide_platform_path` | worker 提示词不出现 `/var/lib/1dayapi-cc-worker` | `0` |
   | `history_policy_default` / `history_policy_canary` | Key 默认历史策略；灰度组 Key 用 canary 值 | `reset` / 空 |
+  | `direct_profile_strict` | 直连不跨版本 pin、未知 profile 不直连、出站再校验同 profile（spec WP1） | `0` |
+  | `cc_client_response_profile` | 对 Claude Code UA 不下发 `x-1day-*` 诊断头（只影响下游） | `0` |
+  | `key_policy_auto` | Key 策略判断器的 auto 层生效（spec §6.2 / WP8） | `0` |
 - 灰度组：控制台「设置 → 灰度测试账号组」选择；账号加入该组 = 账号页编辑分组；测试 Key = 该组下的 consumer Key。
 - 发布核对：`ops/bin/release-verify` 先用灰度 Key（`/root/monitor/canary-apikey.txt`，如有）发请求，再用常规 Key。
 - **出站不变量**：直连请求离开网关前，`system[0]` 计费头的后缀 ≡ `ccBuildSuffix(出站 messages, 版本)`；改体（设备身份、机器环境、删 reminder …）一律在算后缀之前，`alignBillingSuffix` 是最后一步；版本不是 2.1.312（不会算）时不碰首条用户文本（`canEditFirstUserText`）。运行时还有最后一道闸：对不上就原样转发客户 body 并打 `[billing-suffix] mismatch` 日志。
