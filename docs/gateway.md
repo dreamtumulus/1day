@@ -103,8 +103,9 @@ tools 字母序且无 `strict`、有 `thinking` / `context_management`。beta �
 健康检查器每隔几秒用同一条极小请求轮询各个模型；在 worker 路径上每一次都要在某个号上起一个 Claude Code 会话（2026-10-29 一个测活客户端一小时碰了 63 个号）。
 网关在鉴权与准入之后、选号之前识别探测并直接作答，**不碰任何账号、worker 或上游**：
 
-- **识别**：请求头 `x-1day-probe: 1` 直接算探测；否则要求"极小"——去掉 system/developer 后 ≤2 条消息、纯文本、用户文本合计 ≤64 字符、无 tools、
-  `max_tokens` ≤64——且**同一把 Key 在 10 分钟内第二次**发来同样的内容（模型 + 文本 + 是否流式的哈希）。第一次照常上游，之后的重复才接管，所以人类偶然的一句 "hi" 不受影响。
+- **识别**：请求头 `x-1day-probe: 1` 直接算探测。**"重复极小请求"推断默认关闭（2026-11-01 审计 B8）**：合成的 `<model>: ok` 是平台编造的助手回答，API 客户会当成模型输出；
+  探测量已降到约 120 次/天，不值得这个误判风险。要重新启用需设环境变量 `PROBE_INTERCEPT_REPEATS=1`，此时规则同以前——"极小"（去掉 system/developer 后 ≤2 条消息、纯文本、用户文本合计 ≤64 字符、无 tools、
+  `max_tokens` ≤64）且**同一把 Key 在 10 分钟内第二次**发来同样的内容（模型 + 文本 + 是否流式的哈希）才接管。
   窗口 / 次数 / 阈值由 `PROBE_INTERCEPT_WINDOW_MS`（600000）、`PROBE_INTERCEPT_MIN_REPEATS`（2）、`PROBE_INTERCEPT_MAX_CHARS`（64）、`PROBE_INTERCEPT_MAX_OUTPUT`（64）调整；按 Key 用 `policy.probeIntercept=false` 关闭，环境变量 `PROBE_INTERCEPT=0` 全局关闭（应急 / 测试）。
 - **回复**：按该 Key 分组对该模型的候选账号算健康度（排除临时冷却、窗口耗尽、过载、429 冷却），但**对外只说模型是否正常，不说有多少个号**（运营规则 2026-10-29）。
   有可用号 → **200**，正文 `<model>: ok`（对应客户端格式的完整消息 / SSE，usage 全 0，id `msg_<uuid>`）；没有 → **503 `no_available_account`**，message

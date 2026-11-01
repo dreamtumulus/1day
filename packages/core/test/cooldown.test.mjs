@@ -38,14 +38,31 @@ test("plain 429 cooldown is soft: account stays a candidate, flagged and ordered
   assert.ok(cands().every((a) => !a.cooling));
 });
 
-test("rejected-window 429 stays a hard exclusion until a plain 429 overwrites it", () => {
+test("rejected-window 429 stays a hard exclusion; a later shorter plain 429 cannot cut it short (2026-11-01)", () => {
   const reset = core.isoIn(60_000);
   core.markFailure("a1", { kind: "window_rejected", window: "five_hour", resetAt: reset });
   assert.deepEqual(order(), ["a2"], "window-rejected account is not a candidate");
-  // A later plain 429 rewrites rate_limited_until alone: the reason no longer matches -> soft again.
+  const until = one("SELECT rate_limited_until t FROM accounts WHERE id='a1'").t;
+  // Cooldowns only extend: a concurrent plain 429 with a shorter Retry-After leaves rate_limited_until (and the
+  // hard exclusion keyed on it) untouched. (Before 2026-11-01 it overwrote it and the account was soft again.)
   core.markFailure("a1", { kind: "rate_limited", retryAfterSec: 30 });
-  assert.deepEqual(order(), ["a2", "a1*"]);
+  assert.equal(one("SELECT rate_limited_until t FROM accounts WHERE id='a1'").t, until);
+  assert.deepEqual(order(), ["a2"], "shorter plain 429 did not shorten the window rejection");
   core.clearAccountState("a1");
+});
+
+test("cooldowns only extend, never shorten (audit 2026-11-01: concurrent failures re-admitted accounts early)", () => {
+  core.markFailure("a1", { kind: "transient", cooldownMs: 120_000 });
+  const long = one("SELECT temp_unschedulable_until t FROM accounts WHERE id='a1'").t;
+  core.markFailure("a1", { kind: "transient", cooldownMs: 1_000 });
+  assert.equal(one("SELECT temp_unschedulable_until t FROM accounts WHERE id='a1'").t, long, "shorter transient kept the longer cooldown");
+  core.markFailure("a1", { kind: "transient", cooldownMs: 300_000 });
+  assert.ok(one("SELECT temp_unschedulable_until t FROM accounts WHERE id='a1'").t > long, "longer transient extends");
+  core.markFailure("a2", { kind: "rate_limited", retryAfterSec: 300 });
+  const rl = one("SELECT rate_limited_until t FROM accounts WHERE id='a2'").t;
+  core.markFailure("a2", { kind: "rate_limited", retryAfterSec: 5 });
+  assert.equal(one("SELECT rate_limited_until t FROM accounts WHERE id='a2'").t, rl);
+  core.clearAccountState("a1"); core.clearAccountState("a2");
 });
 
 test("other cooldowns (overload / transient / payment / window) remain hard", () => {

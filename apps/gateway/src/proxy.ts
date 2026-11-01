@@ -1318,7 +1318,7 @@ const authFailures = new AuthFailureTracker();
 function markCcrFailure(ctx: Ctx, account: AccountRow, message: string): void {
   const limit = ccLimitReset(message);
   if (limit) {
-    markFailure(account.id, { kind: "window_exhausted", resetAt: limit.resetAt });
+    markFailure(account.id, { kind: "window_exhausted", resetAt: limit.resetAt, window: limit.window });
     console.warn(`[proxy] ${ctx.requestId} account ${account.name}: cc ${limit.window} limit → window_exhausted until ${limit.resetAt ?? "(fallback 1h)"}`);
     return;
   }

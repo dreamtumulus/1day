@@ -340,7 +340,7 @@ export type FailureKind =
   | { kind: "auth"; message: string }
   | { kind: "transient"; message?: string; cooldownMs?: number }
   /** Subscription window used up (probe / translation layer): cool until the window resets (fallback 1h). */
-  | { kind: "window_exhausted"; resetAt?: string | null }
+  | { kind: "window_exhausted"; resetAt?: string | null; window?: string | null }
   /** 429 whose unified headers name the rejected window: rate-limit until that window resets (sub2api handle429). */
   | { kind: "window_rejected"; window: string; resetAt: string }
   /** 429 scoped to one model family (Fable 7d_oi window or credits_required): cool only that scope (sub2api SetModelRateLimit). */
@@ -376,9 +376,11 @@ const overloadStreak = new Map<string, { n: number; at: number }>();
 export function markFailure(id: string, f: FailureKind): void {
   const now = nowIso();
   switch (f.kind) {
+    // Cooldowns only ever extend (audit 2026-11-01): concurrent failures of one account used to overwrite a
+    // longer cooldown with a shorter one, re-admitting the account early. ISO timestamps compare as strings.
     case "rate_limited": {
       const sec = Math.min(Math.max(f.retryAfterSec ?? 60, 1), 7200);
-      run("UPDATE accounts SET rate_limited_until = ?, updated_at = ? WHERE id = ?", isoIn(sec * 1000), now, id);
+      run("UPDATE accounts SET rate_limited_until = MAX(COALESCE(rate_limited_until, ''), ?), updated_at = ? WHERE id = ?", isoIn(sec * 1000), now, id);
       return;
     }
     case "overloaded": {
@@ -387,7 +389,7 @@ export function markFailure(id: string, f: FailureKind): void {
       const streak = prev && Date.now() - prev.at < 15 * 60_000 ? prev.n + 1 : 1;
       overloadStreak.set(id, { n: streak, at: Date.now() });
       const ms = Math.min(60_000 * 2 ** (streak - 1), 10 * 60_000);
-      run("UPDATE accounts SET overload_until = ?, updated_at = ? WHERE id = ?", isoIn(ms), now, id);
+      run("UPDATE accounts SET overload_until = MAX(COALESCE(overload_until, ''), ?), updated_at = ? WHERE id = ?", isoIn(ms), now, id);
       return;
     }
     case "payment":
@@ -411,7 +413,7 @@ export function markFailure(id: string, f: FailureKind): void {
       return;
     case "transient":
       run(
-        "UPDATE accounts SET temp_unschedulable_until = ?, error_message = COALESCE(?, error_message), updated_at = ? WHERE id = ?",
+        "UPDATE accounts SET temp_unschedulable_until = MAX(COALESCE(temp_unschedulable_until, ''), ?), error_message = COALESCE(?, error_message), updated_at = ? WHERE id = ?",
         isoIn(f.cooldownMs ?? 30_000),
         f.message ? f.message.slice(0, 500) : null,
         now,
@@ -422,7 +424,10 @@ export function markFailure(id: string, f: FailureKind): void {
       const row = one<{ window_reset_at: string | null }>("SELECT window_reset_at FROM accounts WHERE id = ?", id);
       const candidate = f.resetAt ?? row?.window_reset_at ?? null;
       const resetAt = candidate && candidate > now ? candidate : isoIn(WINDOW_FALLBACK_COOLDOWN_MS);
-      const until = restAfterReset(resetAt);
+      // seven_day gets no post-reset rest (restAfterReset): the rest exists to let the 5-hour window actually
+      // reopen, a 7-day limit does not need it (audit 2026-11-01: the Claude Code limit text named the window
+      // but it was not passed through, so 7d accounts sat out the extra rest as well).
+      const until = restAfterReset(resetAt, f.window ?? undefined);
       run(
         "UPDATE accounts SET window_exhausted_until = ?, window_reason = ?, updated_at = ? WHERE id = ?",
         until,

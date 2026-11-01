@@ -138,8 +138,26 @@ export function applyResetBoundary(body: Json, format: ClientFormat, row: Conver
   const messages = requestMessages(body, format);
   let before: string[] = [];
   try { before = JSON.parse(row.reset_prefix ?? "[]"); } catch { /* conservative reset */ }
-  const index = before.length;
-  const matched = !!row.reset_anchor && index < messages.length && fingerprint(messages[index]) === row.reset_anchor;
+  // The anchor is the first question of this generation. It used to be looked up at exactly
+  // `before.length` (the position it had when the boundary was saved); a client that compacts or drops
+  // earlier history — Claude Code's /compact, a summary replacing old turns — moved it and every later
+  // request fell back to "latest question only" (audit 2026-11-01). Now: fast path at the saved index,
+  // otherwise the message whose content fingerprint equals the anchor, the one nearest the saved index
+  // when the same text occurs more than once.
+  let index = before.length;
+  let matched = !!row.reset_anchor && index < messages.length && fingerprint(messages[index]) === row.reset_anchor;
+  if (!matched && row.reset_anchor) {
+    const hits: number[] = [];
+    for (let i = 0; i < messages.length; i++) {
+      const m = messages[i];
+      if (!m || ["system", "developer"].includes(m.role)) continue;
+      if (fingerprint(m) === row.reset_anchor) hits.push(i);
+    }
+    if (hits.length) {
+      index = hits.reduce((best, i) => (Math.abs(i - before.length) < Math.abs(best - before.length) ? i : best), hits[0]);
+      matched = true;
+    }
+  }
   if (matched) {
     const first = cleanContent(messages[index]?.content);
     if (first) {

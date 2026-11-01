@@ -10,6 +10,7 @@ import Fastify from "fastify";
 const dataDir = mkdtempSync(join(tmpdir(), "1dayapi-probe-"));
 process.env.DATA_DIR = dataDir;
 process.env.CONSOLE_BASE = "http://127.0.0.1:9"; // never reached: probes stop before any tunnel
+process.env.PROBE_INTERCEPT_REPEATS = "1"; // repeat detection is opt-in since 2026-11-01; this suite covers it
 const core = await import("@1dayapi/core");
 const { proxy } = await import("../dist/proxy.js");
 const { probeShape, detectProbe, recordProbeShape, resetProbeMemory, poolHealth, PROBE_MIN_REPEATS } = await import("../dist/probe.js");

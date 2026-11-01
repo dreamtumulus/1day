@@ -295,10 +295,12 @@ test("pre-boundary drift (Claude Code clears old tool_result bodies) does not lo
   assert.ok(!r.body.includes(RESET_NOTICE));
   assert.deepEqual(attempts.at(-1).body.messages, [question("fresh question"), toolUse("call-1"), toolResult("call-1", "result")]);
   assert.ok(!JSON.stringify(attempts.at(-1).body).includes("OLD"));
-  // The anchor at another index is not the boundary: the conservative restart at the latest question applies.
+  // The anchor moved (a turn inserted before it; compaction / dropped history move it the other way): since
+  // 2026-11-01 it is found by content, the generation's own history is forwarded and the pre-anchor part is cut.
+  // (Before: index-only lookup → conservative restart at the latest question → the whole generation lost.)
   const shifted = await request(f, payload([...cleared, answer("INSERTED OLD TURN"), question("fresh question"), answer("x"), question("another question")]));
   assert.equal(shifted.statusCode, 200, shifted.body);
-  assert.deepEqual(attempts.at(-1).body.messages, [question("another question")]);
+  assert.deepEqual(attempts.at(-1).body.messages, [question("fresh question"), answer("x"), question("another question")]);
   assert.ok(!JSON.stringify(attempts.at(-1).body).includes("OLD"));
 });
 
@@ -345,6 +347,30 @@ test("reset body removes Responses handles, developer summaries, remote tool res
   assert.equal(clean.input[0].content.length, 2);
   const row = { reset_active: 1, reset_anchor: q.anchor, reset_prefix: q.prefix };
   assert.equal(applyResetBoundary(original, "responses", row).matched, true);
+});
+
+test("boundary anchor is found by content after the client compacted or dropped earlier history (2026-11-01)", () => {
+  const u = (t) => ({ role: "user", content: t }), a = (t) => ({ role: "assistant", content: t });
+  const atReset = { model: "m", messages: [u("old 1"), a("r1"), u("old 2"), a("r2"), u("new generation starts here")] };
+  const q = latestQuestion(atReset, "anthropic");
+  const row = { reset_active: 1, reset_anchor: q.anchor, reset_prefix: q.prefix };
+  assert.equal(JSON.parse(row.reset_prefix).length, 4, "anchor saved at index 4");
+  // later request: the client compacted the two old turns into one summary → the anchor moved to index 1
+  const compacted = { model: "m", messages: [u("[summary of old 1 / old 2]"), u("new generation starts here"), a("gen answer"), u("follow-up")] };
+  const r = applyResetBoundary(compacted, "anthropic", row);
+  assert.equal(r.matched, true, "anchor matched by content, not by the saved index");
+  assert.deepEqual(r.body.messages.map((m) => m.content), ["new generation starts here", "gen answer", "follow-up"], "post-boundary history forwarded whole");
+  // the old history dropped entirely → anchor at index 0
+  const dropped = { model: "m", messages: [u("new generation starts here"), a("gen answer"), u("follow-up 2")] };
+  assert.equal(applyResetBoundary(dropped, "anthropic", row).matched, true);
+  // same text twice: the occurrence nearest the saved index wins
+  const twice = { model: "m", messages: [u("new generation starts here"), a("x"), u("y"), a("z"), u("new generation starts here"), a("gen answer"), u("follow-up 3")] };
+  assert.deepEqual(applyResetBoundary(twice, "anthropic", row).body.messages.map((m) => m.content), ["new generation starts here", "gen answer", "follow-up 3"]);
+  // no anchor anywhere → conservative reset to the latest question
+  const foreign = { model: "m", messages: [u("something else"), a("b"), u("another question")] };
+  const f = applyResetBoundary(foreign, "anthropic", row);
+  assert.equal(f.matched, false);
+  assert.deepEqual(f.body.messages.map((m) => m.content), ["another question"]);
 });
 
 

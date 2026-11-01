@@ -20,6 +20,12 @@ function envInt(name: string, def: number, min: number, max: number): number {
 /** Repetition window: a tiny body seen this often inside it is a probe. */
 export const PROBE_WINDOW_MS = envInt("PROBE_INTERCEPT_WINDOW_MS", 600_000, 60_000, 6 * 3_600_000);
 export const PROBE_MIN_REPEATS = envInt("PROBE_INTERCEPT_MIN_REPEATS", 2, 1, 100);
+/**
+ * Repeat-based detection (the Nth identical tiny body) is opt-in since 2026-11-01 (PROBE_INTERCEPT_REPEATS=1):
+ * a synthetic "<model>: ok" is an invented assistant answer, and a human repeating "hi" to an API client would get
+ * one (audit B8). The explicit `x-1day-probe: 1` header is always honoured. Probe volume had fallen to ~120/day.
+ */
+export const PROBE_REPEAT_DETECTION = process.env.PROBE_INTERCEPT_REPEATS === "1";
 /** Tiny = at most this much user text and this small an output cap. */
 export const PROBE_MAX_CHARS = envInt("PROBE_INTERCEPT_MAX_CHARS", 64, 1, 4096);
 export const PROBE_MAX_OUTPUT = envInt("PROBE_INTERCEPT_MAX_OUTPUT", 64, 1, 100_000);
@@ -92,6 +98,7 @@ export function detectProbe(apiKeyId: string, body: Json, format: Format, header
   const h = headers["x-1day-probe"];
   const flag = Array.isArray(h) ? h[0] : h;
   if (flag === "1" || flag === "true") return { reason: "header", repeats: 0, shape: probeShape(body, format) };
+  if (!PROBE_REPEAT_DETECTION) return null;
   const shape = probeShape(body, format);
   if (!shape) return null;
   const n = recordProbeShape(apiKeyId, shape.hash);
