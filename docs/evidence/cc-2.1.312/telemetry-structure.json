@@ -1,0 +1,363 @@
+{
+ "gate": "telemetry-structure",
+ "binaryVersion": "2.1.312",
+ "sampledAt": "2026-11-01T13:47:25.009Z",
+ "exitCode": 0,
+ "method": {
+  "mitm": "local CONNECT proxy terminates TLS for *.anthropic.com:443 with a self-signed CA passed via NODE_EXTRA_CA_CERTS",
+  "keylog": "SSLKEYLOGFILE pointed at a temp file; contents summarised by label/count only",
+  "note": "all other hosts refused; ANTHROPIC_BASE_URL stays on a local plain-HTTP fake upstream"
+ },
+ "tls": {
+  "handshakeCompleted": true,
+  "requests": 9,
+  "sslkeylog": {
+   "fileExists": false,
+   "lines": 0,
+   "labels": [],
+   "clientRandomPrefixes": []
+  },
+  "verdict": "NODE_EXTRA_CA_CERTS 可用（无需 keylog 即可读明文）；SSLKEYLOGFILE 未产生内容"
+ },
+ "endpoints": [
+  "POST /api/eval/sdk-zAZezfDKGoZuXXKe",
+  "GET /api/oauth/profile",
+  "GET /api/claude_cli/bootstrap?entrypoint=sdk-cli&model=claude-sonnet-5-5",
+  "GET /api/claude_code_penguin_mode",
+  "GET /mcp-registry/v0/servers?version=latest&limit=100&visibility=commercial%2Cgsuite%2Centerprise%2Chealth",
+  "GET /api/claude_code_grove",
+  "GET /api/oauth/organizations/11111111-2222-4333-8444-555555555555/referral/eligibility?campaign=claude_code_guest_pass",
+  "POST /api/event_logging/v2/batch",
+  "POST /api/event_logging/v2/batch"
+ ],
+ "requests": [
+  {
+   "at": "2026-11-01T13:47:21.855Z",
+   "method": "POST",
+   "url": "/api/eval/sdk-zAZezfDKGoZuXXKe",
+   "host": "api.anthropic.com",
+   "headers": {
+    "authorization": "<redacted>",
+    "content-type": "application/json",
+    "user-agent": "claude-code/2.1.312",
+    "anthropic-beta": "oauth-2025-04-20",
+    "connection": "keep-alive",
+    "accept": "*/*",
+    "host": "api.anthropic.com",
+    "accept-encoding": "gzip, deflate, br, zstd",
+    "content-length": "526"
+   },
+   "bodyLen": 526,
+   "bodyDigest": "e2f649069f4eaaf7",
+   "contentType": "application/json",
+   "bodyTopLevelKeys": [
+    "attributes",
+    "forcedVariations",
+    "forcedFeatures",
+    "url"
+   ],
+   "bodyItemKeys": null,
+   "bodyPreviewKeys": [
+    "attributes",
+    "forcedVariations",
+    "forcedFeatures",
+    "url"
+   ],
+   "eventCount": null,
+   "eventTypes": null,
+   "eventDataKeys": null
+  },
+  {
+   "at": "2026-11-01T13:47:21.860Z",
+   "method": "GET",
+   "url": "/api/oauth/profile",
+   "host": "api.anthropic.com",
+   "headers": {
+    "accept": "application/json, text/plain, */*",
+    "content-type": "application/json",
+    "user-agent": "claude-code/2.1.312",
+    "authorization": "<redacted>",
+    "cache-control": "no-cache",
+    "accept-encoding": "gzip, compress, deflate, br",
+    "host": "api.anthropic.com",
+    "connection": "close"
+   },
+   "bodyLen": 0,
+   "bodyDigest": "e3b0c44298fc1c14",
+   "contentType": "application/json",
+   "bodyTopLevelKeys": null,
+   "bodyItemKeys": null,
+   "bodyPreviewKeys": null,
+   "eventCount": null,
+   "eventTypes": null,
+   "eventDataKeys": null
+  },
+  {
+   "at": "2026-11-01T13:47:22.131Z",
+   "method": "GET",
+   "url": "/api/claude_cli/bootstrap?entrypoint=sdk-cli&model=claude-sonnet-5-5",
+   "host": "api.anthropic.com",
+   "headers": {
+    "accept": "application/json, text/plain, */*",
+    "content-type": "application/json",
+    "user-agent": "claude-code/2.1.312",
+    "authorization": "<redacted>",
+    "anthropic-beta": "oauth-2025-04-20",
+    "accept-encoding": "gzip, compress, deflate, br",
+    "host": "api.anthropic.com",
+    "connection": "close"
+   },
+   "bodyLen": 0,
+   "bodyDigest": "e3b0c44298fc1c14",
+   "contentType": "application/json",
+   "bodyTopLevelKeys": null,
+   "bodyItemKeys": null,
+   "bodyPreviewKeys": null,
+   "eventCount": null,
+   "eventTypes": null,
+   "eventDataKeys": null
+  },
+  {
+   "at": "2026-11-01T13:47:22.133Z",
+   "method": "GET",
+   "url": "/api/claude_code_penguin_mode",
+   "host": "api.anthropic.com",
+   "headers": {
+    "accept": "application/json, text/plain, */*",
+    "user-agent": "claude-code/2.1.312",
+    "authorization": "<redacted>",
+    "anthropic-beta": "oauth-2025-04-20",
+    "accept-encoding": "gzip, compress, deflate, br",
+    "host": "api.anthropic.com",
+    "connection": "close"
+   },
+   "bodyLen": 0,
+   "bodyDigest": "e3b0c44298fc1c14",
+   "contentType": "",
+   "bodyTopLevelKeys": null,
+   "bodyItemKeys": null,
+   "bodyPreviewKeys": null,
+   "eventCount": null,
+   "eventTypes": null,
+   "eventDataKeys": null
+  },
+  {
+   "at": "2026-11-01T13:47:22.133Z",
+   "method": "GET",
+   "url": "/mcp-registry/v0/servers?version=latest&limit=100&visibility=commercial%2Cgsuite%2Centerprise%2Chealth",
+   "host": "api.anthropic.com",
+   "headers": {
+    "accept": "application/json, text/plain, */*",
+    "user-agent": "claude-cli/2.1.312 (external, sdk-cli)",
+    "accept-encoding": "gzip, compress, deflate, br",
+    "host": "api.anthropic.com",
+    "connection": "close"
+   },
+   "bodyLen": 0,
+   "bodyDigest": "e3b0c44298fc1c14",
+   "contentType": "",
+   "bodyTopLevelKeys": null,
+   "bodyItemKeys": null,
+   "bodyPreviewKeys": null,
+   "eventCount": null,
+   "eventTypes": null,
+   "eventDataKeys": null
+  },
+  {
+   "at": "2026-11-01T13:47:22.134Z",
+   "method": "GET",
+   "url": "/api/claude_code_grove",
+   "host": "api.anthropic.com",
+   "headers": {
+    "accept": "application/json, text/plain, */*",
+    "user-agent": "claude-cli/2.1.312 (external, sdk-cli)",
+    "authorization": "<redacted>",
+    "anthropic-beta": "oauth-2025-04-20",
+    "accept-encoding": "gzip, compress, deflate, br",
+    "host": "api.anthropic.com",
+    "connection": "close"
+   },
+   "bodyLen": 0,
+   "bodyDigest": "e3b0c44298fc1c14",
+   "contentType": "",
+   "bodyTopLevelKeys": null,
+   "bodyItemKeys": null,
+   "bodyPreviewKeys": null,
+   "eventCount": null,
+   "eventTypes": null,
+   "eventDataKeys": null
+  },
+  {
+   "at": "2026-11-01T13:47:22.135Z",
+   "method": "GET",
+   "url": "/api/oauth/organizations/11111111-2222-4333-8444-555555555555/referral/eligibility?campaign=claude_code_guest_pass",
+   "host": "api.anthropic.com",
+   "headers": {
+    "accept": "application/json, text/plain, */*",
+    "content-type": "application/json",
+    "user-agent": "claude-cli/2.1.312 (external, sdk-cli)",
+    "authorization": "<redacted>",
+    "anthropic-version": "2023-06-01",
+    "anthropic-client-platform": "claude_code_sdk",
+    "x-organization-uuid": "11111111-2222-4333-8444-555555555555",
+    "accept-encoding": "gzip, compress, deflate, br",
+    "host": "api.anthropic.com",
+    "connection": "close"
+   },
+   "bodyLen": 0,
+   "bodyDigest": "e3b0c44298fc1c14",
+   "contentType": "application/json",
+   "bodyTopLevelKeys": null,
+   "bodyItemKeys": null,
+   "bodyPreviewKeys": null,
+   "eventCount": null,
+   "eventTypes": null,
+   "eventDataKeys": null
+  },
+  {
+   "at": "2026-11-01T13:47:22.417Z",
+   "method": "POST",
+   "url": "/api/event_logging/v2/batch",
+   "host": "api.anthropic.com",
+   "headers": {
+    "authorization": "<redacted>",
+    "content-type": "application/json",
+    "anthropic-beta": "oauth-2025-04-20",
+    "x-service-name": "claude-code",
+    "connection": "keep-alive",
+    "user-agent": "Bun/1.4.4",
+    "accept": "*/*",
+    "host": "api.anthropic.com",
+    "accept-encoding": "gzip, deflate, br, zstd",
+    "content-length": "3837"
+   },
+   "bodyLen": 3837,
+   "bodyDigest": "093f0315b75ecd3d",
+   "contentType": "application/json",
+   "bodyTopLevelKeys": [
+    "events"
+   ],
+   "bodyItemKeys": [
+    "event_type",
+    "event_data"
+   ],
+   "bodyPreviewKeys": [
+    "events"
+   ],
+   "eventCount": 3,
+   "eventTypes": [
+    "ClaudeCodeInternalEvent"
+   ],
+   "eventDataKeys": [
+    "event_id",
+    "event_name",
+    "client_timestamp",
+    "device_id",
+    "auth",
+    "session_id",
+    "model",
+    "user_type",
+    "is_interactive",
+    "client_type",
+    "entrypoint",
+    "env",
+    "additional_metadata"
+   ]
+  },
+  {
+   "at": "2026-11-01T13:47:22.447Z",
+   "method": "POST",
+   "url": "/api/event_logging/v2/batch",
+   "host": "api.anthropic.com",
+   "headers": {
+    "accept": "application/json, text/plain, */*",
+    "content-type": "application/json",
+    "user-agent": "claude-code/2.1.312",
+    "x-service-name": "claude-code",
+    "authorization": "<redacted>",
+    "anthropic-beta": "oauth-2025-04-20",
+    "content-length": "260643",
+    "accept-encoding": "gzip, compress, deflate, br",
+    "host": "api.anthropic.com",
+    "connection": "close"
+   },
+   "bodyLen": 260643,
+   "bodyDigest": "6a016ee4529951c3",
+   "contentType": "application/json",
+   "bodyTopLevelKeys": [
+    "events"
+   ],
+   "bodyItemKeys": [
+    "event_type",
+    "event_data"
+   ],
+   "bodyPreviewKeys": [
+    "events"
+   ],
+   "eventCount": 123,
+   "eventTypes": [
+    "ClaudeCodeInternalEvent"
+   ],
+   "eventDataKeys": [
+    "event_name",
+    "client_timestamp",
+    "model",
+    "session_id",
+    "user_type",
+    "betas",
+    "env",
+    "entrypoint",
+    "is_interactive",
+    "client_type",
+    "process",
+    "additional_metadata",
+    "auth",
+    "event_id",
+    "device_id",
+    "skill_name",
+    "plugin_name",
+    "marketplace_name"
+   ]
+  }
+ ],
+ "connectAttempts": [
+  {
+   "at": "2026-11-01T13:47:21.839Z",
+   "target": "api.anthropic.com:443"
+  },
+  {
+   "at": "2026-11-01T13:47:21.843Z",
+   "target": "api.anthropic.com:443"
+  },
+  {
+   "at": "2026-11-01T13:47:22.104Z",
+   "target": "api.anthropic.com:443"
+  },
+  {
+   "at": "2026-11-01T13:47:22.104Z",
+   "target": "api.anthropic.com:443"
+  },
+  {
+   "at": "2026-11-01T13:47:22.104Z",
+   "target": "api.anthropic.com:443"
+  },
+  {
+   "at": "2026-11-01T13:47:22.105Z",
+   "target": "api.anthropic.com:443"
+  },
+  {
+   "at": "2026-11-01T13:47:22.105Z",
+   "target": "api.anthropic.com:443"
+  },
+  {
+   "at": "2026-11-01T13:47:22.439Z",
+   "target": "api.anthropic.com:443"
+  }
+ ],
+ "refusedHosts": [],
+ "localUpstreamCalls": [
+  "POST /v1/messages?beta=true"
+ ],
+ "stderrTail": [],
+ "digest": "afabb380a0ab0a0f"
+}

@@ -1,0 +1,389 @@
+{
+ "gate": "unrestricted-read-creds",
+ "binaryVersion": "2.1.312",
+ "model": "claude-sonnet-5-5",
+ "sampledAt": "2026-11-01T12:58:10.223Z",
+ "durationMs": 1799,
+ "exitCode": 0,
+ "args": [
+  "-p",
+  "--model",
+  "claude-sonnet-5-5",
+  "--output-format",
+  "stream-json",
+  "--verbose",
+  "--permission-prompts",
+  "none",
+  "Read the file I mention."
+ ],
+ "env": [
+  "SHELL",
+  "TERM",
+  "ANTHROPIC_BASE_URL",
+  "HTTPS_PROXY",
+  "HTTP_PROXY",
+  "NO_PROXY",
+  "no_proxy",
+  "DISABLE_AUTOUPDATER",
+  "DISABLE_ERROR_REPORTING",
+  "CLAUDE_CODE_NO_MODEL_FALLBACK",
+  "CLAUDE_CODE_DISABLE_ATTACHMENTS"
+ ],
+ "requests": [
+  {
+   "url": "/v1/messages?beta=true",
+   "method": "POST",
+   "headers": {
+    "accept": "application/json",
+    "content-type": "application/json",
+    "user-agent": "claude-cli/2.1.312 (external, sdk-cli)",
+    "x-claude-code-session-id": "6a350e6e-4958-4b96-b4e9-0553e501986f",
+    "x-stainless-arch": "x64",
+    "x-stainless-lang": "js",
+    "x-stainless-os": "Linux",
+    "x-stainless-package-version": "0.128.0",
+    "x-stainless-retry-count": "0",
+    "x-stainless-runtime": "node",
+    "x-stainless-runtime-version": "v26.12.1",
+    "x-stainless-timeout": "600",
+    "anthropic-beta": "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,context-management-2025-06-27,per-turn-control-2026-07-01,thinking-token-count-2026-05-13,advanced-tool-use-2025-11-20,effort-2025-11-24,thinking-display-updates-2026-08-18,extended-cache-ttl-2025-04-11",
+    "anthropic-dangerous-direct-browser-access": "true",
+    "anthropic-version": "2023-06-01",
+    "x-app": "cli",
+    "accept-encoding": "gzip, deflate, br, zstd"
+   },
+   "topLevelKeys": [
+    "model",
+    "messages",
+    "system",
+    "tools",
+    "metadata",
+    "max_tokens",
+    "thinking",
+    "context_management",
+    "output_config",
+    "stream"
+   ],
+   "system": [
+    {
+     "len": 74,
+     "head": "x-anthropic-billing-header: cc_version=2.1.312.64e; cc_entrypoint=sdk-cli;",
+     "cache_control": null,
+     "hasMarker": false
+    },
+    {
+     "len": 62,
+     "head": "You are a Claude agent, built on Anthropic's Claude Agent SDK.",
+     "cache_control": {
+      "type": "ephemeral",
+      "ttl": "1h"
+     },
+     "hasMarker": false
+    },
+    {
+     "len": 5599,
+     "head": "\nYou are an agent working with the user toward their goals, using your own judgment along the way.\n\nIMPORTANT: Assist wi",
+     "cache_control": {
+      "type": "ephemeral",
+      "ttl": "1h"
+     },
+     "hasMarker": false
+    }
+   ],
+   "billingLine": "x-anthropic-billing-header: cc_version=2.1.312.64e; cc_entrypoint=sdk-cli;",
+   "messages": [
+    {
+     "role": "user",
+     "blocks": [
+      {
+       "type": "text",
+       "len": 583,
+       "head": "<system-reminder>\nAttribution for git commits and pull requests you create from here on (this replaces Claude Code's own earlier attribution guidance, such as a",
+       "cache_control": null
+      },
+      {
+       "type": "text",
+       "len": 24,
+       "head": "Read the file I mention.",
+       "cache_control": null
+      }
+     ]
+    },
+    {
+     "role": "system",
+     "blocks": [
+      {
+       "type": "text",
+       "len": 2513,
+       "head": "Available agent types for the Agent tool:\n- claude: Catch-all for any task that doesn't fit a more specific agent. FleetView's default when no agent name is typ",
+       "cache_control": {
+        "type": "ephemeral",
+        "ttl": "1h"
+       }
+      }
+     ]
+    }
+   ],
+   "tools": [
+    "Agent",
+    "Bash",
+    "Edit",
+    "ListAgents",
+    "Read",
+    "ReportFindings",
+    "ScheduleWakeup",
+    "Skill",
+    "ToolSearch",
+    "Workflow",
+    "DeferredToolPlaceholder",
+    "Write"
+   ],
+   "metadataKeys": [
+    "user_id"
+   ],
+   "metadataUserIdKeys": [
+    "device_id",
+    "account_uuid",
+    "session_id"
+   ],
+   "thinking": {
+    "type": "adaptive",
+    "display": "updates"
+   },
+   "context_management": {
+    "edits": [
+     {
+      "type": "clear_thinking_20251015",
+      "keep": "all"
+     }
+    ]
+   },
+   "output_format": null,
+   "stream": true,
+   "max_tokens": 128000
+  },
+  {
+   "url": "/v1/messages?beta=true",
+   "method": "POST",
+   "headers": {
+    "accept": "application/json",
+    "content-type": "application/json",
+    "user-agent": "claude-cli/2.1.312 (external, sdk-cli)",
+    "x-claude-code-session-id": "6a350e6e-4958-4b96-b4e9-0553e501986f",
+    "x-stainless-arch": "x64",
+    "x-stainless-lang": "js",
+    "x-stainless-os": "Linux",
+    "x-stainless-package-version": "0.128.0",
+    "x-stainless-retry-count": "0",
+    "x-stainless-runtime": "node",
+    "x-stainless-runtime-version": "v26.12.1",
+    "x-stainless-timeout": "600",
+    "anthropic-beta": "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,context-management-2025-06-27,per-turn-control-2026-07-01,thinking-token-count-2026-05-13,advanced-tool-use-2025-11-20,effort-2025-11-24,thinking-display-updates-2026-08-18,extended-cache-ttl-2025-04-11",
+    "anthropic-dangerous-direct-browser-access": "true",
+    "anthropic-version": "2023-06-01",
+    "x-app": "cli",
+    "accept-encoding": "gzip, deflate, br, zstd"
+   },
+   "topLevelKeys": [
+    "model",
+    "messages",
+    "system",
+    "tools",
+    "metadata",
+    "max_tokens",
+    "thinking",
+    "context_management",
+    "output_config",
+    "stream"
+   ],
+   "system": [
+    {
+     "len": 74,
+     "head": "x-anthropic-billing-header: cc_version=2.1.312.64e; cc_entrypoint=sdk-cli;",
+     "cache_control": null,
+     "hasMarker": false
+    },
+    {
+     "len": 62,
+     "head": "You are a Claude agent, built on Anthropic's Claude Agent SDK.",
+     "cache_control": {
+      "type": "ephemeral",
+      "ttl": "1h"
+     },
+     "hasMarker": false
+    },
+    {
+     "len": 5599,
+     "head": "\nYou are an agent working with the user toward their goals, using your own judgment along the way.\n\nIMPORTANT: Assist wi",
+     "cache_control": {
+      "type": "ephemeral",
+      "ttl": "1h"
+     },
+     "hasMarker": false
+    }
+   ],
+   "billingLine": "x-anthropic-billing-header: cc_version=2.1.312.64e; cc_entrypoint=sdk-cli;",
+   "messages": [
+    {
+     "role": "user",
+     "blocks": [
+      {
+       "type": "text",
+       "len": 583,
+       "head": "<system-reminder>\nAttribution for git commits and pull requests you create from here on (this replaces Claude Code's own earlier attribution guidance, such as a",
+       "cache_control": null
+      },
+      {
+       "type": "text",
+       "len": 24,
+       "head": "Read the file I mention.",
+       "cache_control": null
+      }
+     ]
+    },
+    {
+     "role": "system",
+     "blocks": [
+      {
+       "type": "string",
+       "len": 2513,
+       "head": "Available agent types for the Agent tool:\n- claude: Catch-all for any task that "
+      }
+     ]
+    },
+    {
+     "role": "assistant",
+     "blocks": [
+      {
+       "type": "tool_use",
+       "len": 0,
+       "head": "",
+       "cache_control": null
+      }
+     ]
+    },
+    {
+     "role": "user",
+     "blocks": [
+      {
+       "type": "tool_result",
+       "len": 0,
+       "head": "Permission for this tool use was denied. It requires approval, and this session has no approval surface — nobody can answer a permission prompt here — so it was",
+       "is_error": true,
+       "cache_control": {
+        "type": "ephemeral",
+        "ttl": "1h"
+       }
+      }
+     ]
+    }
+   ],
+   "tools": [
+    "Agent",
+    "Bash",
+    "Edit",
+    "ListAgents",
+    "Read",
+    "ReportFindings",
+    "ScheduleWakeup",
+    "Skill",
+    "ToolSearch",
+    "Workflow",
+    "DeferredToolPlaceholder",
+    "Write"
+   ],
+   "metadataKeys": [
+    "user_id"
+   ],
+   "metadataUserIdKeys": [
+    "device_id",
+    "account_uuid",
+    "session_id"
+   ],
+   "thinking": {
+    "type": "adaptive",
+    "display": "updates"
+   },
+   "context_management": {
+    "edits": [
+     {
+      "type": "clear_thinking_20251015",
+      "keep": "all"
+     }
+    ]
+   },
+   "output_format": null,
+   "stream": true,
+   "max_tokens": 128000
+  }
+ ],
+ "otherEndpoints": [],
+ "connectAttempts": [
+  {
+   "at": "2026-11-01T12:58:08.825Z",
+   "kind": "connect",
+   "target": "api.anthropic.com:443"
+  },
+  {
+   "at": "2026-11-01T12:58:08.827Z",
+   "kind": "connect",
+   "target": "api.anthropic.com:443"
+  },
+  {
+   "at": "2026-11-01T12:58:09.071Z",
+   "kind": "connect",
+   "target": "api.anthropic.com:443"
+  },
+  {
+   "at": "2026-11-01T12:58:09.071Z",
+   "kind": "connect",
+   "target": "api.anthropic.com:443"
+  },
+  {
+   "at": "2026-11-01T12:58:09.071Z",
+   "kind": "connect",
+   "target": "api.anthropic.com:443"
+  },
+  {
+   "at": "2026-11-01T12:58:09.072Z",
+   "kind": "connect",
+   "target": "api.anthropic.com:443"
+  },
+  {
+   "at": "2026-11-01T12:58:09.072Z",
+   "kind": "connect",
+   "target": "api.anthropic.com:443"
+  },
+  {
+   "at": "2026-11-01T12:58:09.385Z",
+   "kind": "connect",
+   "target": "api.anthropic.com:443"
+  },
+  {
+   "at": "2026-11-01T12:58:09.889Z",
+   "kind": "connect",
+   "target": "api.anthropic.com:443"
+  },
+  {
+   "at": "2026-11-01T12:58:09.899Z",
+   "kind": "connect",
+   "target": "api.anthropic.com:443"
+  }
+ ],
+ "stdoutTypes": [
+  "system/init",
+  "assistant",
+  "system/permission_denied",
+  "user",
+  "rate_limit_event",
+  "assistant",
+  "result/success"
+ ],
+ "stdoutTail": [
+  "{\"type\":\"rate_limit_event\",\"rate_limit_info\":{\"status\":\"allowed\",\"isUsingOverage\":false},\"uuid\":\"a17e93b9-2958-409a-87f8-c2c970585d7d\",\"session_id\":\"6a350e6e-4958-4b96-b4e9-0553e501986f\"}",
+  "{\"type\":\"assistant\",\"message\":{\"id\":\"msg_mock_2\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-sonnet-5-5\",\"content\":[{\"type\":\"text\",\"text\":\"OK\"}],\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{\"input_tokens\":12,\"cache_creation_input_tokens\":0,\"cache_read_input_tokens\":0,\"output_tokens\":1},\"",
+  "{\"duration_api_ms\":81,\"stop_reason\":\"end_turn\",\"session_id\":\"6a350e6e-4958-4b96-b4e9-0553e501986f\",\"total_cost_usd\":0.00027800000000000004,\"usage\":{\"input_tokens\":24,\"cache_creation_input_tokens\":0,\"cache_read_input_tokens\":0,\"output_tokens\":23,\"output_tokens_details\":{\"thinking_tokens\":0},\"server_t"
+ ],
+ "stderrTail": [],
+ "digest": "0eb1e1b8dd2aee39"
+}

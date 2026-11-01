@@ -250,3 +250,18 @@ mid-conversation-tool-changes / advanced-tool-use / effort / dangerous-tool-use 
 **采样工具**（本次补进仓库，`ops/cc-capture/`）：`capsrv.mjs` 本地采样服务、`capture-sdk.sh`（-p 模式，worker 参数）、
 `capture-interactive.py`（伪终端交互模式，预置 onboarding 跳过首启向导）；两版二进制用 `bun add -g @anthropic-ai/claude-code@<ver>`
 装到独立 HOME 下取得（`…/node_modules/@anthropic-ai/claude-code-linux-x64/claude`）。
+
+## 12. 2026-11-01 受控探针与 profile 证据（WP0，`tests/e2e/cc-probe/`）
+
+真实 2.1.312 二进制 + 假 OAuth + 本机假上游（CONNECT 只记录、必拒绝），G1–G10 结论见 `docs/evidence/cc-2.1.312/README.md`（`evidence.mjs` 自动生成），
+三个 profile（cli / sdk-cli / restricted，各 12 次 = 4 提示词 × sonnet-5-5 / opus-5-5 / haiku-4-5）的合成见 `profiles.json`，已回填 `packages/core/src/cc-profile.ts`。
+与本文此前记录的差异 / 补充：
+- **beta 集随模型族变**：sonnet/opus-5-5 的 sdk-cli 10 项、cli 12 项（多 `dangerous-tool-use-2026-09-03`、`afk-mode-2026-01-31`；§11 10-28 采样里的 `mid-conversation-tool-changes-2026-07-01` 本轮 12/12 未出现，属功能相关项）；haiku-4-5 只有 8 项且顺序不同
+  （`oauth` 第一、`claude-code` 第四，无 `per-turn-control` / `effort`），`thinking={type:enabled,budget_tokens:31999}`、`max_tokens 32000`、无 `output_config`。
+  网关的 `CC_BETAS` 注入集仍只取核心项；判定与 profile 断言按 `(入口, 模型族)` 分档。
+- cli 入口顶层键多 `safeguards`；tools 13（多 `AskUserQuestion`）；每轮另发 `max_tokens:1` 无 system 的额度探针与标题生成（`output_config.format=json_schema`，beta `structured-outputs-2025-12-15`）。
+- `--restricted`：工具表去掉 Bash / Workflow、加 Glob / Grep（仍 12 个），主提示词 3513（haiku 14138）。
+- `cch` / `cc_prev_req` / `cc_prompt_id` / `cc_turn_origin`：36 次采样 0 次出现（远端 flag 未开），与 §11 一致。
+- 遥测：`INGEST_URL` 不跟 `ANTHROPIC_BASE_URL`；Bun 1.4.4 **不写 `SSLKEYLOGFILE`**，但尊重 `NODE_EXTRA_CA_CERTS`，受控 TLS 终结可读 `/api/event_logging/v2/batch` 等 9 个端点
+  的明文（遥测 UA `Bun/1.4.4`，`x-service-name: claude-code`）。只用于结构取证（G10-A），真实受理（G10-B）仍需专用测试账号，不得对生产 MITM。
+- resume / 工具中断 / 外部历史导入的结论（G3–G5）直接决定 WP3 方案：见 README 与 `G3-matrix.md`（thinking 块零校验，导入必须剥离）。

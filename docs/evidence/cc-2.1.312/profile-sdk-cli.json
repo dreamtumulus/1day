@@ -1,0 +1,486 @@
+{
+ "profile": "sdk-cli",
+ "samples": 12,
+ "betaSets": [
+  [
+   "claude-code-20250219",
+   "oauth-2025-04-20",
+   "interleaved-thinking-2025-05-14",
+   "context-management-2025-06-27",
+   "per-turn-control-2026-07-01",
+   "thinking-token-count-2026-05-13",
+   "advanced-tool-use-2025-11-20",
+   "effort-2025-11-24",
+   "thinking-display-updates-2026-08-18",
+   "extended-cache-ttl-2025-04-11"
+  ],
+  [
+   "oauth-2025-04-20",
+   "interleaved-thinking-2025-05-14",
+   "context-management-2025-06-27",
+   "claude-code-20250219",
+   "thinking-token-count-2026-05-13",
+   "advanced-tool-use-2025-11-20",
+   "thinking-display-updates-2026-08-18",
+   "extended-cache-ttl-2025-04-11"
+  ]
+ ],
+ "betaByModel": {
+  "claude-sonnet-5-5": [
+   "claude-code-20250219",
+   "oauth-2025-04-20",
+   "interleaved-thinking-2025-05-14",
+   "context-management-2025-06-27",
+   "per-turn-control-2026-07-01",
+   "thinking-token-count-2026-05-13",
+   "advanced-tool-use-2025-11-20",
+   "effort-2025-11-24",
+   "thinking-display-updates-2026-08-18",
+   "extended-cache-ttl-2025-04-11"
+  ],
+  "claude-opus-5-5": [
+   "claude-code-20250219",
+   "oauth-2025-04-20",
+   "interleaved-thinking-2025-05-14",
+   "context-management-2025-06-27",
+   "per-turn-control-2026-07-01",
+   "thinking-token-count-2026-05-13",
+   "advanced-tool-use-2025-11-20",
+   "effort-2025-11-24",
+   "thinking-display-updates-2026-08-18",
+   "extended-cache-ttl-2025-04-11"
+  ],
+  "claude-haiku-4-5": [
+   "oauth-2025-04-20",
+   "interleaved-thinking-2025-05-14",
+   "context-management-2025-06-27",
+   "claude-code-20250219",
+   "thinking-token-count-2026-05-13",
+   "advanced-tool-use-2025-11-20",
+   "thinking-display-updates-2026-08-18",
+   "extended-cache-ttl-2025-04-11"
+  ]
+ },
+ "byModel": {
+  "claude-sonnet-5-5": {
+   "samples": 4,
+   "mainPromptLen": 5599,
+   "thinking": {
+    "type": "adaptive",
+    "display": "updates"
+   },
+   "outputConfig": {
+    "effort": "medium"
+   },
+   "maxTokens": 128000,
+   "toolsDigest": "2106a37964466cf3",
+   "toolsCount": 12,
+   "systemBlockLens": [
+    74,
+    62,
+    5599
+   ],
+   "betaList": [
+    "claude-code-20250219",
+    "oauth-2025-04-20",
+    "interleaved-thinking-2025-05-14",
+    "context-management-2025-06-27",
+    "per-turn-control-2026-07-01",
+    "thinking-token-count-2026-05-13",
+    "advanced-tool-use-2025-11-20",
+    "effort-2025-11-24",
+    "thinking-display-updates-2026-08-18",
+    "extended-cache-ttl-2025-04-11"
+   ]
+  },
+  "claude-opus-5-5": {
+   "samples": 4,
+   "mainPromptLen": 5599,
+   "thinking": {
+    "type": "adaptive",
+    "display": "updates"
+   },
+   "outputConfig": {
+    "effort": "medium"
+   },
+   "maxTokens": 128000,
+   "toolsDigest": "2106a37964466cf3",
+   "toolsCount": 12,
+   "systemBlockLens": [
+    74,
+    62,
+    5599
+   ],
+   "betaList": [
+    "claude-code-20250219",
+    "oauth-2025-04-20",
+    "interleaved-thinking-2025-05-14",
+    "context-management-2025-06-27",
+    "per-turn-control-2026-07-01",
+    "thinking-token-count-2026-05-13",
+    "advanced-tool-use-2025-11-20",
+    "effort-2025-11-24",
+    "thinking-display-updates-2026-08-18",
+    "extended-cache-ttl-2025-04-11"
+   ]
+  },
+  "claude-haiku-4-5": {
+   "samples": 4,
+   "mainPromptLen": 26946,
+   "thinking": {
+    "budget_tokens": 31999,
+    "type": "enabled",
+    "display": "updates"
+   },
+   "outputConfig": null,
+   "maxTokens": 32000,
+   "toolsDigest": "2106a37964466cf3",
+   "toolsCount": 12,
+   "systemBlockLens": [
+    74,
+    62,
+    26946
+   ],
+   "betaList": [
+    "oauth-2025-04-20",
+    "interleaved-thinking-2025-05-14",
+    "context-management-2025-06-27",
+    "claude-code-20250219",
+    "thinking-token-count-2026-05-13",
+    "advanced-tool-use-2025-11-20",
+    "thinking-display-updates-2026-08-18",
+    "extended-cache-ttl-2025-04-11"
+   ]
+  }
+ },
+ "identityBlock": "You are a Claude agent, built on Anthropic's Claude Agent SDK.",
+ "identityVariants": [
+  "You are a Claude agent, built on Anthropic's Claude Agent SDK."
+ ],
+ "mainPromptLen": [
+  5599,
+  26946
+ ],
+ "mainPromptDigests": [
+  "c033f0aeb97f2b54",
+  "3985ee543d69fdae",
+  "b51488ce8edc55b9",
+  "9ff981d52dcab22e",
+  "96eac89727a51813",
+  "14b7c13fc0658936",
+  "35870ae2c35ec9bf",
+  "eaea9ece4ed7c4ca",
+  "90eb4e0658850be7",
+  "5ce7ecd8ce586f5e",
+  "431b292aada010a1",
+  "f3630f3e0235f07f"
+ ],
+ "systemBlockCount": [
+  3
+ ],
+ "systemBlockLens": [
+  [
+   74,
+   62,
+   5599
+  ],
+  [
+   74,
+   62,
+   26946
+  ]
+ ],
+ "toolsDigest": "2106a37964466cf3",
+ "tools": [
+  "Agent",
+  "Bash",
+  "Edit",
+  "ListAgents",
+  "Read",
+  "ReportFindings",
+  "ScheduleWakeup",
+  "Skill",
+  "ToolSearch",
+  "Workflow",
+  "DeferredToolPlaceholder",
+  "Write"
+ ],
+ "toolsDigests": [
+  "2106a37964466cf3"
+ ],
+ "topLevelKeys": [
+  "model",
+  "messages",
+  "system",
+  "tools",
+  "metadata",
+  "max_tokens",
+  "thinking",
+  "context_management",
+  "output_config",
+  "stream"
+ ],
+ "thinking": [
+  {
+   "type": "adaptive",
+   "display": "updates"
+  },
+  {
+   "budget_tokens": 31999,
+   "type": "enabled",
+   "display": "updates"
+  }
+ ],
+ "outputConfig": [
+  {
+   "effort": "medium"
+  },
+  null
+ ],
+ "ccFields": [],
+ "requestShapes": [
+  {
+   "kind": "main",
+   "occurrences": 8,
+   "betaList": [
+    "claude-code-20250219",
+    "oauth-2025-04-20",
+    "interleaved-thinking-2025-05-14",
+    "context-management-2025-06-27",
+    "per-turn-control-2026-07-01",
+    "thinking-token-count-2026-05-13",
+    "advanced-tool-use-2025-11-20",
+    "effort-2025-11-24",
+    "thinking-display-updates-2026-08-18",
+    "extended-cache-ttl-2025-04-11"
+   ],
+   "topLevelKeys": [
+    "model",
+    "messages",
+    "system",
+    "tools",
+    "metadata",
+    "max_tokens",
+    "thinking",
+    "context_management",
+    "output_config",
+    "stream"
+   ],
+   "maxTokens": 128000,
+   "systemBlockLens": [
+    74,
+    62,
+    5599
+   ],
+   "toolsCount": 12,
+   "outputConfig": {
+    "effort": "medium"
+   },
+   "authScheme": "bearer",
+   "files": [
+    "baseline-sdk-01.json",
+    "baseline-sdk-02.json",
+    "baseline-sdk-03.json",
+    "baseline-sdk-04.json"
+   ]
+  },
+  {
+   "kind": "main",
+   "occurrences": 4,
+   "betaList": [
+    "oauth-2025-04-20",
+    "interleaved-thinking-2025-05-14",
+    "context-management-2025-06-27",
+    "claude-code-20250219",
+    "thinking-token-count-2026-05-13",
+    "advanced-tool-use-2025-11-20",
+    "thinking-display-updates-2026-08-18",
+    "extended-cache-ttl-2025-04-11"
+   ],
+   "topLevelKeys": [
+    "model",
+    "messages",
+    "system",
+    "tools",
+    "metadata",
+    "max_tokens",
+    "thinking",
+    "context_management",
+    "stream"
+   ],
+   "maxTokens": 32000,
+   "systemBlockLens": [
+    74,
+    62,
+    26946
+   ],
+   "toolsCount": 12,
+   "outputConfig": null,
+   "authScheme": "bearer",
+   "files": [
+    "baseline-sdk-09.json",
+    "baseline-sdk-10.json",
+    "baseline-sdk-11.json",
+    "baseline-sdk-12.json"
+   ]
+  }
+ ],
+ "evidence": [
+  {
+   "file": "baseline-sdk-01.json",
+   "model": "claude-sonnet-5-5",
+   "sampledAt": "2026-11-01T13:38:17.125Z",
+   "digest": "a7ee6bfee5066e70",
+   "toolsCount": 12,
+   "systemBlockLens": [
+    74,
+    62,
+    5599
+   ],
+   "allRequestURLs": 1
+  },
+  {
+   "file": "baseline-sdk-02.json",
+   "model": "claude-sonnet-5-5",
+   "sampledAt": "2026-11-01T13:38:18.936Z",
+   "digest": "027fc1bb4e9451cd",
+   "toolsCount": 12,
+   "systemBlockLens": [
+    74,
+    62,
+    5599
+   ],
+   "allRequestURLs": 1
+  },
+  {
+   "file": "baseline-sdk-03.json",
+   "model": "claude-sonnet-5-5",
+   "sampledAt": "2026-11-01T13:38:20.714Z",
+   "digest": "82e22136465d2620",
+   "toolsCount": 12,
+   "systemBlockLens": [
+    74,
+    62,
+    5599
+   ],
+   "allRequestURLs": 1
+  },
+  {
+   "file": "baseline-sdk-04.json",
+   "model": "claude-sonnet-5-5",
+   "sampledAt": "2026-11-01T13:38:22.495Z",
+   "digest": "cdfb451c1e95b072",
+   "toolsCount": 12,
+   "systemBlockLens": [
+    74,
+    62,
+    5599
+   ],
+   "allRequestURLs": 1
+  },
+  {
+   "file": "baseline-sdk-05.json",
+   "model": "claude-opus-5-5",
+   "sampledAt": "2026-11-01T13:38:24.321Z",
+   "digest": "af4a555a1912208a",
+   "toolsCount": 12,
+   "systemBlockLens": [
+    74,
+    62,
+    5599
+   ],
+   "allRequestURLs": 1
+  },
+  {
+   "file": "baseline-sdk-06.json",
+   "model": "claude-opus-5-5",
+   "sampledAt": "2026-11-01T13:38:26.077Z",
+   "digest": "33d781cb0595bd84",
+   "toolsCount": 12,
+   "systemBlockLens": [
+    74,
+    62,
+    5599
+   ],
+   "allRequestURLs": 1
+  },
+  {
+   "file": "baseline-sdk-07.json",
+   "model": "claude-opus-5-5",
+   "sampledAt": "2026-11-01T13:38:27.852Z",
+   "digest": "691b4fe8f522f3f9",
+   "toolsCount": 12,
+   "systemBlockLens": [
+    74,
+    62,
+    5599
+   ],
+   "allRequestURLs": 1
+  },
+  {
+   "file": "baseline-sdk-08.json",
+   "model": "claude-opus-5-5",
+   "sampledAt": "2026-11-01T13:38:29.624Z",
+   "digest": "c22d7363ee523c28",
+   "toolsCount": 12,
+   "systemBlockLens": [
+    74,
+    62,
+    5599
+   ],
+   "allRequestURLs": 1
+  },
+  {
+   "file": "baseline-sdk-09.json",
+   "model": "claude-haiku-4-5",
+   "sampledAt": "2026-11-01T13:38:31.385Z",
+   "digest": "50eae3decde32f09",
+   "toolsCount": 12,
+   "systemBlockLens": [
+    74,
+    62,
+    26946
+   ],
+   "allRequestURLs": 1
+  },
+  {
+   "file": "baseline-sdk-10.json",
+   "model": "claude-haiku-4-5",
+   "sampledAt": "2026-11-01T13:38:33.186Z",
+   "digest": "d66b0c50726e1d87",
+   "toolsCount": 12,
+   "systemBlockLens": [
+    74,
+    62,
+    26946
+   ],
+   "allRequestURLs": 1
+  },
+  {
+   "file": "baseline-sdk-11.json",
+   "model": "claude-haiku-4-5",
+   "sampledAt": "2026-11-01T13:38:35.048Z",
+   "digest": "f03bf0397738fb09",
+   "toolsCount": 12,
+   "systemBlockLens": [
+    74,
+    62,
+    26946
+   ],
+   "allRequestURLs": 1
+  },
+  {
+   "file": "baseline-sdk-12.json",
+   "model": "claude-haiku-4-5",
+   "sampledAt": "2026-11-01T13:38:36.822Z",
+   "digest": "f0c5bffaed206b2f",
+   "toolsCount": 12,
+   "systemBlockLens": [
+    74,
+    62,
+    26946
+   ],
+   "allRequestURLs": 1
+  }
+ ]
+}

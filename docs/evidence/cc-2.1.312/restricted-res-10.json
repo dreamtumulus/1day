@@ -1,0 +1,295 @@
+{
+ "gate": "restricted",
+ "tag": "res-10",
+ "binaryVersion": "2.1.312",
+ "model": "claude-haiku-4-5",
+ "promptLen": 63,
+ "sampledAt": "2026-11-01T13:39:27.104Z",
+ "durationMs": 1682,
+ "exitCode": 0,
+ "killed": false,
+ "killedAfterMs": null,
+ "killReason": null,
+ "args": [
+  "-p",
+  "--model",
+  "claude-haiku-4-5",
+  "--output-format",
+  "stream-json",
+  "--verbose",
+  "--restricted",
+  "--permission-prompts",
+  "none",
+  "Summarize in one sentence what a reverse proxy does, then stop."
+ ],
+ "env": [],
+ "init": {
+  "sessionId": "cf3a6584-5147-4475-9ee7-413f87ae1811",
+  "model": "claude-haiku-4-5",
+  "permissionMode": "default",
+  "apiKeySource": "none",
+  "cwdIsWork": true,
+  "tools": 24,
+  "mcpServers": [],
+  "outputStyle": "default",
+  "keys": [
+   "type",
+   "subtype",
+   "cwd",
+   "session_id",
+   "tools",
+   "mcp_servers",
+   "model",
+   "permissionMode",
+   "slash_commands",
+   "terminal_slash_commands",
+   "apiKeySource",
+   "claude_code_version",
+   "output_style",
+   "agents",
+   "skills",
+   "plugins",
+   "capabilities",
+   "analytics_disabled",
+   "product_feedback_disabled",
+   "uuid",
+   "original_cwd",
+   "additional_directories",
+   "fast_mode_state",
+   "fast_mode_disabled_reason",
+   "per_turn_effort_active",
+   "view_mode"
+  ]
+ },
+ "requests": [
+  {
+   "url": "/v1/messages?beta=true",
+   "method": "POST",
+   "headers": {
+    "accept": "application/json",
+    "content-type": "application/json",
+    "user-agent": "claude-cli/2.1.312 (external, sdk-cli)",
+    "x-claude-code-session-id": "cf3a6584-5147-4475-9ee7-413f87ae1811",
+    "x-stainless-arch": "x64",
+    "x-stainless-lang": "js",
+    "x-stainless-os": "Linux",
+    "x-stainless-package-version": "0.128.0",
+    "x-stainless-retry-count": "0",
+    "x-stainless-runtime": "node",
+    "x-stainless-runtime-version": "v26.12.1",
+    "x-stainless-timeout": "600",
+    "anthropic-beta": "oauth-2025-04-20,interleaved-thinking-2025-05-14,context-management-2025-06-27,claude-code-20250219,thinking-token-count-2026-05-13,advanced-tool-use-2025-11-20,thinking-display-updates-2026-08-18,extended-cache-ttl-2025-04-11",
+    "anthropic-dangerous-direct-browser-access": "true",
+    "anthropic-version": "2023-06-01",
+    "x-app": "cli",
+    "accept-encoding": "gzip, deflate, br, zstd"
+   },
+   "betaList": [
+    "oauth-2025-04-20",
+    "interleaved-thinking-2025-05-14",
+    "context-management-2025-06-27",
+    "claude-code-20250219",
+    "thinking-token-count-2026-05-13",
+    "advanced-tool-use-2025-11-20",
+    "thinking-display-updates-2026-08-18",
+    "extended-cache-ttl-2025-04-11"
+   ],
+   "authScheme": "bearer",
+   "topLevelKeys": [
+    "model",
+    "messages",
+    "system",
+    "tools",
+    "metadata",
+    "max_tokens",
+    "thinking",
+    "context_management",
+    "stream"
+   ],
+   "system": [
+    {
+     "len": 74,
+     "head": "x-anthropic-billing-header: cc_version=2.1.312.a49; cc_entrypoint=sdk-cli;",
+     "cache_control": null,
+     "hasMarker": false
+    },
+    {
+     "len": 62,
+     "head": "You are a Claude agent, built on Anthropic's Claude Agent SDK.",
+     "cache_control": {
+      "type": "ephemeral",
+      "ttl": "1h"
+     },
+     "hasMarker": false
+    },
+    {
+     "len": 14138,
+     "head": "\nYou are an agent working with the user toward their goals, using your own judgment along the way. Use the instructions below and the tools available to you to ",
+     "cache_control": {
+      "type": "ephemeral",
+      "ttl": "1h"
+     },
+     "hasMarker": false
+    }
+   ],
+   "systemDigest": "032811d95ecadab6",
+   "systemBlockDigests": [
+    "da51d3cb5ea84019",
+    "0d7062851dd7bd7e",
+    "54cb07fdc4973aa0"
+   ],
+   "identitySentence": null,
+   "secondLine": "You are a Claude agent, built on Anthropic's Claude Agent SDK.",
+   "billingLine": "x-anthropic-billing-header: cc_version=2.1.312.a49; cc_entrypoint=sdk-cli;",
+   "messages": [
+    {
+     "role": "user",
+     "blocks": [
+      {
+       "type": "text",
+       "len": 1880,
+       "head": "<system-reminder>\nAvailable agent types for the Agent tool:\n- claude: Catch-all for any task that doesn't fit a more specific agent. FleetView's default when no",
+       "cache_control": null
+      },
+      {
+       "type": "text",
+       "len": 753,
+       "head": "<system-reminder>\n# Environment\nYou have been invoked in the following environment: \n - Primary working directory: <tmp-path>\n - Is a git reposit",
+       "cache_control": null
+      },
+      {
+       "type": "text",
+       "len": 167,
+       "head": "<system-reminder>\nYou are powered by the model named Haiku 4.5. The exact model ID is claude-haiku-4-5. Assistant knowledge cutoff is February 2025.\n</system-re",
+       "cache_control": null
+      },
+      {
+       "type": "text",
+       "len": 65,
+       "head": "<system-reminder>\nToday's date is 2026-11-01.\n</system-reminder>\n",
+       "cache_control": null
+      },
+      {
+       "type": "text",
+       "len": 63,
+       "head": "Summarize in one sentence what a reverse proxy does, then stop.",
+       "cache_control": {
+        "type": "ephemeral",
+        "ttl": "1h"
+       }
+      }
+     ]
+    }
+   ],
+   "messageDigest": "8650e83211a84116",
+   "tools": [
+    "Agent",
+    "Edit",
+    "Glob",
+    "Grep",
+    "ListAgents",
+    "Read",
+    "ReportFindings",
+    "ScheduleWakeup",
+    "Skill",
+    "ToolSearch",
+    "DeferredToolPlaceholder",
+    "Write"
+   ],
+   "toolsDigest": "60c5d5dd0a586e3a",
+   "metadataKeys": [
+    "user_id"
+   ],
+   "metadataUserIdKeys": [
+    "device_id",
+    "account_uuid",
+    "session_id"
+   ],
+   "thinking": {
+    "budget_tokens": 31999,
+    "type": "enabled",
+    "display": "updates"
+   },
+   "context_management": {
+    "edits": [
+     {
+      "type": "clear_thinking_20251015",
+      "keep": "all"
+     }
+    ]
+   },
+   "output_config": null,
+   "output_format": null,
+   "stream": true,
+   "max_tokens": 32000,
+   "ccFieldHits": [],
+   "bodyDigest": "646384e8822acd9f"
+  }
+ ],
+ "otherEndpoints": [],
+ "connectAttempts": [
+  {
+   "at": "2026-11-01T13:39:25.787Z",
+   "kind": "connect",
+   "target": "api.anthropic.com:443"
+  },
+  {
+   "at": "2026-11-01T13:39:25.789Z",
+   "kind": "connect",
+   "target": "api.anthropic.com:443"
+  },
+  {
+   "at": "2026-11-01T13:39:26.037Z",
+   "kind": "connect",
+   "target": "api.anthropic.com:443"
+  },
+  {
+   "at": "2026-11-01T13:39:26.037Z",
+   "kind": "connect",
+   "target": "api.anthropic.com:443"
+  },
+  {
+   "at": "2026-11-01T13:39:26.037Z",
+   "kind": "connect",
+   "target": "api.anthropic.com:443"
+  },
+  {
+   "at": "2026-11-01T13:39:26.037Z",
+   "kind": "connect",
+   "target": "api.anthropic.com:443"
+  },
+  {
+   "at": "2026-11-01T13:39:26.037Z",
+   "kind": "connect",
+   "target": "api.anthropic.com:443"
+  },
+  {
+   "at": "2026-11-01T13:39:26.274Z",
+   "kind": "connect",
+   "target": "api.anthropic.com:443"
+  },
+  {
+   "at": "2026-11-01T13:39:26.777Z",
+   "kind": "connect",
+   "target": "api.anthropic.com:443"
+  },
+  {
+   "at": "2026-11-01T13:39:26.786Z",
+   "kind": "connect",
+   "target": "api.anthropic.com:443"
+  }
+ ],
+ "stdoutTypes": [
+  "system/init",
+  "assistant",
+  "rate_limit_event",
+  "result/success"
+ ],
+ "stdoutTail": [
+  "{\"type\":\"assistant\",\"message\":{\"id\":\"msg_mock_1\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-haiku-4-5\",\"content\":[{\"type\":\"text\",\"text\":\"OK\"}],\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{\"input_tokens\":12,\"cache_creation_input_tokens\":0,\"cache_read_input_tokens\":0,\"output_tokens\":1},\"c",
+  "{\"type\":\"rate_limit_event\",\"rate_limit_info\":{\"status\":\"allowed\",\"isUsingOverage\":false},\"uuid\":\"3acd5670-4674-49e6-902e-2cc43645c10a\",\"session_id\":\"cf3a6584-5147-4475-9ee7-413f87ae1811\"}",
+  "{\"duration_api_ms\":31,\"stop_reason\":\"end_turn\",\"session_id\":\"cf3a6584-5147-4475-9ee7-413f87ae1811\",\"total_cost_usd\":0.000027,\"usage\":{\"input_tokens\":12,\"cache_creation_input_tokens\":0,\"cache_read_input_tokens\":0,\"output_tokens\":3,\"output_tokens_details\":{\"thinking_tokens\":0},\"server_tool_use\":{\"web_"
+ ],
+ "stderrTail": [],
+ "digest": "de66f9984b6d5879"
+}

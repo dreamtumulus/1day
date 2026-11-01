@@ -1,0 +1,349 @@
+{
+ "case": "assistant-text",
+ "transcriptLines": 4,
+ "transcriptBlockTypes": [
+  "text",
+  "text",
+  "text",
+  "text"
+ ],
+ "resumed": {
+  "gate": "resume",
+  "tag": "g3-assistant-text",
+  "binaryVersion": "2.1.312",
+  "model": "claude-sonnet-5-5",
+  "promptLen": 43,
+  "sampledAt": "2026-11-01T13:37:32.115Z",
+  "durationMs": 1725,
+  "exitCode": 0,
+  "killed": false,
+  "killedAfterMs": null,
+  "killReason": null,
+  "args": [
+   "-p",
+   "--model",
+   "claude-sonnet-5-5",
+   "--output-format",
+   "stream-json",
+   "--verbose",
+   "--resume",
+   "309126d8-a6d0-4ae6-bf7a-cfbf35bf629e",
+   "LIVE-QUESTION: summarize the history above."
+  ],
+  "env": [],
+  "init": {
+   "sessionId": "309126d8-a6d0-4ae6-bf7a-cfbf35bf629e",
+   "model": "claude-sonnet-5-5",
+   "permissionMode": "default",
+   "apiKeySource": "none",
+   "cwdIsWork": true,
+   "tools": 24,
+   "mcpServers": [],
+   "outputStyle": "default",
+   "keys": [
+    "type",
+    "subtype",
+    "cwd",
+    "session_id",
+    "tools",
+    "mcp_servers",
+    "model",
+    "permissionMode",
+    "slash_commands",
+    "terminal_slash_commands",
+    "apiKeySource",
+    "claude_code_version",
+    "output_style",
+    "agents",
+    "skills",
+    "plugins",
+    "capabilities",
+    "analytics_disabled",
+    "product_feedback_disabled",
+    "uuid",
+    "memory_paths",
+    "original_cwd",
+    "additional_directories",
+    "messaging_socket_path",
+    "fast_mode_state",
+    "fast_mode_disabled_reason",
+    "per_turn_effort_active",
+    "view_mode"
+   ]
+  },
+  "requests": [
+   {
+    "url": "/v1/messages?beta=true",
+    "method": "POST",
+    "headers": {
+     "accept": "application/json",
+     "content-type": "application/json",
+     "user-agent": "claude-cli/2.1.312 (external, sdk-cli)",
+     "x-claude-code-session-id": "309126d8-a6d0-4ae6-bf7a-cfbf35bf629e",
+     "x-stainless-arch": "x64",
+     "x-stainless-lang": "js",
+     "x-stainless-os": "Linux",
+     "x-stainless-package-version": "0.128.0",
+     "x-stainless-retry-count": "0",
+     "x-stainless-runtime": "node",
+     "x-stainless-runtime-version": "v26.12.1",
+     "x-stainless-timeout": "600",
+     "anthropic-beta": "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,context-management-2025-06-27,per-turn-control-2026-07-01,thinking-token-count-2026-05-13,advanced-tool-use-2025-11-20,effort-2025-11-24,thinking-display-updates-2026-08-18,extended-cache-ttl-2025-04-11",
+     "anthropic-dangerous-direct-browser-access": "true",
+     "anthropic-version": "2023-06-01",
+     "x-app": "cli",
+     "accept-encoding": "gzip, deflate, br, zstd"
+    },
+    "betaList": [
+     "claude-code-20250219",
+     "oauth-2025-04-20",
+     "interleaved-thinking-2025-05-14",
+     "context-management-2025-06-27",
+     "per-turn-control-2026-07-01",
+     "thinking-token-count-2026-05-13",
+     "advanced-tool-use-2025-11-20",
+     "effort-2025-11-24",
+     "thinking-display-updates-2026-08-18",
+     "extended-cache-ttl-2025-04-11"
+    ],
+    "authScheme": "bearer",
+    "topLevelKeys": [
+     "model",
+     "messages",
+     "system",
+     "tools",
+     "metadata",
+     "max_tokens",
+     "thinking",
+     "context_management",
+     "output_config",
+     "stream"
+    ],
+    "system": [
+     {
+      "len": 74,
+      "head": "x-anthropic-billing-header: cc_version=2.1.312.2ca; cc_entrypoint=sdk-cli;",
+      "cache_control": null,
+      "hasMarker": false
+     },
+     {
+      "len": 62,
+      "head": "You are a Claude agent, built on Anthropic's Claude Agent SDK.",
+      "cache_control": {
+       "type": "ephemeral",
+       "ttl": "1h"
+      },
+      "hasMarker": false
+     },
+     {
+      "len": 5593,
+      "head": "\nYou are an agent working with the user toward their goals, using your own judgment along the way.\n\nIMPORTANT: Assist with authorized security testing, defensiv",
+      "cache_control": {
+       "type": "ephemeral",
+       "ttl": "1h"
+      },
+      "hasMarker": false
+     }
+    ],
+    "systemDigest": "1956cbee0379ba60",
+    "systemBlockDigests": [
+     "d946cbac3cd531a9",
+     "0d7062851dd7bd7e",
+     "3ccbd00a30e0a621"
+    ],
+    "identitySentence": null,
+    "secondLine": "You are a Claude agent, built on Anthropic's Claude Agent SDK.",
+    "billingLine": "x-anthropic-billing-header: cc_version=2.1.312.2ca; cc_entrypoint=sdk-cli;",
+    "messages": [
+     {
+      "role": "user",
+      "blocks": [
+       {
+        "type": "string",
+        "len": 22,
+        "head": "IMPORTED-USER-1: hello"
+       }
+      ]
+     },
+     {
+      "role": "system",
+      "blocks": []
+     },
+     {
+      "role": "assistant",
+      "blocks": [
+       {
+        "type": "text",
+        "len": 37,
+        "head": "IMPORTED-ASSISTANT-TEXT-7c1: hi there",
+        "cache_control": null
+       }
+      ]
+     },
+     {
+      "role": "user",
+      "blocks": [
+       {
+        "type": "string",
+        "len": 22,
+        "head": "IMPORTED-USER-2: again"
+       }
+      ]
+     },
+     {
+      "role": "assistant",
+      "blocks": [
+       {
+        "type": "text",
+        "len": 24,
+        "head": "IMPORTED-ASSISTANT-2: ok",
+        "cache_control": null
+       }
+      ]
+     },
+     {
+      "role": "user",
+      "blocks": [
+       {
+        "type": "text",
+        "len": 583,
+        "head": "<system-reminder>\nAttribution for git commits and pull requests you create from here on (this replaces Claude Code's own earlier attribution guidance, such as a",
+        "cache_control": null
+       },
+       {
+        "type": "text",
+        "len": 43,
+        "head": "LIVE-QUESTION: summarize the history above.",
+        "cache_control": null
+       }
+      ]
+     },
+     {
+      "role": "system",
+      "blocks": [
+       {
+        "type": "text",
+        "len": 2510,
+        "head": "Available agent types for the Agent tool:\n- claude: Catch-all for any task that doesn't fit a more specific agent. FleetView's default when no agent name is typ",
+        "cache_control": {
+         "type": "ephemeral",
+         "ttl": "1h"
+        }
+       }
+      ]
+     }
+    ],
+    "messageDigest": "030f0b10970aaae9",
+    "tools": [
+     "Agent",
+     "Bash",
+     "Edit",
+     "ListAgents",
+     "Read",
+     "ReportFindings",
+     "ScheduleWakeup",
+     "Skill",
+     "ToolSearch",
+     "Workflow",
+     "DeferredToolPlaceholder",
+     "Write"
+    ],
+    "toolsDigest": "2106a37964466cf3",
+    "metadataKeys": [
+     "user_id"
+    ],
+    "metadataUserIdKeys": [
+     "device_id",
+     "account_uuid",
+     "session_id"
+    ],
+    "thinking": {
+     "type": "adaptive",
+     "display": "updates"
+    },
+    "context_management": {
+     "edits": [
+      {
+       "type": "clear_thinking_20251015",
+       "keep": "all"
+      }
+     ]
+    },
+    "output_config": {
+     "effort": "medium"
+    },
+    "output_format": null,
+    "stream": true,
+    "max_tokens": 128000,
+    "ccFieldHits": [],
+    "bodyDigest": "888d4de673215fd2"
+   }
+  ],
+  "otherEndpoints": [],
+  "connectAttempts": [
+   {
+    "at": "2026-11-01T13:37:30.757Z",
+    "kind": "connect",
+    "target": "api.anthropic.com:443"
+   },
+   {
+    "at": "2026-11-01T13:37:30.759Z",
+    "kind": "connect",
+    "target": "api.anthropic.com:443"
+   },
+   {
+    "at": "2026-11-01T13:37:30.953Z",
+    "kind": "connect",
+    "target": "api.anthropic.com:443"
+   },
+   {
+    "at": "2026-11-01T13:37:30.953Z",
+    "kind": "connect",
+    "target": "api.anthropic.com:443"
+   },
+   {
+    "at": "2026-11-01T13:37:30.954Z",
+    "kind": "connect",
+    "target": "api.anthropic.com:443"
+   },
+   {
+    "at": "2026-11-01T13:37:30.954Z",
+    "kind": "connect",
+    "target": "api.anthropic.com:443"
+   },
+   {
+    "at": "2026-11-01T13:37:30.954Z",
+    "kind": "connect",
+    "target": "api.anthropic.com:443"
+   },
+   {
+    "at": "2026-11-01T13:37:31.283Z",
+    "kind": "connect",
+    "target": "api.anthropic.com:443"
+   },
+   {
+    "at": "2026-11-01T13:37:31.786Z",
+    "kind": "connect",
+    "target": "api.anthropic.com:443"
+   },
+   {
+    "at": "2026-11-01T13:37:31.797Z",
+    "kind": "connect",
+    "target": "api.anthropic.com:443"
+   }
+  ],
+  "stdoutTypes": [
+   "system/init",
+   "assistant",
+   "rate_limit_event",
+   "result/success"
+  ],
+  "stdoutTail": [
+   "{\"type\":\"assistant\",\"message\":{\"id\":\"msg_mock_1\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-sonnet-5-5\",\"content\":[{\"type\":\"text\",\"text\":\"OK\"}],\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{\"input_tokens\":12,\"cache_creation_input_tokens\":0,\"cache_read_input_tokens\":0,\"output_tokens\":1},\"",
+   "{\"type\":\"rate_limit_event\",\"rate_limit_info\":{\"status\":\"allowed\",\"isUsingOverage\":false},\"uuid\":\"291974d6-7580-40a0-80a1-16090939c643\",\"session_id\":\"309126d8-a6d0-4ae6-bf7a-cfbf35bf629e\"}",
+   "{\"duration_api_ms\":34,\"stop_reason\":\"end_turn\",\"session_id\":\"309126d8-a6d0-4ae6-bf7a-cfbf35bf629e\",\"total_cost_usd\":0.000054,\"usage\":{\"input_tokens\":12,\"cache_creation_input_tokens\":0,\"cache_read_input_tokens\":0,\"output_tokens\":3,\"output_tokens_details\":{\"thinking_tokens\":0},\"server_tool_use\":{\"web_"
+  ],
+  "stderrTail": [],
+  "digest": "63f9fdf6ec82afac"
+ }
+}

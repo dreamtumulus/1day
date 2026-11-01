@@ -1,0 +1,305 @@
+{
+ "user": {
+  "exitCode": 0,
+  "transcriptLines": 2,
+  "initSessionId": "b33f296a-5a92-4e41-bd7f-d51cece95eca",
+  "upstreamMessages": 5,
+  "imported": {
+   "userText": true,
+   "assistantText": true,
+   "toolUse": false,
+   "toolResult": false,
+   "thinking": false,
+   "signatureForwarded": false,
+   "syntheticAssistant": false,
+   "interruptedToolResult": false
+  },
+  "roles": [
+   "user:string",
+   "system:",
+   "assistant:text",
+   "user:text+text",
+   "system:text"
+  ],
+  "thinkingBlocks": [],
+  "toolUseLinks": [],
+  "digest": "ec8caf761df97e8e",
+  "stderrTail": []
+ },
+ "assistant-text": {
+  "exitCode": 0,
+  "transcriptLines": 4,
+  "initSessionId": "309126d8-a6d0-4ae6-bf7a-cfbf35bf629e",
+  "upstreamMessages": 7,
+  "imported": {
+   "userText": true,
+   "assistantText": true,
+   "toolUse": false,
+   "toolResult": false,
+   "thinking": false,
+   "signatureForwarded": false,
+   "syntheticAssistant": false,
+   "interruptedToolResult": false
+  },
+  "roles": [
+   "user:string",
+   "system:",
+   "assistant:text",
+   "user:string",
+   "assistant:text",
+   "user:text+text",
+   "system:text"
+  ],
+  "thinkingBlocks": [],
+  "toolUseLinks": [],
+  "digest": "63f9fdf6ec82afac",
+  "stderrTail": []
+ },
+ "tool-use": {
+  "exitCode": 0,
+  "transcriptLines": 4,
+  "initSessionId": "d3a1202e-dadb-44f1-87c4-aab8df19cea8",
+  "upstreamMessages": 7,
+  "imported": {
+   "userText": true,
+   "assistantText": true,
+   "toolUse": true,
+   "toolResult": true,
+   "thinking": false,
+   "signatureForwarded": false,
+   "syntheticAssistant": false,
+   "interruptedToolResult": false
+  },
+  "roles": [
+   "user:string",
+   "system:",
+   "assistant:tool_use",
+   "user:tool_result",
+   "assistant:text",
+   "user:text+text",
+   "system:text"
+  ],
+  "thinkingBlocks": [],
+  "toolUseLinks": [
+   "toolu_imported_01",
+   "toolu_imported_01"
+  ],
+  "digest": "b10b59954a7b91d4",
+  "stderrTail": []
+ },
+ "thinking-last": {
+  "exitCode": 0,
+  "transcriptLines": 4,
+  "initSessionId": "589ec6f3-690e-4a16-867b-495492939e3d",
+  "upstreamMessages": 7,
+  "imported": {
+   "userText": true,
+   "assistantText": true,
+   "toolUse": false,
+   "toolResult": false,
+   "thinking": true,
+   "signatureForwarded": true,
+   "syntheticAssistant": false,
+   "interruptedToolResult": false
+  },
+  "roles": [
+   "user:string",
+   "system:",
+   "assistant:thinking+text",
+   "user:string",
+   "assistant:thinking+text",
+   "user:text+text",
+   "system:text"
+  ],
+  "thinkingBlocks": [
+   {
+    "role": "assistant",
+    "thinkingLen": 29,
+    "sigLen": 40,
+    "sigIsFake": true,
+    "sigDigest": "04a6cf876a5b8db2",
+    "hasSig": true
+   },
+   {
+    "role": "assistant",
+    "thinkingLen": 22,
+    "sigLen": 40,
+    "sigIsFake": true,
+    "sigDigest": "04a6cf876a5b8db2",
+    "hasSig": true
+   }
+  ],
+  "toolUseLinks": [],
+  "digest": "5b7301478a5a598b",
+  "stderrTail": []
+ },
+ "thinking-earlier": {
+  "exitCode": 0,
+  "transcriptLines": 6,
+  "initSessionId": "f206d488-a9e8-4c6a-b947-b05f7adb4b55",
+  "upstreamMessages": 9,
+  "imported": {
+   "userText": true,
+   "assistantText": true,
+   "toolUse": false,
+   "toolResult": false,
+   "thinking": true,
+   "signatureForwarded": true,
+   "syntheticAssistant": false,
+   "interruptedToolResult": false
+  },
+  "roles": [
+   "user:string",
+   "system:",
+   "assistant:thinking+text",
+   "user:string",
+   "assistant:text",
+   "user:string",
+   "assistant:text",
+   "user:text+text",
+   "system:text"
+  ],
+  "thinkingBlocks": [
+   {
+    "role": "assistant",
+    "thinkingLen": 41,
+    "sigLen": 40,
+    "sigIsFake": true,
+    "sigDigest": "04a6cf876a5b8db2",
+    "hasSig": true
+   }
+  ],
+  "toolUseLinks": [],
+  "digest": "f42170d51416810e",
+  "stderrTail": []
+ },
+ "thinking-nosig": {
+  "exitCode": 0,
+  "transcriptLines": 4,
+  "initSessionId": "d7876966-6bb2-48f6-99d5-5e3d143fa72d",
+  "upstreamMessages": 7,
+  "imported": {
+   "userText": true,
+   "assistantText": true,
+   "toolUse": false,
+   "toolResult": false,
+   "thinking": true,
+   "signatureForwarded": false,
+   "syntheticAssistant": false,
+   "interruptedToolResult": false
+  },
+  "roles": [
+   "user:string",
+   "system:",
+   "assistant:thinking+text",
+   "user:string",
+   "assistant:text",
+   "user:text+text",
+   "system:text"
+  ],
+  "thinkingBlocks": [
+   {
+    "role": "assistant",
+    "thinkingLen": 34,
+    "sigLen": 0,
+    "sigIsFake": false,
+    "sigDigest": "e3b0c44298fc1c14",
+    "hasSig": false
+   }
+  ],
+  "toolUseLinks": [],
+  "digest": "4bcdcb619a6c0b8c",
+  "stderrTail": []
+ },
+ "thinking-badsig": {
+  "exitCode": 0,
+  "transcriptLines": 4,
+  "initSessionId": "fa23fc3c-ed53-404b-b715-93bbc6c6e907",
+  "upstreamMessages": 7,
+  "imported": {
+   "userText": true,
+   "assistantText": true,
+   "toolUse": false,
+   "toolResult": false,
+   "thinking": true,
+   "signatureForwarded": false,
+   "syntheticAssistant": false,
+   "interruptedToolResult": false
+  },
+  "roles": [
+   "user:string",
+   "system:",
+   "assistant:thinking+text",
+   "user:string",
+   "assistant:text",
+   "user:text+text",
+   "system:text"
+  ],
+  "thinkingBlocks": [
+   {
+    "role": "assistant",
+    "thinkingLen": 35,
+    "sigLen": 21,
+    "sigIsFake": false,
+    "sigDigest": "ffdd43711cbb195f",
+    "hasSig": true
+   }
+  ],
+  "toolUseLinks": [],
+  "digest": "4ef5d921c2da4b18",
+  "stderrTail": []
+ },
+ "combined": {
+  "exitCode": 0,
+  "transcriptLines": 8,
+  "initSessionId": "86dfcc56-f0c2-426e-8a08-d4324e0e81de",
+  "upstreamMessages": 11,
+  "imported": {
+   "userText": true,
+   "assistantText": true,
+   "toolUse": true,
+   "toolResult": true,
+   "thinking": true,
+   "signatureForwarded": true,
+   "syntheticAssistant": false,
+   "interruptedToolResult": false
+  },
+  "roles": [
+   "user:string",
+   "system:",
+   "assistant:thinking+text",
+   "user:string",
+   "assistant:tool_use",
+   "user:tool_result",
+   "assistant:text",
+   "user:string",
+   "assistant:thinking+text",
+   "user:text+text",
+   "system:text"
+  ],
+  "thinkingBlocks": [
+   {
+    "role": "assistant",
+    "thinkingLen": 34,
+    "sigLen": 40,
+    "sigIsFake": true,
+    "sigDigest": "04a6cf876a5b8db2",
+    "hasSig": true
+   },
+   {
+    "role": "assistant",
+    "thinkingLen": 39,
+    "sigLen": 40,
+    "sigIsFake": true,
+    "sigDigest": "04a6cf876a5b8db2",
+    "hasSig": true
+   }
+  ],
+  "toolUseLinks": [
+   "toolu_imported_02",
+   "toolu_imported_02"
+  ],
+  "digest": "494c012cff9912fb",
+  "stderrTail": []
+ }
+}

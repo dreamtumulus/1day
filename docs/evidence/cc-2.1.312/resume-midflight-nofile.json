@@ -1,0 +1,80 @@
+{
+ "gate": "resume",
+ "tag": "midflight-nofile",
+ "binaryVersion": "2.1.312",
+ "model": "claude-sonnet-5-5",
+ "promptLen": 29,
+ "sampledAt": "2026-11-01T13:34:46.661Z",
+ "durationMs": 945,
+ "exitCode": 1,
+ "killed": false,
+ "killedAfterMs": null,
+ "killReason": null,
+ "args": [
+  "-p",
+  "--model",
+  "claude-sonnet-5-5",
+  "--output-format",
+  "stream-json",
+  "--verbose",
+  "--resume",
+  "66666666-7777-4888-8999-aaaaaaaaaa01",
+  "T1-AFTER-NOFILE: still there?"
+ ],
+ "env": [],
+ "init": null,
+ "requests": [],
+ "otherEndpoints": [],
+ "connectAttempts": [
+  {
+   "at": "2026-11-01T13:34:46.142Z",
+   "kind": "connect",
+   "target": "api.anthropic.com:443"
+  },
+  {
+   "at": "2026-11-01T13:34:46.143Z",
+   "kind": "connect",
+   "target": "api.anthropic.com:443"
+  },
+  {
+   "at": "2026-11-01T13:34:46.295Z",
+   "kind": "connect",
+   "target": "api.anthropic.com:443"
+  },
+  {
+   "at": "2026-11-01T13:34:46.295Z",
+   "kind": "connect",
+   "target": "api.anthropic.com:443"
+  },
+  {
+   "at": "2026-11-01T13:34:46.296Z",
+   "kind": "connect",
+   "target": "api.anthropic.com:443"
+  },
+  {
+   "at": "2026-11-01T13:34:46.296Z",
+   "kind": "connect",
+   "target": "api.anthropic.com:443"
+  },
+  {
+   "at": "2026-11-01T13:34:46.296Z",
+   "kind": "connect",
+   "target": "api.anthropic.com:443"
+  },
+  {
+   "at": "2026-11-01T13:34:46.346Z",
+   "kind": "connect",
+   "target": "api.anthropic.com:443"
+  }
+ ],
+ "stdoutTypes": [
+  "result/error_during_execution"
+ ],
+ "stdoutTail": [
+  "{\"type\":\"result\",\"subtype\":\"error_during_execution\",\"duration_ms\":0,\"duration_api_ms\":0,\"is_error\":true,\"num_turns\":0,\"stop_reason\":null,\"session_id\":\"66666666-7777-4888-8999-aaaaaaaaaa01\",\"total_cost_usd\":0,\"usage\":{\"output_tokens_details\":{\"thinking_tokens\":0},\"input_tokens\":0,\"cache_creation_inpu"
+ ],
+ "stderrTail": [
+  "No conversation found with session ID: 66666666-7777-4888-8999-aaaaaaaaaa01"
+ ],
+ "digest": "ef6028990470d033"
+}
