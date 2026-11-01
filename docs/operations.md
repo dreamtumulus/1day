@@ -161,6 +161,7 @@ curl -s -o /dev/null -w '%{http_code}\n' https://1dayapi.com/login   # 期望 20
 | 查看前端错误 | `data/client-errors.log`（目前前端未上报） |
 | 证书续期 | certbot timer 自动；手动 `certbot renew --dry-run` 检查 |
 | 发布后验证 | `ops/bin/release-verify`（真实请求 + 探针 + 池 online 数）；不通过不算发布完成 |
+| 灰度核对（铁律 2） | `ops/bin/canary-verify`（灰度 Key 打三协议、列三态开关、`/health.counters` 必须为零项、24h journald 告警行）；每轮开关切 `canary` 后与 24h 观察结束时各跑一次，输出贴进发布记录 |
 | 告警通道 | `/root/monitor/alert.conf`；`python3 /root/monitor/alert.py test` |
 | 新增 worker 节点 | 见下方检查清单 |
 

@@ -87,3 +87,12 @@ resume 时再次带 `--append-system-prompt-file`：追加文本是否只出现�
 
 ### T10 `mid-conversation-tool-changes-2026-07-01` 触发条件（选做）
 cli 入口 12 次采样未见该 beta，而 10-28 采样见过；试 `--mcp-config` 带一个假 MCP server 的交互会话，看是否出现。结论写进 `profiles.json` 的 `betaPolicy.byFeature`。
+
+## 7. 第三批（2026-11-01 深夜；T8 的后续）
+
+### T11 导入 transcript × `--append-system-prompt-file`（必做）
+T8 证明 resume 会回放 transcript 里的 `prompt_snapshot` 并忽略当次 append。网关导入的 transcript（`buildNativeTranscript`）**没有** snapshot 行。
+请复用 T9 的驱动：导入 8 行 transcript 后以 `--resume <id> --append-system-prompt-file <marker 文件> --input-format stream-json` 续一轮，看：① marker 是否进入主提示词（追加生效）；② system 块数/长度；③ 若不生效，试在 transcript 首行之前写一条最小 `prompt_snapshot` attachment（形状照 T8 抓到的样本，内容只放 marker）看是否被回放。结论写 `history-import-append.json` + PROGRESS 一行，并给出"导入会话的客户 system 应如何落地"的建议。
+
+### T12 `--resume` 后 `# Environment update` 块（选做）
+T1 发现 cwd 变化时 resume 会在 messages 尾部追加 role=system 的 `# Environment update … (was …)`。节点每次 open 的 scratch cwd 都不同，所以每次 resume 都会多这一块（上游可见、含路径）。请测：`CLAUDE_CODE_DISABLE_ATTACHMENTS=1` 下是否仍追加；以及 transcript 行里的 `cwd` 字段改成与本次相同时是否消失。结论决定节点是否要把导入/resume 的 transcript `cwd` 改写成本次 workDir（现已改写）以及是否足够。

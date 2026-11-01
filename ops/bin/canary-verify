@@ -1,0 +1,74 @@
+#!/usr/bin/env bash
+# Canary-group verification for the canonical rollout (docs/iron-rules.md 铁律 2; docs/canonical-progress-2026-11-01.md).
+#   ops/bin/canary-verify                 # on the main server, as root; uses /root/monitor/canary-apikey.txt
+#   API_BASE=http://127.0.0.1:18400 CANARY_KEY=sk-… DB_PATH=/tmp/x.db ops/bin/canary-verify   # any stack
+# Prints: the three-state switches as the DB has them, the canary key's effective policy, one request per dialect
+# (messages / chat / responses, stream + non-stream) with the canary key, the gateway counters that must stay at zero
+# (cc_profile_mismatch_total, team_suspended_total …) and the last 24 h of journald lines that would mean trouble.
+# Exit non-zero when a request fails or a must-be-zero counter is not zero. Read-only: changes nothing.
+set -uo pipefail
+API_BASE=${API_BASE:-https://api.1dayapi.com}
+DB_PATH=${DB_PATH:-/opt/1dayapi/data/1dayapi.db}
+KEY=${CANARY_KEY:-$(cat "${CANARY_KEY_FILE:-/root/monitor/canary-apikey.txt}" 2>/dev/null || true)}
+MODEL=${CANARY_MODEL:-claude-sonnet-5-5}
+fail=0
+say() { printf '%s\n' "$*"; }
+if [ -z "$KEY" ]; then say "no canary key (CANARY_KEY or /root/monitor/canary-apikey.txt): 铁律 2 needs the canary group's key first"; exit 2; fi
+
+say "== 1. three-state switches (DB settings; missing = default 0)"
+if [ -r "$DB_PATH" ]; then
+  node --no-warnings -e "
+import('node:sqlite').then(({DatabaseSync})=>{
+  const db=new DatabaseSync(process.argv[1],{readOnly:true});
+  const rows=Object.fromEntries(db.prepare('SELECT key,value FROM settings').all().map(r=>[r.key,r.value]));
+  for (const k of ['canary_group_id','direct_profile_strict','cc_client_response_profile','key_policy_auto','worker_canonical','canonical_history_import','raw_preserve_headers','telemetry_evidence_required','telemetry_health_days','direct_cc_entrypoint_normalize','direct_strip_user_email','direct_cc_canonical_fields','worker_prompt_hide_platform_path','history_policy_default','history_policy_canary','cc_shape_policy','direct_cc_version_pin'])
+    console.log('  '+k.padEnd(34)+(rows[k]??'(default)'));
+  const g=rows.canary_group_id; if(g){const n=db.prepare('SELECT COUNT(*) n FROM account_groups WHERE group_id=?').get(g).n; const k=db.prepare('SELECT COUNT(*) n FROM api_keys WHERE group_id=? AND status=\\'active\\'').get(g).n; console.log('  canary group '+g+': '+n+' account(s), '+k+' active key(s)');} else console.log('  !! no canary group configured: every canary switch reads as 0');
+});" "$DB_PATH" || say "  (could not read settings)"
+else say "  (no DB at $DB_PATH)"; fi
+
+say "== 2. gateway /health counters (before)"
+before=$(curl -fsS -m 10 "$API_BASE/health" || echo '{}')
+printf '%s' "$before" | python3 -c 'import json,sys; c=json.load(sys.stdin).get("counters",{}); print("  "+(json.dumps(c) if c else "(empty)"))' 2>/dev/null
+
+req() { # name method path json [extra curl args]
+  local name=$1 path=$2 data=$3; shift 3
+  local out; out=$(mktemp)
+  local code; code=$(curl -s -m 180 -o "$out" -w '%{http_code}' -X POST "$API_BASE$path" -H "authorization: Bearer $KEY" -H "x-api-key: $KEY" -H 'content-type: application/json' -H 'anthropic-version: 2023-06-01' "$@" -d "$data")
+  local head; head=$(tr -d '\n' < "$out" | head -c 200)
+  say "  $name: HTTP $code  $head"
+  rm -f "$out"
+  [ "$code" = "200" ] || fail=1
+}
+say "== 3. canary key requests ($MODEL)"
+req "messages non-stream " /v1/messages "{\"model\":\"$MODEL\",\"max_tokens\":16,\"messages\":[{\"role\":\"user\",\"content\":\"Reply with the single word OK.\"}]}"
+req "messages stream     " /v1/messages "{\"model\":\"$MODEL\",\"max_tokens\":16,\"stream\":true,\"messages\":[{\"role\":\"user\",\"content\":\"Reply with the single word OK.\"}]}"
+req "chat non-stream     " /v1/chat/completions "{\"model\":\"$MODEL\",\"max_tokens\":16,\"messages\":[{\"role\":\"user\",\"content\":\"Reply with the single word OK.\"}]}"
+req "responses non-stream" /v1/responses "{\"model\":\"$MODEL\",\"max_output_tokens\":16,\"input\":\"Reply with the single word OK.\"}"
+req "responses stream    " /v1/responses "{\"model\":\"$MODEL\",\"max_output_tokens\":16,\"stream\":true,\"input\":\"Reply with the single word OK.\"}"
+say "  (strict contract probe: n=2 on chat → 400 unsupported_parameter only when the key's parameterPolicy is strict)"
+scode=$(curl -s -m 60 -o /tmp/canary-strict.json -w '%{http_code}' -X POST "$API_BASE/v1/chat/completions" -H "authorization: Bearer $KEY" -H 'content-type: application/json' -d "{\"model\":\"$MODEL\",\"max_tokens\":8,\"n\":2,\"messages\":[{\"role\":\"user\",\"content\":\"OK\"}]}")
+say "  chat n=2: HTTP $scode $(tr -d '\n' < /tmp/canary-strict.json | head -c 120)"
+
+say "== 4. counters that must stay at zero (after)"
+after=$(curl -fsS -m 10 "$API_BASE/health" || echo '{}')
+printf '%s' "$after" | python3 -c '
+import json,sys
+c=json.load(sys.stdin).get("counters",{})
+zero=["cc_profile_mismatch_total","team_suspended_total","native_telemetry_unverified_total","org_budget_exhausted_total"]
+bad=0
+for k,v in sorted(c.items()):
+    flag = "  !! " if any(k.startswith(z) for z in zero) and v>0 else "     "
+    if flag.strip(): bad=1
+    print(flag+k+" = "+str(v))
+if not c: print("     (no counters yet)")
+sys.exit(1 if bad else 0)' || fail=1
+
+say "== 5. journald, last 24 h (must be empty)"
+if command -v journalctl >/dev/null 2>&1; then
+  j=$(journalctl -u '1dayapi-gateway@*' -u 1dayapi-console --since '24 hours ago' --no-pager 2>/dev/null | grep -E '\[cc-profile\].*mismatch|\[ALERT\]\[org\]|rate_limit_error.{0,40}"message":"Error"|organization has disabled|suspended for this organization' | tail -20)
+  if [ -n "$j" ]; then say "$j" | sed 's/^/  !! /'; fail=1; else say "  ok (nothing)"; fi
+else say "  (no journalctl here)"; fi
+
+[ "$fail" = 0 ] && say "CANARY VERIFIED" || say "CANARY: FAILURES"
+exit $fail
