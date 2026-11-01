@@ -35,7 +35,7 @@ Claude Code 打到订阅号上。完整清单见第 3 节。
 
 | # | 项目 | 要求 | 失败代号 |
 |---|---|---|---|
-| 1 | `user-agent` | `claude-cli/<x.y.z> (external, <entrypoint>)`。交互式 entrypoint 为 `cli`，`-p` / Agent SDK 为 `sdk-cli`；entrypoint 必须是已知值 | `ua_entrypoint`（不是 CC 则 `not_cc`） |
+| 1 | `user-agent` | `claude-cli/<x.y.z> (external, <entrypoint>)`。交互式 entrypoint 为 `cli`，`-p` / Agent SDK 为 `sdk-cli`。自定义入口（如 `mirasim`）在平台默认设置下放行，上行前改写为 `cli`，但必须与计费头 `cc_entrypoint` 一致（2026-11-01 更新；11-01 当天 01:27–发布前曾被硬拒） | `ua_entrypoint`（不是 CC 则 `not_cc`） |
 | 2 | `x-app` | 恒为 `cli` | `x_app_cli` |
 | 3 | `anthropic-beta` | 逗号分隔，必须包含 `claude-code-20250219`。其他 beta 按真 CC 发什么就带什么，不强制完整列表 | `beta_claude_code` |
 | 4 | `system[0]` 计费头块 | `system` 必须是数组；第 0 块是 text 块，内容形如 `x-anthropic-billing-header: cc_version=2.1.301.f23; cc_entrypoint=sdk-cli;`，无 `cache_control` | `billing_header` |

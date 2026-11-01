@@ -1,7 +1,7 @@
 // One account = one software (docs/gateway.md §3): direct-path UA entrypoint / version alignment — pure, against core dist.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { normalizeCcSoftware, CC_SDK_VERSION } from "@1dayapi/core";
+import { normalizeCcSoftware, CC_SDK_VERSION, CC_VERSION, ccBuildSuffix } from "@1dayapi/core";
 
 const billing = (v, ep) => ({ type: "text", text: `x-anthropic-billing-header: cc_version=${v}; cc_entrypoint=${ep};` });
 const opts = { normalizeEntrypoint: true, versionPin: "2.1.303" };
@@ -48,4 +48,19 @@ test("string system / no billing block: headers still aligned, body untouched", 
   assert.deepEqual(n.changed, ["entrypoint", "version"]);
   assert.equal(n.headers["user-agent"], "claude-cli/2.1.303 (external, cli)");
   assert.equal(n.body.system, "plain prompt");
+});
+
+test("node build (2.1.312), version untouched: the billing suffix is recomputed against the forwarded messages (reset conversations on the direct path)", () => {
+  const original = [{ role: "user", content: "first question of the conversation" }, { role: "assistant", content: "a" }, { role: "user", content: "second one, after the boundary" }];
+  const forwarded = original.slice(2);
+  const clientSuffix = ccBuildSuffix(original, CC_VERSION);
+  const want = ccBuildSuffix(forwarded, CC_VERSION);
+  assert.notEqual(clientSuffix, want, "fixture: the two first-user texts must hash differently");
+  const headers = { "user-agent": `claude-cli/${CC_VERSION} (external, cli)` };
+  const n = normalizeCcSoftware(headers, { system: [billing(`${CC_VERSION}.${clientSuffix}`, "cli")], messages: forwarded }, { normalizeEntrypoint: true, versionPin: CC_VERSION });
+  assert.deepEqual(n.changed, ["suffix"]);
+  assert.equal(n.body.system[0].text, `x-anthropic-billing-header: cc_version=${CC_VERSION}.${want}; cc_entrypoint=cli;`);
+  assert.equal(n.headers["user-agent"], headers["user-agent"], "UA untouched");
+  const same = normalizeCcSoftware(headers, { system: [billing(`${CC_VERSION}.${want}`, "cli")], messages: forwarded }, { normalizeEntrypoint: true, versionPin: CC_VERSION });
+  assert.deepEqual(same.changed, [], "already right → untouched");
 });

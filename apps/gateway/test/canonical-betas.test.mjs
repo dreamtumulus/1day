@@ -35,7 +35,11 @@ test("Claude Code client with its own betas: passed through, oauth appended only
   assert.equal(r.headers["anthropic-beta"], cc["anthropic-beta"]);
   const noOauth = { ...cc, "anthropic-beta": "claude-code-20250219,interleaved-thinking-2025-05-14" };
   const r2 = buildUpstreamRequest(oauthAccount, { accessToken: "tok" }, "passthrough-anthropic", body, "claude-sonnet-5-5", noOauth);
-  assert.equal(r2.headers["anthropic-beta"], "claude-code-20250219,interleaved-thinking-2025-05-14,oauth-2025-04-20");
+  // inserted where a real OAuth client carries it (right after claude-code-20250219), not appended (audit 2026-11-01 B12)
+  assert.equal(r2.headers["anthropic-beta"], "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14");
+  const noCc = { ...cc, "anthropic-beta": "interleaved-thinking-2025-05-14" };
+  const r3 = buildUpstreamRequest(oauthAccount, { accessToken: "tok" }, "passthrough-anthropic", body, "claude-sonnet-5-5", noCc);
+  assert.equal(r3.headers["anthropic-beta"], "interleaved-thinking-2025-05-14,oauth-2025-04-20", "no anchor → appended");
 });
 
 test("dynamic betas and Anthropic server tools survive direct passthrough", () => {

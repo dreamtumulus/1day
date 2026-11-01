@@ -39,6 +39,8 @@
 | 503 | `team_capacity_exhausted` | upstream_error | **工具轮**（最后一条消息是 `tool_result` / `tool` / `function_call_output`）所在组织暂无可调度账号，或其账号全部尝试失败（2026-11-01 起）。工具轮不再切换组织、不重置代次：先等待至多 `ACCOUNT_BUSY_WAIT_MS`（默认 15 s）看组织是否恢复，仍不可用则返回本码并带 `Retry-After: 30`；对话上下文保留，客户端**原样重试同一请求**即可。此前（2026-10-30/31）同一情形切换组织后返回 409 `tool_continuation_after_reset`，两天 771 次 |
 | 409 | `tool_continuation_after_reset` | invalid_request_error | 工具轮的 `tool_use` 不是本平台当前代次发出的：历史策略 `reset` 下带着外部历史的工具轮（`history_unknown` 的工具轮形态），或代次重置后残留的旧工具轮。2026-11-01 起组织容量耗尽不再触发此码（见 503 `team_capacity_exhausted`） |
 
+**Retry-After 与响应头**（2026-11-01 起）：平台产生的每个 429 带 `Retry-After: 10`、每个 503 带 `Retry-After: 15`（`team_capacity_exhausted` 为 30；原样透传分组的上游值照转）。每个响应（成功或失败，含流式与提前 200 的头）带 `request-id`（网关请求 id，与 `usage_logs.request_id` 一致，用于对账）和 `x-1day-mode: direct | worker | relay`（实际执行路径：订阅直连 / 节点上的 Claude Code worker / 原样透传中转）。请求里有该路径无法生效的字段时带 `x-1day-ignored-params: temperature,top_k`（不报错，只告知；见 client-notes）。上游的 `request-id` / `anthropic-ratelimit-*` 不转发：它们描述的是本次服务的订阅账号而不是客户的 Key。
+
 迁移 32 起失败行还带统一错误对象：`error_scope`（`request` / `account_model` / `account` / `node_proxy` / `transport`）、`retryable`、`credential_version`、`execution_sequence`。节点代理失败与上游传输失败分开；凭据每次变更版本加 1，强制刷新后的重试使用新版本；同一客户请求的首次执行为 1，故障转移/刷新重试递增。
 
 失败请求同样写入 `usage_logs`（`status_code`、`error_code`，费用 0）。v2 的 `key_revoked`、`upstream_not_configured`、

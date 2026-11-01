@@ -307,13 +307,7 @@ export function normalizeCcSoftware(
     buildSuffix = "";
     changed.push("version");
   }
-  if (changed.length === 0) return { headers, body, changed };
-  const outHeaders: Record<string, string | string[] | undefined> = { ...headers, "user-agent": `${product}/${version}${buildSuffix}${rest}` };
-  if (changed.includes("version")) {
-    outHeaders["x-stainless-package-version"] = CC_SDK_VERSION;
-    outHeaders["x-stainless-runtime-version"] = CC_RUNTIME_VERSION;
-  }
-  // Billing block (first system text block): keep every other field, align version / entrypoint.
+  // Billing block (first system text block): keep every other field, align version / entrypoint / suffix.
   let outBody = body;
   const system = body?.system;
   if (Array.isArray(system) && system.length > 0) {
@@ -324,12 +318,29 @@ export function normalizeCcSoftware(
       // Pinned to the node's own build: recompute the prompt-dependent flag using the same algorithm as CC 2.1.312.
       // Pinned to another version: keep the client's flag because that build's salt is not asserted here.
       if (changed.includes("version")) line = line.replace(/(cc_version=)\d+\.\d+\.\d+(\.[0-9a-z]+)?/, (_m, pre, suf) => `${pre}${version}${version === CC_VERSION ? `.${ccBuildSuffix(body.messages, version)}` : (suf ?? "")}`);
+      else if (version === CC_VERSION) {
+        // Same build as the node, version untouched: the flag still has to match the *forwarded* messages. After a
+        // conversation reset the gateway forwards the post-boundary history, whose first user text differs from the
+        // one the client computed its flag from (2026-11-01, direct path reopened to reset conversations).
+        const want = ccBuildSuffix(body.messages, version);
+        const fixed = line.replace(/(cc_version=\d+\.\d+\.\d+)(\.[0-9a-z]+)?/, (_m, pre) => `${pre}.${want}`);
+        if (fixed !== line) {
+          line = fixed;
+          changed.push("suffix");
+        }
+      }
       if (entrypoint) line = line.replace(/(cc_entrypoint=)[^;]*/, `$1${entrypoint}`);
       if (line !== text) {
         const nb0 = typeof b0 === "string" ? line : { ...(b0 as Json), text: line };
         outBody = { ...body, system: [nb0, ...system.slice(1)] };
       }
     }
+  }
+  if (changed.length === 0) return { headers, body, changed };
+  const outHeaders: Record<string, string | string[] | undefined> = { ...headers, "user-agent": `${product}/${version}${buildSuffix}${rest}` };
+  if (changed.includes("version")) {
+    outHeaders["x-stainless-package-version"] = CC_SDK_VERSION;
+    outHeaders["x-stainless-runtime-version"] = CC_RUNTIME_VERSION;
   }
   return { headers: outHeaders, body: outBody, changed };
 }

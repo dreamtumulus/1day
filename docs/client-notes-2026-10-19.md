@@ -58,3 +58,17 @@ Anthropic 对 5.x 系列模型收紧了 `thinking` 取值：`{type:"enabled", bu
 | 502 `upstream_error` | 可重试 1–2 次（上游或网络瞬时故障） |
 | 503 `no_available_account` | 指数退避重试（起步 5–10 秒）；持续超过 1 分钟请联系我们 |
 | 流式：流在 `message_stop` / `[DONE]` 前以错误事件结束 | 看错误事件的 `type`：`invalid_request_error` 不重试，`api_error` 可重试 |
+
+## 8. 2026-11-01 变更（随 11-01 发布生效）
+
+| 变化 | 客户端能感知到的 |
+|---|---|
+| 工具轮不再换组织 | 工具轮（最后一条是 `tool_result`）碰到组织暂无可用账号时返回 **503 `team_capacity_exhausted` + `Retry-After: 30`**，上下文保留，**原样重试同一请求**即可。此前返回 409 `tool_continuation_after_reset` 且上下文丢失 |
+| 默认历史策略改为 `passthrough` | 带着本平台没服务过的前几轮的请求，默认**原样转发**，不再只转最后一个问题、不再返回 `x-1day-context-reset: 1` 的 200。管理员已为 Key 显式设置 `reset` / `reject` 的不变 |
+| 每个 429 / 503 带 `Retry-After` | 429 → 10 s，503 → 15 s（`team_capacity_exhausted` 30 s）。按它退避 |
+| `request-id` 响应头 | 网关请求 id，报障时附上 |
+| `x-1day-mode` 响应头 | `direct`（订阅直连，响应与官方 Messages API 一致）/ `worker`（节点上的 Claude Code 执行器，见下行）/ `relay`（原样透传中转） |
+| `x-1day-ignored-params` 响应头 | 列出请求里**本路径无法生效、已被忽略**的字段，不报错。worker 路径：`temperature` / `top_p` / `top_k` / `service_tier` / `context_management` 等；OpenAI 方言另有 `n` / `seed` / `logprobs` / `response_format` / `presence_penalty` / `frequency_penalty` / `parallel_tool_calls` / `reasoning_effort`。看到这个头说明你依赖的参数没有生效 |
+| `count_tokens` 口径 | 与计费一致：文本按字符/4，图片与文档每块固定约 1600 token；此前按 base64 字节计，大图高估数十倍 |
+
+`x-1day-mode: worker` 路径的已知差异（不是官方 API 等价）：采样参数无效（见上）；`tool_choice: any/tool` 是提示词层面的要求，不保证一定返回 `tool_use`；`stop_sequences` 在带工具的回合可能不生效；安全拒答返回 400 `safeguards_refusal` 而非 `stop_reason: refusal`；流式请求在上游首字节前就会收到 200 和 SSE 注释行，非流式请求等待超过 75 s 时也会先收到 200 头、再补正文（之后若失败，错误以正文 / 流内事件给出）——这是 Cloudflare 100 s 超时下的可用性折衷。测活接管（§2c）对普通 Key 可由管理员关闭（`probeIntercept=false`）。

@@ -163,3 +163,17 @@ test("policy parsing defaults to observe", () => {
   assert.equal(parseCcShapePolicy("bogus"), "observe");
   assert.equal(parseCcShapePolicy(undefined), "observe");
 });
+
+test("custom entrypoint: hard-rejected by default, admitted as soft `ua_entrypoint_custom` with allowCustomEntrypoint (direct_cc_entrypoint_normalize=1)", () => {
+  const mirasimUa = { ...official312Headers, "user-agent": "claude-cli/2.1.312 (external, mirasim)" };
+  const mirasimBilling = official312Body.system.map((b, i) => i === 0 ? { ...b, text: b.text.replace("cc_entrypoint=sdk-cli", "cc_entrypoint=mirasim") } : b);
+  const body = { ...official312Body, system: mirasimBilling };
+  assert.deepEqual(classifyCcRequest(mirasimUa, body).missing, ["ua_entrypoint"], "default: the gate still refuses an unknown entrypoint");
+  const r = classifyCcRequest(mirasimUa, body, { allowCustomEntrypoint: true });
+  assert.equal(r.verdict, "genuine");
+  assert.deepEqual(r.missing, []);
+  assert.ok(r.soft.includes("ua_entrypoint_custom"));
+  // consistency between UA and billing entrypoint stays hard, and an entrypoint-less UA is never admitted
+  assert.deepEqual(classifyCcRequest(mirasimUa, official312Body, { allowCustomEntrypoint: true }).missing, ["entrypoint_mismatch"]);
+  assert.deepEqual(classifyCcRequest({ ...official312Headers, "user-agent": "claude-cli/2.1.312" }, body, { allowCustomEntrypoint: true }).missing, ["ua_entrypoint"]);
+});

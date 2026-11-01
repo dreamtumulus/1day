@@ -47,6 +47,12 @@ test("version pin to the node's build recomputes the billing flag; other pins ke
   assert.equal(toNode.body.system[0].text, "x-anthropic-billing-header: cc_version=2.1.312.0cd; cc_entrypoint=cli;");
   const toOther = normalizeCcSoftware(ua, body, { normalizeEntrypoint: false, versionPin: "2.1.303" });
   assert.equal(toOther.body.system[0].text, "x-anthropic-billing-header: cc_version=2.1.303.f23; cc_entrypoint=cli;");
-  const same = normalizeCcSoftware({ "user-agent": "claude-cli/2.1.312 (external, cli)" }, { system: [billing("2.1.312.6b4")] }, { normalizeEntrypoint: false, versionPin: "2.1.312" });
+  // a real 2.1.312 client's flag already matches its own first user text → untouched; a flag that does not match the
+  // forwarded messages (reset conversation forwarded from the boundary, 2026-11-01) is recomputed
+  const msgs = [{ role: "user", content: "hello there" }];
+  const same = normalizeCcSoftware({ "user-agent": "claude-cli/2.1.312 (external, cli)" }, { system: [billing(`2.1.312.${ccBuildSuffix(msgs)}`)], messages: msgs }, { normalizeEntrypoint: false, versionPin: "2.1.312" });
   assert.deepEqual(same.changed, [], "a client already on the node's version is untouched");
+  const stale = normalizeCcSoftware({ "user-agent": "claude-cli/2.1.312 (external, cli)" }, { system: [billing("2.1.312.6b4")], messages: msgs }, { normalizeEntrypoint: false, versionPin: "2.1.312" });
+  assert.deepEqual(stale.changed, ["suffix"]);
+  assert.equal(stale.body.system[0].text, `x-anthropic-billing-header: cc_version=2.1.312.${ccBuildSuffix(msgs)}; cc_entrypoint=cli;`);
 });

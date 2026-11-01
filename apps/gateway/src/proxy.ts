@@ -652,6 +652,8 @@ async function proxyRequest(req: FastifyRequest, reply: FastifyReply, format: Cl
     sendError(reply, format, status, code, message, type);
   };
   let rejectUnknownHistory = false;
+  /** The conversation was reset earlier, but this request's post-boundary history is this generation's own and is forwarded whole. */
+  let resetHistoryIntact = false;
   if (scope) {
     await lockScope(scope);
     const question = latestQuestion(body, format);
@@ -674,6 +676,7 @@ async function proxyRequest(req: FastifyRequest, reply: FastifyReply, format: Cl
         // message is. A tool round (assistant tool_use + user tool_result) is answerable only with its
         // chain intact; cutting it to "the latest question" here is what used to end a session mid-task.
         body = prepared.body;
+        resetHistoryIntact = true;
       } else if (question.message) {
         // No boundary this generation recognizes: a new conversation starts at the latest question.
         scope.boundary = saveBranchBoundary(scope.row.id, scope.token, scope.row.generation, scope.branch, question.anchor, question.prefix);
@@ -762,6 +765,10 @@ async function proxyRequest(req: FastifyRequest, reply: FastifyReply, format: Cl
   };
   ctx.body = body;
   if (scope) { scope.abort = ctx.abort; scope.responseCtx = ctx; }
+  // The platform's own request id, on every answer (success or error), like a real API's `request-id`. The
+  // upstream's id and `anthropic-ratelimit-*` are deliberately not relayed: they describe the subscription account
+  // behind this one call, not the customer's key (operator rule 2026-10-29; audit 2026-11-01 B2).
+  if (firstResponse && !reply.raw.headersSent) reply.header("request-id", ctx.requestId);
   // Attached now, not when the stream starts: a client that gives up during account selection,
   // a slow upstream head or a failover chain used to go unnoticed, so the request ran to the end
   // and was billed (2026-10-22: 816 requests a customer never received).
@@ -779,7 +786,16 @@ async function proxyRequest(req: FastifyRequest, reply: FastifyReply, format: Cl
   // request must be *shaped* like Claude Code, otherwise the subscription
   // account would carry a forged, anomalous request (Anthropic answers 429).
   // A raw passthrough group gets no shape classification either (§4a): nothing is judged, nothing logged.
-  const shape = rawGroup || !!scope?.row.reset_active ? null : classifyCcRequest(req.headers as Record<string, string | string[] | undefined>, body);
+  // A customer-made entrypoint is admitted only when `direct_cc_entrypoint_normalize=1`, the same switch that makes
+  // `normalizeCcSoftware` rewrite it to `(external, cli)` on the way out (one setting, both ends; 2026-11-01).
+  // A reset conversation whose post-boundary history is forwarded intact is still classified — on the client's
+  // original body, since the forwarded one starts mid-conversation — so a genuine Claude Code client is not
+  // locked onto the worker path for the rest of the conversation by one reset (2026-11-01, audit B4).
+  const shape = rawGroup || (!!scope?.row.reset_active && !resetHistoryIntact)
+    ? null
+    : classifyCcRequest(req.headers as Record<string, string | string[] | undefined>, resetHistoryIntact && scope ? scope.originalBody : body, {
+        allowCustomEntrypoint: getSetting("direct_cc_entrypoint_normalize") === "1",
+      });
   let ccClient = shape?.verdict === "genuine";
   if (shape && shape.verdict !== "not_cc") {
     ctx.ccShape = shape.verdict;
@@ -981,6 +997,13 @@ async function proxyRequest(req: FastifyRequest, reply: FastifyReply, format: Cl
         if (ctx.clientGone) {
           logFailure(ctx, account, 499, "client_closed", "Client closed the connection before an upstream answer");
           return;
+        }
+        // Path transparency (audit 2026-11-01 B14): which execution path answers — the client could only guess from
+        // the message id prefix before. Set before the early 200 so hijacked SSE/JSON heads carry it too.
+        if (!ctx.reply.raw.headersSent) {
+          ctx.reply.header("x-1day-mode", isCcrMode(mode) ? "worker" : raw ? "relay" : "direct");
+          const ignored = ignoredParams(ctx.body, format, mode);
+          if (ignored.length > 0) ctx.reply.header("x-1day-ignored-params", ignored.join(","));
         }
         beginEarlyStream(ctx);
         // Multipart tee-proof answers cannot start before the body is in; everything else may.
@@ -1377,6 +1400,26 @@ function logFailure(ctx: Ctx, account: AccountRow | null, status: number, code: 
   } catch (err) {
     console.error("[proxy] failed to log failed request:", err);
   }
+}
+
+/**
+ * Request fields this execution path accepts but cannot honour (audit 2026-11-01 B5/B7) — named in
+ * `x-1day-ignored-params` instead of being dropped silently, without breaking the request (a 400 would).
+ * Worker (real Claude Code on a node): no sampling flags, no OpenAI-only knobs; `max_tokens`, `stop_sequences`,
+ * `tool_choice` (prompted), thinking, images, documents and tools are honoured. Chat→Anthropic conversion:
+ * `temperature`/`top_p` (one of them), `stop`, tools and `tool_choice` are mapped, the rest is not.
+ */
+const WORKER_IGNORED_ANTHROPIC = ["temperature", "top_p", "top_k", "service_tier", "context_management", "mcp_servers", "container"];
+const WORKER_IGNORED_CHAT = ["temperature", "top_p", "n", "logprobs", "top_logprobs", "seed", "presence_penalty", "frequency_penalty", "logit_bias", "service_tier", "response_format", "parallel_tool_calls", "reasoning_effort", "prediction", "web_search_options"];
+const CONVERT_IGNORED_CHAT = ["n", "logprobs", "top_logprobs", "seed", "presence_penalty", "frequency_penalty", "logit_bias", "service_tier", "response_format", "parallel_tool_calls", "reasoning_effort", "prediction", "web_search_options"];
+const CONVERT_IGNORED_ANTHROPIC = ["top_k", "thinking", "context_management", "service_tier", "mcp_servers", "container"];
+export function ignoredParams(body: Json, format: ClientFormat, mode: Mode): string[] {
+  let names: string[];
+  if (isCcrMode(mode)) names = format === "anthropic" ? WORKER_IGNORED_ANTHROPIC : WORKER_IGNORED_CHAT;
+  else if (mode === "chat-via-anthropic") names = CONVERT_IGNORED_CHAT;
+  else if (mode === "anthropic-via-chat") names = CONVERT_IGNORED_ANTHROPIC;
+  else return [];
+  return names.filter((n) => body[n] !== undefined && body[n] !== null);
 }
 
 /** How long a request waits for a busy / momentarily unschedulable organization (env, 0–60 s, default 15 s). */

@@ -59,7 +59,18 @@ function textOf(block: unknown): string {
   return "";
 }
 
-export function classifyCcRequest(headers: Headers, body: Json): CcShape {
+export interface CcShapeOptions {
+  /**
+   * settings `direct_cc_entrypoint_normalize=1` (docs/gateway.md §3, operator decision 2026-10-20): a UA whose
+   * entrypoint is not a real Claude Code one — e.g. `(external, mirasim)` — is still admitted when everything else
+   * is shaped like Claude Code, and `normalizeCcSoftware` rewrites it to `(external, cli)` before the upstream
+   * request. Without it the gate hard-fails `ua_entrypoint` (2026-11-01: the check and the normalizer contradicted
+   * each other — the gate downgraded 8.4k requests/day that the normalizer was written for). Default false.
+   */
+  allowCustomEntrypoint?: boolean;
+}
+
+export function classifyCcRequest(headers: Headers, body: Json, opts: CcShapeOptions = {}): CcShape {
   const ua = h(headers, "user-agent");
   const m = UA_RE.exec(ua);
   if (!m) return { verdict: "not_cc", version: null, missing: [], soft: [] };
@@ -67,7 +78,9 @@ export function classifyCcRequest(headers: Headers, body: Json): CcShape {
   const missing: string[] = [];
   const soft: string[] = [];
   const uaEntrypoint = UA_ENTRYPOINT_RE.exec(ua)?.[1]?.trim() ?? "";
-  if (!KNOWN_ENTRYPOINTS.test(uaEntrypoint)) missing.push("ua_entrypoint");
+  const customEntrypoint = uaEntrypoint !== "" && !KNOWN_ENTRYPOINTS.test(uaEntrypoint);
+  if (!uaEntrypoint || (customEntrypoint && !opts.allowCustomEntrypoint)) missing.push("ua_entrypoint");
+  else if (customEntrypoint) soft.push("ua_entrypoint_custom");
 
   // ---- hard: headers every CC build sends (docs/claude-code-compat.md §3) ----
   if (h(headers, "x-app") !== "cli") missing.push("x_app_cli");

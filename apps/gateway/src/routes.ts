@@ -3,7 +3,7 @@ import { INTERNAL_HEADER, isModelAllowed, listRegistry, publicPricing, verifyInt
 import { authenticate } from "./auth.js";
 import { sendError } from "./http.js";
 import { inFlightSnapshot, proxy } from "./proxy.js";
-import { estimateTokens } from "./usage.js";
+import { estimateRequestTokens } from "./usage.js";
 
 async function handleModels(req: FastifyRequest, reply: FastifyReply): Promise<unknown> {
   const format = req.headers["anthropic-version"] ? "anthropic" : "openai-chat";
@@ -23,12 +23,15 @@ async function handleModels(req: FastifyRequest, reply: FastifyReply): Promise<u
   };
 }
 
-// Claude Code calls this; answer locally with an estimate (no upstream cost).
+// Claude Code calls this; answer locally with an estimate (no upstream cost). Same yardstick as billing
+// (`estimateRequestTokens`): text at chars/4 of the values only, images / documents at a flat per-block cost —
+// not the base64 byte length, which over-counted a single large image as hundreds of thousands of tokens and
+// made clients compact far too early (audit 2026-11-01 B6).
 async function handleCountTokens(req: FastifyRequest, reply: FastifyReply): Promise<unknown> {
   const caller = authenticate(req, reply, "anthropic", false);
   if (!caller) return reply;
   const body = (req.body ?? {}) as Record<string, unknown>;
-  return { input_tokens: estimateTokens(JSON.stringify({ s: body.system, m: body.messages, t: body.tools })) };
+  return { input_tokens: estimateRequestTokens({ system: body.system, messages: body.messages, tools: body.tools }) };
 }
 
 function notImplemented(req: FastifyRequest, reply: FastifyReply): void {

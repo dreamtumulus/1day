@@ -27,7 +27,11 @@ export function sendError(
   message: string,
   type: ErrorType,
 ): FastifyReply {
-  return reply.status(status).header("content-type", "application/json").send(errorBody(format, code, message, type));
+  const r = reply.status(status).header("content-type", "application/json");
+  // Every platform 429 / 503 carries a Retry-After (audit 2026-11-01 B3): clients that honour it stop hammering a
+  // busy pool. Branches that know better (team_capacity_exhausted: 30 s, relayed upstream values) set it first.
+  if ((status === 429 || status === 503) && !reply.getHeader("retry-after")) r.header("retry-after", status === 429 ? "10" : "15");
+  return r.send(errorBody(format, code, message, type));
 }
 
 export const CORS_HEADERS: Record<string, string> = {
@@ -35,13 +39,13 @@ export const CORS_HEADERS: Record<string, string> = {
   "access-control-allow-methods": "GET, POST, OPTIONS",
   "access-control-allow-headers":
     "authorization, x-api-key, content-type, anthropic-version, anthropic-beta, x-1dayapi-tee-proof-mode, x-claude-code-session-id, x-claude-session-id, x-session-id, session_id, x-conversation-id, x-1day-conversation-id",
-  "access-control-expose-headers": "x-1day-conversation-id, x-1day-conversation-generation, x-1day-context-reset",
+  "access-control-expose-headers": "request-id, retry-after, x-1day-mode, x-1day-ignored-params, x-1day-conversation-id, x-1day-conversation-generation, x-1day-context-reset",
 };
 
 /** Raw SSE/heartbeat responses bypass Fastify's normal response header flush. */
 export function conversationResponseHeaders(reply: FastifyReply): Record<string, string> {
   const out: Record<string, string> = {};
-  for (const key of ["x-1day-conversation-id", "x-1day-conversation-generation", "x-1day-context-reset"]) {
+  for (const key of ["request-id", "x-1day-mode", "x-1day-ignored-params", "x-1day-conversation-id", "x-1day-conversation-generation", "x-1day-context-reset"]) {
     const value = reply.getHeader(key);
     if (typeof value === "string") out[key] = value;
   }

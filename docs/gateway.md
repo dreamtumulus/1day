@@ -51,7 +51,7 @@
 | `genuine` | 全部**硬检查**通过 |
 | `suspect` | 自称 CC 但任一硬检查失败 |
 
-**硬检查**（结构稳定；2.1.300/2.1.312 实抓复核）：`x-app: cli`；`anthropic-beta` 含 `claude-code-20250219`；UA entrypoint 是已知值且与 billing `cc_entrypoint` 一致；
+**硬检查**（结构稳定；2.1.300/2.1.312 实抓复核）：`x-app: cli`；`anthropic-beta` 含 `claude-code-20250219`；UA entrypoint 与 billing `cc_entrypoint` 一致，且是已知值 —— **除非** settings `direct_cc_entrypoint_normalize=1`（默认，§3）：此时客户自定义入口（如 `(external, mirasim)`）只记软项 `ua_entrypoint_custom`，通过后由 `normalizeCcSoftware` 改写成 `(external, cli)` 再上行（2026-11-01：此前 11-01 01:27 加入的 `ua_entrypoint` 硬检查与该开关互相矛盾，mirasim 每天约 1.4 万条直连请求被压到 worker；现在一个开关同时管判定与改写）；
 `system` 为数组且首块为 `x-anthropic-billing-header: cc_version=<ver>; …`，`<ver>` 的 major.minor.patch 与 UA 版本一致；cli / sdk-cli 的身份块必须与 entrypoint 完全匹配（sdk-cli 另允许 append-system 形式）；
 `metadata.user_id` 是 JSON 字符串且含 64 位 hex `device_id` 与 **UUIDv4** `session_id`；`x-claude-code-session-id` 也为 UUIDv4 **且等于** metadata session id（`session_id_mismatch`）；
 `x-stainless-lang: js` 且 `x-stainless-runtime: node`；runtime-version / package-version 必须存在，2.1.300 分别为 v26.3.0 / 0.128.0，2.1.312 分别为 v26.12.1 / 0.128.0；
@@ -85,9 +85,9 @@ tools 字母序且无 `strict`、有 `thinking` / `context_management`。beta �
 
 | 字段 | 取值 | 行为 |
 |---|---|---|
-| `historyPolicy` | `reset`（默认） | 带着本平台没服务过的前几轮（`unknownInitialHistory`）时保存边界、只转发最后一个问题，响应 `x-1day-context-reset: 1`（team-isolation.md 对话归属） |
+| `historyPolicy` | `passthrough`（**默认，2026-11-01 起**） | 带着本平台没服务过的前几轮（`unknownInitialHistory`）时历史原样转发，对话绑定到实际服务它的组织（运营方接受跨组织关联风险）。2026-11-01 审计：24h 内更新过的 2,590 个对话有 1,257 个处于 reset 态、API 客户端无法理解"200 但历史被丢"，用户决定改默认。已显式配置的 Key 不受影响 |
+| | `reset` | （2026-10-29 ～ 11-01 的默认）保存边界、只转发最后一个问题，响应 `x-1day-context-reset: 1`（team-isolation.md 对话归属） |
 | | `reject` | 同一情形返回 **409 `history_unknown`**，客户端可换上游 |
-| | `passthrough` | 历史原样转发，对话绑定到实际服务它的组织（运营方接受跨组织关联风险） |
 | `directOnly` | `false`（默认）/ `true` | 开启后非 genuine Claude Code 请求返回 **400 `direct_only`**（message 列出缺失项），不转 worker；原样透传分组（§4a）不受影响 |
 | `probeIntercept` | `true`（默认）/ `false` | 测活接管（§2c）：探测请求由平台按号池状态直接回复，不占用账号 |
 
@@ -187,7 +187,10 @@ scope 包括 `fable`（模型族）和 `model:<id>`（单模型限流/组织停�
 调 core `normalizeCcSoftware`：`direct_cc_entrypoint_normalize=1` 把非真实入口（真实：cli / sdk-cli / sdk-ts / sdk-py / claude-vscode /
 claude-jetbrains / claude-desktop(-3p) / local-agent）的后缀改成 "(external, cli)"，计费头 `cc_entrypoint` 同步；`direct_cc_version_pin`
 （默认 2.1.312 = 节点 worker 的版本，空 = 透传）把 UA 版本、`x-stainless-package-version`（取 canonical SDK 版本）和计费头 `cc_version`
-统一。形态判定（§2a）在归一化之前跑，判的仍是客户原始形状；worker 路径不受影响。两项都是设置项，改完即生效，无需发布。
+统一。形态判定（§2a）在归一化之前跑，判的仍是客户原始形状，但 `direct_cc_entrypoint_normalize=1` 同时让判定放行自定义入口（否则归一化永远跑不到）；worker 路径不受影响。两项都是设置项，改完即生效，无需发布。
+归一化还会在版本等于节点构建（2.1.312）时按**实际转发的 messages** 重算计费后缀：对话重置后从边界起转发的历史，其首条用户文本与客户算后缀时的不同（2026-11-01）。
+直连路径另外会删掉客户 Claude Code 附加的 `# userEmail` system-reminder（2026-11-01 审计 A4）：共享账号下它是"同一设备、不同邮箱"的信号，也是客户隐私；CLAUDE.md / gitStatus 等任务上下文不动；不改写成号主邮箱，因为该提示要求模型拿它做作者署名，会把号主邮箱写进客户的 commit。
+重置过的对话不再永久锁在 worker 路径（2026-11-01 审计 B4）：边界匹配、边界后历史完整转发的请求仍按客户原始请求做形态判定，genuine 即走直连；只有"刚重置、只转发最后一个问题"的那一次不判定。
 
 **设备亲和**（2026-10-19）：会话键只管一条对话，同一台客户机器的其它对话仍会散到任意账号，结果一个账号一小时内同时服务多台机器、
 多个 Claude Code 版本。设备键 = `d:<api_key_id>:<metadata.user_id 的 device_id>`（JSON 形式或 legacy `user_<hex>`），记住该设备

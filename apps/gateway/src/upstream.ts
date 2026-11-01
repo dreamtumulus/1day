@@ -164,6 +164,7 @@ export function buildUpstreamRequest(
       path = "/v1/messages?beta=true";
       body = pinDeviceIdentity(normalizeThinking({ ...clientBody, model: upstreamModel }, upstreamModel), account);
       if (machine) body = pinMachineEnvironment(body, machine, envUuid);
+      if (account.raw_passthrough !== 1) body = stripUserEmail(body);
       break;
     case "chat-via-anthropic":
       path = "/v1/messages?beta=true";
@@ -199,15 +200,21 @@ export function buildUpstreamRequest(
     }
     // 客户端非 Claude Code 时注入 canonical beta 集（docs/claude-code-compat.md §6）
     if (betas.size === 0) for (const b of ccCanonicalBetas(account.type === "oauth")) betas.add(b);
+    let betaList = [...betas];
     if (account.type === "oauth") {
-      betas.add("oauth-2025-04-20");
+      // A client list missing the OAuth beta gets it where a real OAuth client carries it — right after
+      // claude-code-20250219 — not appended at the tail (audit 2026-11-01 B12).
+      if (!betas.has("oauth-2025-04-20")) {
+        const i = betaList.indexOf("claude-code-20250219");
+        betaList = i >= 0 ? [...betaList.slice(0, i + 1), "oauth-2025-04-20", ...betaList.slice(i + 1)] : [...betaList, "oauth-2025-04-20"];
+      }
       headers.authorization = `Bearer ${secret}`;
     } else {
       headers["x-api-key"] = secret;
       // Third-party Anthropic-compatible relays often expect Bearer instead.
       if (account.type === "upstream") headers.authorization = `Bearer ${secret}`;
     }
-    headers["anthropic-beta"] = [...betas].join(",");
+    headers["anthropic-beta"] = betaList.join(",");
   } else {
     headers.authorization = `Bearer ${secret}`;
     if (account.type === "oauth" && account.platform === "openai") {
@@ -315,9 +322,10 @@ export function pinDeviceIdentity(body: Json, account: Pick<AccountRow, "id" | "
   if (t.startsWith("{")) {
     try {
       const j = JSON.parse(t) as Json;
-      j.device_id = deviceId;
-      j.account_uuid = acctUuid;
-      next = JSON.stringify(j);
+      // Rebuild in Claude Code's own key order (device_id, account_uuid, session_id, then anything else): a
+      // client that sent only {session_id} used to come out as {session_id, device_id, account_uuid} (audit A9).
+      const { device_id: _d, account_uuid: _a, session_id, ...others } = j;
+      next = JSON.stringify({ device_id: deviceId, account_uuid: acctUuid, ...(session_id !== undefined ? { session_id } : {}), ...others });
     } catch {
       return body;
     }
@@ -355,6 +363,60 @@ function rewriteBlocksIn(content: unknown, machine: AccountMachine, sessionUuid:
     return { content: next, changed };
   }
   return { content, changed: false };
+}
+
+/**
+ * Claude Code's `# userEmail` context attachment (a <system-reminder> text block in a user turn) names the
+ * *customer's* login. On a shared subscription account that is a different e-mail per customer under one
+ * device_id / account_uuid — a plain "shared account" signal — and the customer's address travels to Anthropic
+ * (audit 2026-11-01 A4). The direct path drops that reminder. It is an attachment, not the prompt: the billing
+ * suffix is computed from the first non-reminder text, so nothing else in the body moves. Deliberately not rewritten
+ * to the account owner's e-mail: the reminder tells the model to use the address for authorship, so the owner's
+ * address would end up in the customer's commits (the worker path hit exactly that, 2026-10-19).
+ */
+const REMINDER_RE = /<system-reminder>[\s\S]*?<\/system-reminder>\n?/g;
+const USER_EMAIL_SECTION_RE = /(^|\n)# userEmail(\n|$)/;
+function stripUserEmailText(text: string): { text: string; changed: boolean } {
+  let changed = false;
+  const out = text.replace(REMINDER_RE, (m) => {
+    if (!USER_EMAIL_SECTION_RE.test(m)) return m;
+    changed = true;
+    return "";
+  });
+  return { text: out, changed };
+}
+
+export function stripUserEmail(body: Json): Json {
+  if (!Array.isArray(body.messages)) return body;
+  let changed = false;
+  const msgs = body.messages.map((m: Json) => {
+    if (!m || typeof m !== "object" || m.role !== "user") return m;
+    if (typeof m.content === "string") {
+      const r = stripUserEmailText(m.content);
+      if (!r.changed || r.text.trim() === "") return m;
+      changed = true;
+      return { ...m, content: r.text };
+    }
+    if (!Array.isArray(m.content)) return m;
+    let touched = false;
+    const next: unknown[] = [];
+    for (const b of m.content) {
+      if (b && typeof b === "object" && (b as Json).type === "text" && typeof (b as Json).text === "string") {
+        const r = stripUserEmailText((b as Json).text);
+        if (r.changed) {
+          touched = true;
+          if (r.text.trim() === "") continue; // the reminder was the whole block
+          next.push({ ...(b as Json), text: r.text });
+          continue;
+        }
+      }
+      next.push(b);
+    }
+    if (!touched || next.length === 0) return m;
+    changed = true;
+    return { ...m, content: next };
+  });
+  return changed ? { ...body, messages: msgs } : body;
 }
 
 export function pinMachineEnvironment(body: Json, machine: AccountMachine, sessionUuid: string): Json {

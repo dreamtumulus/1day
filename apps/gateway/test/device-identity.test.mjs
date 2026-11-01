@@ -44,3 +44,10 @@ test("no metadata -> body returned unchanged", () => {
   const plain = { model: "m", messages: [] };
   assert.equal(pinDeviceIdentity(plain, acct), plain);
 });
+
+test("client sent only {session_id} (or keys in another order): output is rebuilt as device_id, account_uuid, session_id, …rest", () => {
+  const only = { metadata: { user_id: JSON.stringify({ session_id: "sx" }) } };
+  assert.equal(pinDeviceIdentity(only, acct).metadata.user_id, JSON.stringify({ device_id: acct.device_id, account_uuid: acct.account_uuid, session_id: "sx" }));
+  const shuffled = { metadata: { user_id: JSON.stringify({ session_id: "sy", extra: 1, account_uuid: "x", device_id: "y" }) } };
+  assert.equal(pinDeviceIdentity(shuffled, acct).metadata.user_id, JSON.stringify({ device_id: acct.device_id, account_uuid: acct.account_uuid, session_id: "sy", extra: 1 }));
+});
