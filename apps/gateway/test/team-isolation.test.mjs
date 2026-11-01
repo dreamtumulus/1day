@@ -168,6 +168,7 @@ test("A exhausted: B sees only the newest question; repeated old history remains
 
 test("missing ids uses a conservative content boundary and the real Claude Code header is model-independent", async () => {
   const f = seed([{ team: TEAM_A }]);
+  core.run("UPDATE api_keys SET policy_json=? WHERE id=?", JSON.stringify({ historyPolicy: "reset" }), f.id); // reset semantics under test; the default is passthrough since 2026-11-01
   const original = payload([question("unknown legacy history"), answer("old reply"), question("only current question")], { system: "legacy secret" });
   const headers = { ...f.headers }; delete headers["x-claude-code-session-id"];
   const response = await gateway.inject({ method: "POST", url: "/v1/messages", headers, payload: original });
@@ -303,6 +304,7 @@ test("pre-boundary drift (Claude Code clears old tool_result bodies) does not lo
 
 test("unknown earlier history arriving mid tool round (history policy reset): 409, nothing forwarded; an empty latest turn: 400", async () => {
   const f = seed([{ team: TEAM_A }]);
+  core.run("UPDATE api_keys SET policy_json=? WHERE id=?", JSON.stringify({ historyPolicy: "reset" }), f.id);
   const start = attempts.length;
   const r = await request(f, payload([question("served elsewhere"), toolUse("foreign-call"), toolResult("foreign-call", "FOREIGN RESULT")]));
   assert.equal(r.statusCode, 409, r.body);
@@ -582,6 +584,16 @@ test("cloud streaming consumes only the current turn from complete event history
 
 
 // ---------- per-key routing policy (docs/gateway.md §2b, 2026-10-29) ----------
+test("default policy (no policy_json) is passthrough since 2026-11-01: unknown earlier turns are forwarded, no reset header", async () => {
+  const f = seed([{ team: TEAM_A }]);
+  assert.equal(core.parseKeyPolicy(null).historyPolicy, "passthrough");
+  assert.equal(core.parseKeyPolicy(JSON.stringify({ directOnly: true })).historyPolicy, "passthrough", "a policy_json without historyPolicy follows the default");
+  assert.equal(core.parseKeyPolicy(JSON.stringify({ historyPolicy: "reset" })).historyPolicy, "reset", "explicit choices are kept");
+  const r = await request(f, payload([question("served elsewhere"), answer("old reply"), question("now here")]));
+  assert.equal(r.statusCode, 200, r.body);
+  assert.equal(r.headers["x-1day-context-reset"], undefined);
+  assert.deepEqual(attempts.at(-1).body.messages.map((m) => m.content), ["served elsewhere", "old reply", "now here"]);
+});
 test("history policy passthrough: unknown earlier turns are forwarded as-is, no context reset", async () => {
   const f = seed([{ team: TEAM_A }]);
   core.run("UPDATE api_keys SET policy_json=? WHERE id=?", JSON.stringify({ historyPolicy: "passthrough" }), f.id);

@@ -97,7 +97,7 @@ export function applyKeyFields(
       if (historyPolicy !== undefined && !(HISTORY_POLICIES as readonly string[]).includes(String(historyPolicy))) bad("invalid_request", "policy.historyPolicy must be reset | reject | passthrough");
       if (directOnly !== undefined && typeof directOnly !== "boolean") bad("invalid_request", "policy.directOnly must be a boolean");
       if (probeIntercept !== undefined && typeof probeIntercept !== "boolean") bad("invalid_request", "policy.probeIntercept must be a boolean");
-      out.policyJson = JSON.stringify({ historyPolicy: (historyPolicy as HistoryPolicy | undefined) ?? "reset", directOnly: directOnly === true, probeIntercept: probeIntercept !== false });
+      out.policyJson = JSON.stringify({ historyPolicy: (historyPolicy as HistoryPolicy | undefined) ?? "passthrough", directOnly: directOnly === true, probeIntercept: probeIntercept !== false });
     } else bad("invalid_request", "policy must be an object or null");
   }
   return out;

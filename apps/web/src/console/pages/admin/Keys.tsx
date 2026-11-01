@@ -158,7 +158,7 @@ function EditKeyModal({
   const [quota, setQuota] = useState(String(apiKey.quotaUsd));
   const [expires, setExpires] = useState(toLocalInput(apiKey.expiresAt));
   const [status, setStatus] = useState(apiKey.status);
-  const [historyPolicy, setHistoryPolicy] = useState<"reset" | "reject" | "passthrough">(apiKey.policy?.historyPolicy ?? "reset");
+  const [historyPolicy, setHistoryPolicy] = useState<"reset" | "reject" | "passthrough">(apiKey.policy?.historyPolicy ?? "passthrough");
   const [directOnly, setDirectOnly] = useState(apiKey.policy?.directOnly ?? false);
   const [probeIntercept, setProbeIntercept] = useState(apiKey.policy?.probeIntercept ?? true);
   const [busy, setBusy] = useState(false);
