@@ -15,9 +15,12 @@ const modelUsage = { "claude-sonnet-5-5": { inputTokens: 12, outputTokens: 7, ca
 // Mirror the mock session API's tool simulation: the folded prompt's [tools]
 // section carries the ```tool_call fence protocol.
 const toolMatch = prompt.includes("fenced block tagged tool_call") ? /"name":"([^"]+)"/.exec(prompt) : null;
-const text = toolMatch
-  ? `Calling it.\n\n\`\`\`tool_call\n{"name":"${toolMatch[1]}","input":{"city":"Paris"}}\n\`\`\``
-  : "Hello from fake claude.";
+const safeguards = prompt.includes("fixture-safeguards-refusal");
+const text = safeguards
+  ? "Opus 5.5's safeguards flagged this session (https://www.anthropic.com/legal/aup). Details: [fixture]"
+  : toolMatch
+    ? `Calling it.\n\n\`\`\`tool_call\n{"name":"${toolMatch[1]}","input":{"city":"Paris"}}\n\`\`\``
+    : "Hello from fake claude.";
 line({ type: "system", subtype: "init", model: "claude-sonnet-5-5" });
 line({ type: "env_manager_log", level: "info", message: "sandbox provisioned" });
 line({ type: "active_goal", goal: null });
@@ -31,5 +34,5 @@ ev({ type: "content_block_stop", index: 0 });
 ev({ type: "message_delta", delta: { stop_reason: "end_turn" }, usage: { output_tokens: 7 } });
 await sleep(10);
 line({ type: "assistant", message: { id: "msg_fake", role: "assistant", content: [{ type: "text", text }], usage } });
-line({ type: "result", subtype: "success", terminal_reason: "completed", is_error: false, stop_reason: "end_turn", result: text, modelUsage, duration_ms: 50, duration_api_ms: 40, num_turns: 1 });
+line({ type: "result", subtype: "success", terminal_reason: "completed", is_error: safeguards, stop_reason: "end_turn", result: text, modelUsage, duration_ms: 50, duration_api_ms: 40, num_turns: 1 });
 process.exit(0);

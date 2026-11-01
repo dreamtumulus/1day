@@ -1133,6 +1133,7 @@ async function proxyRequest(req: FastifyRequest, reply: FastifyReply, format: Cl
         }
         const reqErr = isCcrMode(mode) ? classifyCcRequestError(text) : null;
         if (reqErr) {
+          ctx.trace.failure = { scope: "request", code: reqErr.code, message: reqErr.message, retryable: false, status: 400, credentialVersion: ctx.credentialVersion ?? undefined, executionSequence: ctx.executionSequence };
           // Context overflow / safety-classifier refusal inside Claude Code: the request is the problem.
           // 400 with Claude Code's own sentence (clients auto-compact on "prompt is too long"), no failover/cooldown.
           console.warn(`[proxy] ${ctx.requestId} ${reqErr.code} on Claude Code (${account.name}): 400 to client, no failover/cooldown`);

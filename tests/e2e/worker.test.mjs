@@ -85,6 +85,11 @@ check("genuine CC shape -> direct mode (mock messages, not the worker)", r.statu
 u = await lastUsage();
 check("direct leg billed on the same account", u.accountName === "ccr-worker-1", u);
 
+// Request-scoped worker failures must not inherit a transport scope in the ledger.
+r = await messages(wkey, { messages: [{ role: "user", content: "fixture-safeguards-refusal" }] });
+u = await lastUsage();
+check("non-stream safeguards refusal is request-scoped and non-retryable", r.status === 400 && u.errorCode === "safeguards_refusal" && u.errorScope === "request" && u.retryable === false, { r, u });
+
 // ---- node deploy_meta carries ccWorker telemetry (from fake-node heartbeats) ----
 await new Promise((r2) => setTimeout(r2, 1200));
 const nodeRow = (await admin("GET", "/api/admin/nodes")).data.find((n) => n.nodeId === nodeId);
