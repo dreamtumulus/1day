@@ -3,6 +3,7 @@ import Fastify, { type FastifyError, type FastifyInstance } from "fastify";
 import { HttpError, sendError } from "./http.js";
 import { startWindowPoller } from "./ccr/window-poll.js";
 import { startCacheRefundScheduler } from "./cache-refund-scheduler.js";
+import { startKeyPolicyJudge } from "./key-policy-judge.js";
 import { sweepStaleJobs, startOnboardingMaintenance } from "./onboard/jobs.js";
 import { registerNodeRoutes } from "./node/routes.js";
 import { registerAdminRoutes } from "./routes/admin.js";
@@ -58,6 +59,7 @@ export async function buildApp(): Promise<FastifyInstance> {
   if (swept) app.log.warn(`onboarding: ${swept} stale job(s) marked failed at boot`);
   startWindowPoller(app.log);
   startCacheRefundScheduler(app.log);
+  startKeyPolicyJudge(app.log);
 
   registerPublicRoutes(app);
   registerUserRoutes(app);

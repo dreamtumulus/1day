@@ -320,6 +320,7 @@ const MIGRATIONS: Array<{ version: number; up: (d: DatabaseSync, log: Log) => vo
   { version: 32, up: migration32 },
   { version: 33, up: migration33 },
   { version: 34, up: migration34 },
+  { version: 35, up: migration35 },
 ];
 
 // 上号员令牌（独立鉴权的上号站点 /onboard）：admin 签发，绑定目标节点；
@@ -979,4 +980,26 @@ function migration32(d: DatabaseSync, log: Log): void {
         last_profile_at = NULL, last_inference_at = NULL, last_refresh_at = NULL WHERE id = NEW.id;
     END`);
   log("migration 32: credential versions, readiness and structured request observations");
+}
+
+// Key-policy judge flips (docs/canonical-implementation-spec-2026-11-01.md §6.2, WP8): one row per field the `auto`
+// layer changed, with the observation basis. Append-only; additive migration.
+function migration35(d: DatabaseSync, log: Log): void {
+  d.exec(`
+    CREATE TABLE IF NOT EXISTS key_policy_events (
+      id TEXT PRIMARY KEY,
+      api_key_id TEXT NOT NULL,
+      field TEXT NOT NULL,
+      old TEXT,
+      new TEXT,
+      basis TEXT,
+      created_at TEXT NOT NULL DEFAULT (${SQL_NOW})
+    );
+    CREATE INDEX IF NOT EXISTS idx_key_policy_events_key ON key_policy_events(api_key_id, created_at);
+    CREATE TRIGGER IF NOT EXISTS key_policy_events_no_update BEFORE UPDATE ON key_policy_events
+      BEGIN SELECT RAISE(ABORT, 'key policy history is append-only'); END;
+    CREATE TRIGGER IF NOT EXISTS key_policy_events_no_delete BEFORE DELETE ON key_policy_events
+      BEGIN SELECT RAISE(ABORT, 'key policy history is append-only'); END;
+  `);
+  log("migration 35: key_policy_events (judge flips, append-only)");
 }

@@ -52,6 +52,11 @@
 - **出站不变量**：直连请求离开网关前，`system[0]` 计费头的后缀 ≡ `ccBuildSuffix(出站 messages, 版本)`；改体（设备身份、机器环境、删 reminder …）一律在算后缀之前，`alignBillingSuffix` 是最后一步；版本不是 2.1.312（不会算）时不碰首条用户文本（`canEditFirstUserText`）。运行时还有最后一道闸：对不上就原样转发客户 body 并打 `[billing-suffix] mismatch` 日志。
 - 验证：`packages/core/test/canary.test.mjs`、`apps/gateway/test/direct-path-hygiene.test.mjs`（开关开/关两种形态）、`apps/gateway/test/billing-suffix-invariant.test.mjs`。
 
+## 附：请求级拒绝不扩散（已做，2026-11-01，spec I12）
+
+上游裸 `429 {"type":"rate_limit_error","message":"Error"}`（事故里的那条）现在在 `classifyDirectRateLimit` 归 **请求级** `upstream_request_rejected`：只答一次，不冷却账号、不换号重试。
+验证：`packages/core/test/key-policy-auto.test.mjs`（I12 用例）。此前它被当账号级限流，一条坏请求被轮到 21 个账号上 651 次。
+
 ## 附：组织级熔断（待做，铁律 2 的配套）
 
 任一账号收到组织级错误（`organization has disabled Claude subscription access` / `suspended for this organization`）→ 该组织全部账号立刻停止调度并告警，人工解除。

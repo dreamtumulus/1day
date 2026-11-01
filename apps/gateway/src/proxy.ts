@@ -1032,9 +1032,13 @@ async function proxyRequest(req: FastifyRequest, reply: FastifyReply, format: Cl
           const ignored = ignoredParams(ctx.body, format, mode);
           if (ignored.length > 0) ctx.reply.header("x-1day-ignored-params", ignored.join(","));
         }
-        beginEarlyStream(ctx);
-        // Multipart tee-proof answers cannot start before the body is in; everything else may.
-        if (teeProofRequested(req) !== "multipart") armNonStreamHeartbeat(ctx);
+        // responseMode=strict (spec §6.2 / WP5): no early 200, no heartbeat filler — the real status reaches the client,
+        // at the price of CDN idle timeouts on long non-stream requests. keepalive (default) = today's behaviour.
+        if (caller.policy.responseMode !== "strict") {
+          beginEarlyStream(ctx);
+          // Multipart tee-proof answers cannot start before the body is in; everything else may.
+          if (teeProofRequested(req) !== "multipart") armNonStreamHeartbeat(ctx);
+        }
         let cred;
         try {
           cred = await freshCredential(account, refreshed, isolation, ctx.abort.signal);
@@ -1295,7 +1299,7 @@ async function proxyRequest(req: FastifyRequest, reply: FastifyReply, format: Cl
     fail(ctx, null, 503, "account_pool_busy", "Accounts in this conversation are temporarily busy. Retry shortly; its team and context are retained.", "upstream_error");
     return;
   }
-  beginEarlyStream(ctx);
+  if (caller.policy.responseMode !== "strict") beginEarlyStream(ctx);
   try { await wait(Math.min(100, busyDeadline - Date.now()), ctx.abort.signal); }
   catch { logFailure(ctx, lastAccount, 499, "client_closed", "Client closed while waiting for an account slot"); return; }
   const currentCandidates = new Set(listCandidates(caller.groupId, model).map(a => a.id));

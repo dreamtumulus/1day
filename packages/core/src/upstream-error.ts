@@ -41,6 +41,13 @@ export function classifyDirectRateLimit(body: string, hasRejectedWindow: boolean
   if (/credits_required|model.{0,80}(?:quota|limit|exhausted)|(?:not entitled|not available|no access).{0,60}model/i.test(text)) {
     return { scope: "account_model", code: "upstream_model_rate_limited", message, retryable: true, status: 429 };
   }
+  // 2026-11-01 incident (docs/iron-rules.md 铁律 2 起因, spec I12): `{"type":"rate_limit_error","message":"Error"}` with no
+  // further text is Anthropic's rejection of a forged / mis-checksummed Claude Code request — it is about THIS request,
+  // not the account. Treating it as account rate limiting spread one bad request across 21 accounts (651 retries) and
+  // got the organization disabled. Request scope: answered once, no cooldown, never retried on another account.
+  if (/^(?:rate_limit_error\s+)?Error\.?$/i.test(text.trim())) {
+    return { scope: "request", code: "upstream_request_rejected", message: "Upstream rejected this request (429 \"Error\": the request was not accepted as a genuine Claude Code request); it was not retried on another account.", retryable: false, status: 429 };
+  }
   if (/claude_code_version_too_old|billing.header|cc_version|claude code.{0,100}(?:required|unsupported|version)|request.{0,60}(?:not entitled|not allowed)|required.{0,40}(?:scope|entitlement)/i.test(text)) {
     return { scope: "request", code: "upstream_request_rejected", message, retryable: false, status: 429 };
   }

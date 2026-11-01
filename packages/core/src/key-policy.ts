@@ -55,7 +55,12 @@ export interface KeyPolicy {
 
 /** One layer: every field optional; absent = "no opinion" (falls through to the next layer). */
 export type KeyPolicyLayer = Partial<KeyPolicy>;
-export interface KeyPolicyAutoLayer extends KeyPolicyLayer { decidedAt?: string; basis?: string }
+export interface KeyPolicyAutoLayer extends KeyPolicyLayer {
+  decidedAt?: string;
+  basis?: string;
+  /** Judge hysteresis (key-policy-auto.ts): a differing proposal waits here until it has been stable for 3 days. */
+  pending?: { layer: KeyPolicyLayer; basis: string; since: string };
+}
 export interface KeyPolicyOverrideLayer extends KeyPolicyLayer { by?: string; reason?: string; at?: string }
 export interface KeyPolicyDoc { auto: KeyPolicyAutoLayer; override: KeyPolicyOverrideLayer }
 
@@ -145,6 +150,8 @@ export function parseKeyPolicyDoc(json: string | null | undefined): KeyPolicyDoc
   const auto: KeyPolicyAutoLayer = { ...sanitizeKeyPolicyLayer(autoRaw) };
   if (typeof autoRaw.decidedAt === "string") auto.decidedAt = autoRaw.decidedAt;
   if (typeof autoRaw.basis === "string") auto.basis = autoRaw.basis.slice(0, 500);
+  const pend = autoRaw.pending as Record<string, unknown> | undefined;
+  if (pend && typeof pend === "object" && typeof pend.since === "string") auto.pending = { layer: sanitizeKeyPolicyLayer(pend.layer), basis: typeof pend.basis === "string" ? pend.basis.slice(0, 500) : "", since: pend.since };
   const override: KeyPolicyOverrideLayer = { ...sanitizeKeyPolicyLayer(overrideRaw) };
   // spec §6.2 example keeps teamAffinity beside the layers; read it as an override when the layers do not name one.
   if (layered && override.teamAffinity === undefined && "teamAffinity" in r) {

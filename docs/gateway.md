@@ -111,7 +111,8 @@ tools 字母序且无 `strict`、有 `thinking` / `context_management`。beta �
 | `parameterPolicy` | `warn`（系统默认）/ `strict` | 路径无法实现的参数：写 `x-1day-ignored-params`，还是 400 `unsupported_parameter`（WP4） |
 | `responseMode` | `keepalive`（系统默认）/ `strict` | 长非流式请求是否提前 200 + 心跳（WP5） |
 
-**两层结构（2026-11-01，spec §6.2）**：`policy_json = { "auto": {...}, "override": {...} }`。`auto` 由判断器（`key-policy-auto.ts`，WP8，待做）按 Key 的观测写入，
+**两层结构（2026-11-01，spec §6.2）**：`policy_json = { "auto": {...}, "override": {...} }`。`auto` 由判断器（`packages/core/src/key-policy-auto.ts`，控制台 `key-policy-judge.ts` 每日一跑；手动 `POST /api/admin/key-policy/judge/run`、单 Key `POST /api/admin/keys/:id/policy-judge`，历史 `GET /api/admin/keys/:id/policy-events`）按 Key 近 14 天的 usage_logs 写入：
+≥95% genuine CC → canonical / native-required / strict / strict / passthrough；其他（API 客户）→ canonical / native-required / warn / 有 >75s 非流式成功请求则 keepalive 否则 strict（historyPolicy 暂无外来历史观测，不给意见）。新 Key 满 50 次请求首评即采用；之后不同的提案要连续 ≥3 天一致（`auto.pending`）才翻转，每个字段的翻转写 `key_policy_events`（迁移 35，只增）。
 `override` 由管理员在 Key 页写（`by / reason / at`）；生效值逐字段 = `override[k] ?? auto[k] ?? 系统默认`。`auto` 层是否生效由三态开关 `key_policy_auto`
 决定（`0` 只记录建议 / `canary` 灰度组 Key / `1` 全部）。旧的平铺文档（`{historyPolicy, directOnly, …}`）按 override 层读，含义不变；控制台 PATCH 只替换
 override 层（`withKeyPolicyOverride`），不动 auto。控制台 Key 页显示两层（`policyLayers`）与生效值（`policy`）。

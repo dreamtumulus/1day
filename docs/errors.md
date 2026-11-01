@@ -29,7 +29,7 @@
 | 404 | `not_found` | not_found_error | 未知路由 |
 | 429 | `quota_exhausted` | billing_error | Key 额度用尽 |
 | 429 | `upstream_rate_limited` | rate_limit_error | 尝试过的账户最后都是账号/窗口限流 |
-| 429 | `upstream_request_rejected` | rate_limit_error | 直连上游把请求本身拒绝（客户端版本、请求权益/形态等）：不换账号、不冷却，客户端修正后再试；用量行 `error_scope=request`、`retryable=false` |
+| 429 | `upstream_request_rejected` | rate_limit_error | 直连上游把请求本身拒绝（客户端版本、请求权益/形态等，**以及裸 `{"type":"rate_limit_error","message":"Error"}`** —— 2026-11-01 封号事故里伪造/校验码不符的 CC 请求的标准拒绝，spec I12，2026-11-01 起归请求级）：不换账号、不冷却、不在其他账号上重试，客户端修正后再试；用量行 `error_scope=request`、`retryable=false` |
 | 429（用量行） | `upstream_model_rate_limited` | — | 模型额度/权益限制：只冷却该账号的 `model:<id>`，其他模型仍可调度，换账号重试；用量行 `error_scope=account_model` |
 | 透传 | 上游原样 / `upstream_client_error` | invalid_request_error | 上游 400/404/413/422 直接透传；跨协议时包装成客户端方言 |
 | 500 | `internal_error` | api_error | 未处理异常 |

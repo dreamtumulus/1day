@@ -27,8 +27,8 @@ if (!reuse) { mkdirSync(cfg, { mode: 0o700 }); mkdirSync(work, { mode: 0o700 });
 const SESSION = process.env.CC_PROBE_SESSION ?? randomUUID();
 const deviceId = createHash("sha256").update("cc-probe-device").digest("hex");
 const accountUuid = "9d2d1c5e-1111-4a7b-8c3d-aaaaaaaaaaaa";
-if (!reuse) writeFileSync(join(cfg, ".credentials.json"), JSON.stringify({ claudeAiOauth: { accessToken: "sk-ant-oat01-probe-fake-token", refreshToken: "sk-ant-ort01-probe-fake", expiresAt: Date.now() + 8 * 3600e3, scopes: ["user:inference", "user:profile"], subscriptionType: "max" } }), { mode: 0o600 });
-if (!reuse) writeFileSync(join(cfg, ".claude.json"), JSON.stringify({ userID: deviceId, hasCompletedOnboarding: true, oauthAccount: { accountUuid, emailAddress: "", organizationUuid: "11111111-2222-4333-8444-555555555555", displayName: "", fullName: "", profileFetchedAt: Date.now() } }), { mode: 0o600 });
+if (!reuse && gate !== "attachments-apikey-email") writeFileSync(join(cfg, ".credentials.json"), JSON.stringify({ claudeAiOauth: { accessToken: "sk-ant-oat01-probe-fake-token", refreshToken: "sk-ant-ort01-probe-fake", expiresAt: Date.now() + 8 * 3600e3, scopes: ["user:inference", "user:profile"], subscriptionType: "max" } }), { mode: 0o600 });
+if (!reuse) writeFileSync(join(cfg, ".claude.json"), JSON.stringify({ userID: deviceId, hasCompletedOnboarding: true, oauthAccount: { accountUuid, emailAddress: process.env.CC_PROBE_EMAIL ?? "", organizationUuid: "11111111-2222-4333-8444-555555555555", displayName: "", fullName: "", profileFetchedAt: Date.now() } }), { mode: 0o600 });
 if (!reuse) writeFileSync(join(cfg, "settings.json"), JSON.stringify({ hasCompletedOnboarding: true }), { mode: 0o600 });
 
 const toolProbe = gate === "restricted-read-creds" ? { name: "Read", input: { file_path: join(cfg, ".credentials.json") } }
@@ -73,7 +73,9 @@ switch (gate) {
   case "resume-mcp": args = [...common, "--resume", SESSION, PROMPT, "--strict-mcp-config", "--mcp-config", mcpConfig, "--permission-prompts", "none", "--allowedTools", "mcp__caller__lookup"]; break; // G5 step 2: resume with the same caller MCP // G4 step 2 (same CC_PROBE_HOME)
   case "tool-interrupt": args = [...common, "--session-id", SESSION, "--strict-mcp-config", "--mcp-config", mcpConfig, "--permission-prompts", "none", PROMPT, "--allowedTools", "mcp__caller__lookup"]; break; // G5: caller tool parked
   case "tool-interrupt-builtin": args = [...common, "--session-id", SESSION, "--permission-prompts", "none", PROMPT, "--allowedTools", "Bash"]; break; // G5: built-in tool running
-  case "attachments": args = [...common, PROMPT]; break; // attachments ON (no CLAUDE_CODE_DISABLE_ATTACHMENTS) to see userEmail/Environment shape
+  case "attachments": args = [...common, PROMPT]; break;
+  case "attachments-email": args = [...common, PROMPT]; break; // CC_PROBE_EMAIL set: does `# userEmail` travel with OAuth login?
+  case "attachments-apikey-email": args = [...common, PROMPT]; break; // CC_PROBE_EMAIL set + ANTHROPIC_AUTH_TOKEN, no OAuth credentials: platform-key login // attachments ON (no CLAUDE_CODE_DISABLE_ATTACHMENTS) to see userEmail/Environment shape
   case "restricted-read-creds": case "restricted-read-hostname": case "restricted-bash": args = [...common, "--restricted", "--permission-prompts", "none", "Read the file I mention."]; break;
   case "unrestricted-read-creds": args = [...common, "--permission-prompts", "none", "Read the file I mention."]; break;
   case "history-first": args = [...common, "--input-format", "stream-json", "--include-partial-messages"]; stdinLines = [
@@ -89,7 +91,8 @@ const env = {
   ANTHROPIC_BASE_URL: cap.baseUrl, HTTPS_PROXY: cap.proxyUrl, HTTP_PROXY: cap.proxyUrl, NO_PROXY: "127.0.0.1,localhost", no_proxy: "127.0.0.1,localhost",
   DISABLE_AUTOUPDATER: "1", DISABLE_ERROR_REPORTING: "1", CLAUDE_CODE_NO_MODEL_FALLBACK: "1",
   ...(process.env.CC_PROBE_SSLKEYLOGFILE ? { SSLKEYLOGFILE: process.env.CC_PROBE_SSLKEYLOGFILE } : {}),
-  ...(gate === "attachments" ? {} : { CLAUDE_CODE_DISABLE_ATTACHMENTS: "1" }),
+  ...(gate.startsWith("attachments") ? {} : { CLAUDE_CODE_DISABLE_ATTACHMENTS: "1" }),
+  ...(gate === "attachments-apikey-email" ? { ANTHROPIC_AUTH_TOKEN: "sk-1day-probe-fake-platform-key" } : {}),
 };
 const started = Date.now();
 const child = spawn(CLAUDE, args, { cwd: work, env, stdio: ["pipe", "pipe", "pipe"] });
@@ -134,7 +137,7 @@ const describe = (r) => {
   const raw = JSON.stringify(b);
   const auth = r.headers?.authorization ?? "";
   return {
-    url: r.url, method: r.method,
+    url: r.url, method: r.method, userEmailReminder: JSON.stringify(b).includes("# userEmail"),
     headers: Object.fromEntries(Object.entries(r.headers).filter(([k]) => /^(user-agent|x-app|anthropic-beta|anthropic-version|x-stainless-|accept|content-type|x-claude-code-session-id|anthropic-dangerous)/.test(k))),
     betaList: String(r.headers?.["anthropic-beta"] ?? "").split(",").map((s) => s.trim()).filter(Boolean),
     authScheme: auth.startsWith("Bearer ") ? "bearer" : r.headers?.["x-api-key"] ? "x-api-key" : "none",

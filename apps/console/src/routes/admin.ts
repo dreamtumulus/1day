@@ -14,6 +14,9 @@ import {
   pendingCacheRefundAll,
   runCacheRefund,
   runCacheRefundsForAll,
+  judgeAllKeys,
+  judgeKey,
+  listKeyPolicyEvents,
   setCreditLimit,
   settleCredit,
   ccMetadataUserId,
@@ -560,6 +563,18 @@ export function registerAdminRoutes(app: FastifyInstance): void {
   });
 
   /** Pay everyone now (does not move the scheduler's clock). */
+  // Key-policy judge (spec §6.2 / WP8): manual run (does not move the daily schedule) and per-key flip history.
+  app.post("/api/admin/key-policy/judge/run", pre, async () => ({ data: judgeAllKeys() }));
+  app.post("/api/admin/keys/:id/policy-judge", pre, async (req) => {
+    const { id } = req.params as { id: string };
+    if (!one("SELECT 1 FROM api_keys WHERE id = ?", id)) notFound("key");
+    return { data: judgeKey(id) };
+  });
+  app.get("/api/admin/keys/:id/policy-events", pre, async (req) => {
+    const { id } = req.params as { id: string };
+    return { data: listKeyPolicyEvents(id) };
+  });
+
   app.post("/api/admin/cache-refund/run", pre, async (req) => {
     const b = body(req);
     const s = runCacheRefundsForAll({ createdBy: req.user!.id, note: str(b, "note", { max: 500 }) ?? undefined });

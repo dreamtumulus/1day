@@ -264,4 +264,7 @@ mid-conversation-tool-changes / advanced-tool-use / effort / dangerous-tool-use 
 - `cch` / `cc_prev_req` / `cc_prompt_id` / `cc_turn_origin`：36 次采样 0 次出现（远端 flag 未开），与 §11 一致。
 - 遥测：`INGEST_URL` 不跟 `ANTHROPIC_BASE_URL`；Bun 1.4.4 **不写 `SSLKEYLOGFILE`**，但尊重 `NODE_EXTRA_CA_CERTS`，受控 TLS 终结可读 `/api/event_logging/v2/batch` 等 9 个端点
   的明文（遥测 UA `Bun/1.4.4`，`x-service-name: claude-code`）。只用于结构取证（G10-A），真实受理（G10-B）仍需专用测试账号，不得对生产 MITM。
+- **`# userEmail`**（`attachments-email.json` / `attachments-apikey-email.json`，2026-11-01）：`.claude.json` 带 `oauthAccount.emailAddress` 且有 OAuth 凭据时，首条 user 带
+  `# userEmail` system-reminder（568 字节）；**用平台 Key 登录**（`ANTHROPIC_AUTH_TOKEN`、无 OAuth 凭据）时**不带**，且 `anthropic-beta` 无 `oauth-2025-04-20`。
+  线上直连流量里出现过的 `# userEmail` 因此来自保留着 OAuth 登录态的客户端；`direct_strip_user_email` 开关保留在 `0`（不改体），不删除。
 - resume / 工具中断 / 外部历史导入的结论（G3–G5）直接决定 WP3 方案：见 README 与 `G3-matrix.md`（thinking 块零校验，导入必须剥离）。
