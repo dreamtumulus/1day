@@ -1,19 +1,19 @@
 {
-  "releaseId": "20261101T103102Z-organizations",
+  "releaseId": "20261101T114227Z-canary-and-suffix-fix",
   "sourceTreeSha256": "c5f60dbd0fd7e6f23ad7adad5057b33ea0c89966a1ff503b98549e3284fee71e",
   "bundleSha256": "59dcd739e4362fd91bf9b455b5a301335deec0bf69b6a6430708fd341d3bead5",
   "bundleBytes": 1540713,
   "schemaVersion": 34,
-  "sourceCommit": "74fa6ff26e9170a586ec0d06d85972ac14bbe79c",
-  "installedAtUtc": "2026-11-01T10:31:02Z",
+  "sourceCommit": "de6d0e6022173b914996247c4f106b10626c495a",
+  "installedAtUtc": "2026-11-01T11:42:27Z",
   "status": "deployed",
   "tests": {
-    "core": 98,
-    "gateway": 178,
+    "core": 102,
+    "gateway": 182,
     "console": 86,
     "providerSuites": 6,
     "e2eSuites": 7
   },
   "bundleNote": "node-bundle-teams-20261101T102846Z.js (includes the proxy_down node changes); file placed on worker-01, node service restart pending; worker-02 and mirasim pending",
-  "notes": "2026-11-01 round 3: organizations as an operations object (pickTeam, teamAffinity, claim release, exit cap setting, teams page, node cleanup); migration 34; see docs/deployment/2026-11-01-*.md §10"
+  "notes": "2026-11-01 round 4: iron rule 2 (three-state switches default = pre-incident behaviour, canary group canary-1cf43ccb, direct_cc_entrypoint_normalize set to 0 in settings) + billing-suffix-last fix (root cause of the 10:22 org disable); docs/iron-rules.md; see docs/deployment/2026-11-01-*.md §12"
 }
