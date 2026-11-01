@@ -37,7 +37,9 @@ case "${1:-}" in
     # backups/ 由 root 的备份 timer 维护，保持 root；其余（代码、dist、data、node_modules）归服务用户
     find /opt/1dayapi -mindepth 1 -maxdepth 1 ! -name backups -exec chown -R 1dayapi:1dayapi {} +
     chown 1dayapi:1dayapi /opt/1dayapi
-    chmod 700 /opt/1dayapi/data; chmod 600 /opt/1dayapi/data/* 2>/dev/null || true
+    # directories under data/ (settlement-journal, bundle-cache …) need the execute bit: 700 for dirs, 600 for files.
+    # (2026-11-01 first run used `chmod 600 data/*`, which hit the directories too → gateway EACCES on the settlement journal for ~1 min.)
+    find /opt/1dayapi/data -type d -exec chmod 700 {} +; find /opt/1dayapi/data -type f -exec chmod 600 {} +
     for u in 1dayapi-console.service 1dayapi-gateway@.service; do
       mkdir -p "/etc/systemd/system/$u.d"
       cat > "/etc/systemd/system/$u.d/10-user.conf" <<'UNIT'
