@@ -39,6 +39,7 @@
 | 502 | `upstream_error` | upstream_error | 上游 5xx / 网络错误 / 鉴权失败，且所有候选都失败；或 200 之后 body 读取失败（gateway.md §5.2） |
 | 502（用量行） | `upstream_stream_error` | — | 流式响应在终止符之前出错或中断：只出现在 `usage_logs.error_code`，客户端收到的是流内的错误事件（gateway.md §5.2）。流里识别出 `prompt_too_long` / `safeguards_refusal` 时用量行记 400 与对应 code，流内错误事件 type 为 `invalid_request_error` |
 | 503 | `no_available_account` | upstream_error | 无候选账户，或候选都因并发满 / 节点离线未能尝试。2026-10-19 起请求本身的问题不再落到这里，收到它就是真的没有可用供给，客户端应退避重试 |
+| 503 | `native_telemetry_unverified` | upstream_error | canonical worker（spec §6.4，`telemetry_evidence_required` 开）：没有任何账号对节点 profile 的遥测证据达到 real / secondary，不开新会话。证据由管理员录入（`POST /api/admin/accounts/:id/telemetry-evidence`、结构证据 `POST /api/admin/telemetry-evidence`）或由连续健康天数推出 |
 | 503 | `team_capacity_exhausted` | upstream_error | **工具轮**（最后一条消息是 `tool_result` / `tool` / `function_call_output`）所在组织暂无可调度账号，或其账号全部尝试失败（2026-11-01 起）。工具轮不再切换组织、不重置代次：先等待至多 `ACCOUNT_BUSY_WAIT_MS`（默认 15 s）看组织是否恢复，仍不可用则返回本码并带 `Retry-After: 30`；对话上下文保留，客户端**原样重试同一请求**即可。此前（2026-10-30/31）同一情形切换组织后返回 409 `tool_continuation_after_reset`，两天 771 次 |
 | 409 | `tool_continuation_after_reset` | invalid_request_error | 工具轮的 `tool_use` 不是本平台当前代次发出的：历史策略 `reset` 下带着外部历史的工具轮（`history_unknown` 的工具轮形态），或代次重置后残留的旧工具轮。2026-11-01 起组织容量耗尽不再触发此码（见 503 `team_capacity_exhausted`） |
 

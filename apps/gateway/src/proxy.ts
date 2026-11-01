@@ -3,6 +3,11 @@ import type { FastifyReply, FastifyRequest } from "fastify";
 import {
   accountBaseUrl,
   accountTeamId,
+  orgLevelErrorCode,
+  suspendTeam,
+  teamBudgetState,
+  telemetryEvidenceLevel,
+  CC_VERSION,
   getConversation,
   getConversationByExternalKey,
   getConversationBoundary,
@@ -858,7 +863,19 @@ async function proxyRequest(req: FastifyRequest, reply: FastifyReply, format: Cl
   if (scope) {
     // A generation has exactly one verified upstream organization. Non-subscription relays
     // cannot silently become a fallback for a subscription conversation.
-    const teams = usable.filter((a) => !!accountTeamId(a));
+    // Organization budgets (spec WP7.1): an organization over its daily token / cost budget or at its concurrency cap
+    // takes no NEW conversation; in-flight work is untouched. Suspended organizations are already out of listCandidates.
+    const budgetBlocked = new Map<string, string>();
+    const teams = usable.filter((a) => {
+      const t = accountTeamId(a);
+      if (!t) return false;
+      if (budgetBlocked.has(t)) return false;
+      if (!scope?.row.team_id) {
+        const st = teamBudgetState(t, usable.filter((b) => accountTeamId(b) === t).reduce((n, b) => n + accountInFlight(b.id), 0));
+        if (!st.ok) { budgetBlocked.set(t, st.reason ?? "budget"); bump("org_budget_exhausted_total", { team: t }); console.warn(`[proxy] ${ctx.requestId} organization ${t} takes no new conversation: ${st.reason}`); return false; }
+      }
+      return true;
+    });
     if (!scope.row.team_id && teams.length) {
       // Which organization a new conversation joins (2026-11-01, audit "小组织" A1/A3): by capacity — free
       // concurrency slots × subscription-window headroom — with the key's teamAffinity as the first-order
@@ -961,6 +978,8 @@ async function proxyRequest(req: FastifyRequest, reply: FastifyReply, format: Cl
   let lastStatus = 0;
   /** The node refused the request itself (spec_too_large …): answered once, no further candidates. */
   let requestError: TunnelRequestError | null = null;
+  /** spec WP6: every canonical-capable account was skipped for missing telemetry evidence (→ 503 native_telemetry_unverified). */
+  let telemetryUnverified = false;
   let lastMessage = "";
   let lastAccount: AccountRow | null = null;
   // CCR capability check is per request, not per account (docs/ccr-supply.md §6).
@@ -1058,6 +1077,18 @@ async function proxyRequest(req: FastifyRequest, reply: FastifyReply, format: Cl
             upstreamHost = new URL(accountBaseUrl(account) ?? "https://api.anthropic.com").host;
             if (account.executor === "ccr_worker") {
               // Worker mode (docs/ccr-supply.md §8.1): real Claude Code on the node.
+              // Canonical worker (spec WP2) + telemetry evidence gate (spec WP6 / §6.4): a native-required key opens a
+              // canonical session only on an account whose evidence for the node's profile is real or secondary.
+              const canonicalWorker = caller.policy.workerMode === "canonical" && featureFor("worker_canonical", { groupId: caller.groupId, accountId: account.id });
+              if (canonicalWorker && caller.policy.telemetryPolicy === "native-required" && featureFor("telemetry_evidence_required", { groupId: caller.groupId, accountId: account.id })) {
+                const ev = telemetryEvidenceLevel(account.id, `cc-${CC_VERSION}-restricted`);
+                if (ev.level === "unknown") {
+                  bump("native_telemetry_unverified_total", { account: account.id });
+                  console.warn(`[proxy] ${ctx.requestId} account ${account.name}: telemetry evidence unknown for ${ev.profileId} (${ev.basis}); not opening a canonical session`);
+                  telemetryUnverified = true;
+                  break;
+                }
+              }
               res = await runCcrWorker({
                 account,
                 cred,
@@ -1071,7 +1102,7 @@ async function proxyRequest(req: FastifyRequest, reply: FastifyReply, format: Cl
                 signal: ctx.abort.signal,
                 // Canonical worker (spec WP2): the key's effective workerMode (override ?? judge ?? legacy) AND the
                 // three-state master switch for this key group / account (铁律 2).
-                canonical: caller.policy.workerMode === "canonical" && featureFor("worker_canonical", { groupId: caller.groupId, accountId: account.id }),
+                canonical: canonicalWorker,
               });
               if (!res) break; // no worker-capable node accepted: infra state, try next account without counting
             } else {
@@ -1233,6 +1264,20 @@ async function proxyRequest(req: FastifyRequest, reply: FastifyReply, format: Cl
         // 403 model: … is suspended for this organization until …"); 2026-10-29/31 that fell through to the short
         // transient cooldown and one account was re-picked four times in eight minutes (39 client 502s), so on the
         // worker path the text is parsed whatever the status.
+        // Organization-level error text (spec WP7.2, iron-rules 附 组织级熔断): stop scheduling the whole organization
+        // now, alert, no retry / re-auth; this request moves on to another organization's account.
+        const orgCode = orgLevelErrorCode(text);
+        if (orgCode) {
+          const teamId = accountTeamId(account);
+          ctx.trace.failure = { scope: "account", code: `org_${orgCode}`, message: upstreamMessage(text), retryable: false, status, credentialVersion: ctx.credentialVersion ?? undefined, executionSequence: ctx.executionSequence };
+          if (teamId) {
+            const first = suspendTeam(teamId, orgCode, upstreamMessage(text));
+            bump("team_suspended_total", { code: orgCode });
+            if (first) console.error(`[ALERT][org] ${ctx.requestId} organization ${teamId} suspended: ${orgCode} on account ${account.name} (upstream ${status}): ${upstreamMessage(text).slice(0, 200)} — operator action required (PATCH /api/admin/teams/${teamId} status=active)`);
+          }
+          markFailure(account.id, { kind: "transient", message: `organization-level ${orgCode}`, cooldownMs: 3_600_000 });
+          break;
+        }
         const suspended = status === 403 || isCcrMode(mode) ? parseModelSuspension(text) : null;
         if (suspended) {
           ctx.trace.failure = { scope: "account_model", code: "upstream_model_suspended", message: upstreamMessage(text), retryable: true, status: 403, credentialVersion: ctx.credentialVersion ?? undefined, executionSequence: ctx.executionSequence, resetAt: suspended.until };
@@ -1342,6 +1387,8 @@ async function proxyRequest(req: FastifyRequest, reply: FastifyReply, format: Cl
   } else if (toolRound && scope?.row.team_id && attempts > 0 && !ctx.clientGone) {
     // Every account of the organization failed this tool round; it is not moved elsewhere (see above).
     failTeamCapacity(ctx, lastAccount);
+  } else if (attempts === 0 && telemetryUnverified) {
+    fail(ctx, null, 503, "native_telemetry_unverified", "No subscription account with verified native telemetry evidence is available for this key's canonical worker (spec §6.4: evidence must be real or secondary). Retry later or ask the operator.", "upstream_error");
   } else if (attempts === 0 && ccrUnsupported) {
     fail(ctx, null, 400, ccrUnsupported.code, ccrUnsupported.message, "invalid_request_error");
   } else if (attempts === 0) {
@@ -1364,6 +1411,15 @@ async function proxyRequest(req: FastifyRequest, reply: FastifyReply, format: Cl
 const authFailures = new AuthFailureTracker();
 
 function markCcrFailure(ctx: Ctx, account: AccountRow, message: string): void {
+  // Organization-level error text on the worker path (spec WP7.2): same breaker as the direct path.
+  const orgCode = orgLevelErrorCode(message);
+  if (orgCode) {
+    const teamId = accountTeamId(account);
+    if (teamId && suspendTeam(teamId, orgCode, message.slice(0, 300))) console.error(`[ALERT][org] ${ctx.requestId} organization ${teamId} suspended: ${orgCode} on account ${account.name} (worker): ${message.slice(0, 200)} — operator action required`);
+    bump("team_suspended_total", { code: orgCode });
+    markFailure(account.id, { kind: "transient", message: `organization-level ${orgCode}`, cooldownMs: 3_600_000 });
+    return;
+  }
   const limit = ccLimitReset(message);
   if (limit) {
     markFailure(account.id, { kind: "window_exhausted", resetAt: limit.resetAt, window: limit.window });

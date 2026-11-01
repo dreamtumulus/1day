@@ -47,6 +47,7 @@
   | `direct_profile_strict` | 直连不跨版本 pin、未知 profile 不直连、出站再校验同 profile（spec WP1） | `0` |
   | `cc_client_response_profile` | 对 Claude Code UA 不下发 `x-1day-*` 诊断头（只影响下游） | `0` |
   | `key_policy_auto` | Key 策略判断器的 auto 层生效（spec §6.2 / WP8） | `0` |
+  | `telemetry_evidence_required` | native-required 的 Key 开 canonical 会话前要求账号×profile 遥测证据 ≥ secondary（spec §6.4 / WP6） | `0` |
   | `worker_canonical` | 车道 B canonical 进程：节点官方 CC 原生身份 + `--restricted` + caller MCP + 原生 session，客户 system 追加（spec WP2；节点还需 `CC_WORKER_CANONICAL=1`） | `0` |
 - 灰度组：控制台「设置 → 灰度测试账号组」选择；账号加入该组 = 账号页编辑分组；测试 Key = 该组下的 consumer Key。
 - 发布核对：`ops/bin/release-verify` 先用灰度 Key（`/root/monitor/canary-apikey.txt`，如有）发请求，再用常规 Key。
@@ -58,7 +59,11 @@
 上游裸 `429 {"type":"rate_limit_error","message":"Error"}`（事故里的那条）现在在 `classifyDirectRateLimit` 归 **请求级** `upstream_request_rejected`：只答一次，不冷却账号、不换号重试。
 验证：`packages/core/test/key-policy-auto.test.mjs`（I12 用例）。此前它被当账号级限流，一条坏请求被轮到 21 个账号上 651 次。
 
-## 附：组织级熔断（待做，铁律 2 的配套）
+## 附：组织级熔断（已做，2026-11-01，spec WP7.2）
 
-任一账号收到组织级错误（`organization has disabled Claude subscription access` / `suspended for this organization`）→ 该组织全部账号立刻停止调度并告警，人工解除。
-2026-11-01 的停用花了 3 分钟、几百个 502 才由各账号逐个失败而停下。实现后补到本文。
+任一账号收到组织级错误文本（`organization has disabled` / `suspended for this organization`（非按模型限时的那种）/ `oauth_not_allowed_for_organization`）→
+`suspendTeam`：`upstream_teams.status='suspended'` + `suspended_reason / last_error_code`（`listCandidates` 只调度 `status='active'` 的组织，所以**整个组织立刻停**），
+事件 `proxy_team_events.team_suspended_org_error`，journald `[ALERT][org]` 一行；该请求换别的组织的账号继续，不重试、不 reauth。
+解除：`PATCH /api/admin/teams/:id {status:"active"}`（`resumeTeam`，清 reason，记 `team_resumed`）。直连与 worker 路径（`markCcrFailure`）同一套。
+预算（spec WP7.1）：`upstream_teams.daily_token_budget / daily_cost_budget / max_concurrency`（迁移 37，null = 不限），只拦**新对话**的组织绑定（`teamBudgetState`），在途不杀；计 `org_budget_exhausted_total`。
+验证：`packages/core/test/org-guard-telemetry.test.mjs`。此前 2026-11-01 的停用花了 3 分钟、几百个 502 才由各账号逐个失败而停下。

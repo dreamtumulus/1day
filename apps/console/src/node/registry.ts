@@ -753,6 +753,8 @@ export interface CcWorkerParams {
   nativeSessionId?: string;
   builtInToolProfile?: "restricted-default" | "tools-disabled-canonical";
   jsonSchema?: Record<string, unknown>;
+  nativeSession?: { id: string; action: "start" | "resume" | "fork"; revision?: number };
+  historyImport?: Array<Record<string, unknown>>;
   /** Extended thinking budget → node `--max-thinking-tokens`. */
   thinkingBudget?: number;
   /** Reasoning effort → node `--effort`. */
@@ -876,6 +878,8 @@ export async function openTunnel(
                 ...(worker!.nativeSessionId ? { nativeSessionId: worker!.nativeSessionId } : {}),
                 ...(worker!.builtInToolProfile ? { builtInToolProfile: worker!.builtInToolProfile } : {}),
                 ...(worker!.jsonSchema ? { jsonSchema: worker!.jsonSchema } : {}),
+                ...(worker!.nativeSession ? { nativeSession: worker!.nativeSession } : {}),
+                ...(worker!.historyImport ? { historyImport: worker!.historyImport } : {}),
               }
             : {}),
           ...(worker!.thinkingBudget ? { thinkingBudget: worker!.thinkingBudget } : {}),

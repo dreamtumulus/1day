@@ -630,6 +630,21 @@ export class CcWorkerManager {
    */
   private fallBackToFresh(msg: CcWorkerOpen, mode: "continue" | "tool_result", why: string): boolean {
     const key = (msg.reuseKey ?? "").slice(0, 8);
+    // Canonical (spec WP3): no folded history exists; the conversation lives in the native transcript. A continue that
+    // no live process can take becomes `--resume <nativeSession.id>` fed with the new turn only (G4). Nothing to
+    // resume → session_lost, never a fresh process over a tail.
+    if (msg.mode === "canonical") {
+      if (mode === "continue" && msg.nativeSession?.action === "resume" && Array.isArray(msg.content) && msg.content.length > 0) {
+        this.log(`${mode} miss ${key}: ${why} -> native --resume ${msg.nativeSession.id.slice(0, 8)}`);
+        msg.turnMode = "fresh";
+        return true;
+      }
+      this.log(`${mode} miss ${key}: ${why} -> canonical, nothing to resume; refusing ${msg.sessionId} (session_lost)`);
+      const session: WorkerSession = { isolation: msg.isolation, sessionId: msg.sessionId, accountId: msg.accountId, child: null, closed: false, outSeq: 0, stderrTail: "", timer: null, workDir: null, proc: null };
+      this.sessions.set(msg.sessionId, session);
+      this.failSession(session, "session_lost", `no live canonical session for this conversation (${why})${mode === "tool_result" ? "; the parked tool round cannot be resumed" : ""}`);
+      return false;
+    }
     const full = Array.isArray(msg.history) && msg.history.length > 0 ? msg.history : mode === "tool_result" && Array.isArray(msg.content) && msg.content.length > 0 ? msg.content : null;
     if (!full) {
       this.log(`${mode} miss ${key}: ${why} -> no full history in the open; refusing ${msg.sessionId} (session_lost)`);
@@ -749,6 +764,8 @@ export class CcWorkerManager {
     if (msg.mode === "canonical") {
       if (!this.canonicalEnabled) return this.reject(msg.sessionId, "canonical_unsupported");
       if (msg.nativeSessionId !== undefined && !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(msg.nativeSessionId)) return this.reject(msg.sessionId, "bad_native_session_id");
+      if (msg.nativeSession && (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(msg.nativeSession.id) || !["start", "resume", "fork"].includes(msg.nativeSession.action))) return this.reject(msg.sessionId, "bad_native_session_id");
+      if (msg.historyImport !== undefined && (!Array.isArray(msg.historyImport) || msg.historyImport.length > 5000 || !msg.nativeSession)) return this.reject(msg.sessionId, "bad_history_import");
     }
 
     if (msg.isolation !== undefined && !validIsolation(msg.isolation)) return this.reject(msg.sessionId, "invalid_isolation");
@@ -935,7 +952,19 @@ export class CcWorkerManager {
         fs.writeFileSync(appendFile, msg.appendSystemPrompt, { mode: 0o600 });
         this.chownTree(workDir, identity);
       }
-      const nativeSessionId = canonical ? (typeof msg.nativeSessionId === "string" && msg.nativeSessionId ? msg.nativeSessionId : randomUUID()) : null;
+      const nativeSessionId = canonical ? (msg.nativeSession?.id ?? (typeof msg.nativeSessionId === "string" && msg.nativeSessionId ? msg.nativeSessionId : randomUUID())) : null;
+      // spec WP3: resume an existing native transcript (G4), or import one the gateway built from the client's history
+      // (G3: written in Claude Code's own jsonl shape under projects/<cwd-hash>/<id>.jsonl, then resumed).
+      let resumeId: string | null = canonical && msg.nativeSession?.action === "resume" ? msg.nativeSession.id : null;
+      if (canonical && Array.isArray(msg.historyImport) && msg.historyImport.length > 0 && nativeSessionId) {
+        const projDir = path.join(configDir, "projects", workDir.replace(/[^a-zA-Z0-9]/g, "-"));
+        fs.mkdirSync(projDir, { recursive: true, mode: 0o700 });
+        const lines = msg.historyImport.map((l) => JSON.stringify({ ...l, sessionId: nativeSessionId, cwd: workDir }));
+        fs.writeFileSync(path.join(projDir, `${nativeSessionId}.jsonl`), lines.join("\n") + "\n", { mode: 0o600 });
+        this.chownTree(projDir, identity);
+        resumeId = nativeSessionId;
+        this.log(`session ${msg.sessionId}: imported ${lines.length} transcript line(s) into native session ${nativeSessionId.slice(0, 8)}`);
+      }
       const effort = typeof msg.effort === "string" && ["low", "medium", "high", "xhigh", "max"].includes(msg.effort) ? msg.effort : null;
       const args = [
         ...(this.opts.claudeArgsPrefix ?? []),
@@ -952,7 +981,7 @@ export class CcWorkerManager {
           ? [
               // Native session on disk (transcript under the account's CLAUDE_CONFIG_DIR, TTL by the node cleanup timer);
               // `--restricted` keeps file tools inside cwd and drops Bash (G6/G7); no permission prompts in -p mode.
-              "--session-id", nativeSessionId!,
+              ...(resumeId ? ["--resume", resumeId] : ["--session-id", nativeSessionId!]),
               "--restricted", "--permission-prompts", "none",
               ...(msg.builtInToolProfile === "tools-disabled-canonical" ? ["--tools", ""] : []),
               ...(appendFile ? ["--append-system-prompt-file", appendFile] : []),

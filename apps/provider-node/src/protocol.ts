@@ -244,6 +244,14 @@ export interface CcWorkerOpen {
   builtInToolProfile?: "restricted-default" | "tools-disabled-canonical";
   /** Canonical: `--json-schema` (G8). */
   jsonSchema?: Record<string, unknown>;
+  /**
+   * Canonical native session (spec §6.3 / WP3): `start` = new transcript under `id`; `resume` = `--resume id` when no live
+   * process holds the conversation (the node's config dir keeps the transcript); `fork` reserved. `revision` = committed
+   * turns the gateway believes the session has (monotonic; informational for the node).
+   */
+  nativeSession?: { id: string; action: "start" | "resume" | "fork"; revision?: number };
+  /** Canonical G3 import: transcript lines (Claude Code's own jsonl shape) the node writes under nativeSession.id before `--resume`. */
+  historyImport?: Array<Record<string, unknown>>;
   /** System prompt replacing Claude Code's default (written to the scratch dir, `--system-prompt-file`). */
   systemPrompt?: string;
   /** Platform-side device id to seed a fresh config dir with (.claude.json userID); ignored when one exists. */

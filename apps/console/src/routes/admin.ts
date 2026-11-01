@@ -14,6 +14,12 @@ import {
   pendingCacheRefundAll,
   runCacheRefund,
   runCacheRefundsForAll,
+  teamUsageToday,
+  resumeTeam,
+  telemetryEvidenceLevel,
+  listTelemetryEvidence,
+  recordTelemetryEvidence,
+  CC_VERSION,
   judgeAllKeys,
   judgeKey,
   listKeyPolicyEvents,
@@ -322,8 +328,10 @@ export function registerAdminRoutes(app: FastifyInstance): void {
   // Account-pool monitoring endpoints shared with the ops role (docs/auth.md §2).
   const preOps = { preHandler: requireOps };
 
-  app.get("/api/admin/teams",pre,async()=>({data:all<{id:string;name:string|null;status:string;created_at:string}>(
-    "SELECT * FROM upstream_teams ORDER BY created_at DESC").map((r)=>({id:r.id,name:r.name,status:r.status,createdAt:r.created_at}))}));
+  app.get("/api/admin/teams",pre,async()=>({data:all<{id:string;name:string|null;status:string;created_at:string;daily_token_budget:number|null;daily_cost_budget:number|null;max_concurrency:number|null;suspended_reason:string|null;suspended_until:string|null;last_error_code:string|null}>(
+    "SELECT * FROM upstream_teams ORDER BY created_at DESC").map((r)=>({id:r.id,name:r.name,status:r.status,createdAt:r.created_at,
+      // spec WP7: budgets (null = unlimited) and the circuit breaker's reason
+      dailyTokenBudget:r.daily_token_budget,dailyCostBudget:r.daily_cost_budget,maxConcurrency:r.max_concurrency,suspendedReason:r.suspended_reason,suspendedUntil:r.suspended_until,lastErrorCode:r.last_error_code,usageToday:teamUsageToday(r.id)}))}));
   // ---------- organizations as an operations object (2026-11-01, docs/team-isolation.md "多小组织") ----------
   app.get("/api/admin/teams/overview", pre, async () => ({ data: teamOverview(await gatewayInFlight()), minReleaseDays: claimReleaseMinDays() }));
   app.get("/api/admin/teams/:id/claims", pre, async (req) => {
@@ -347,12 +355,27 @@ export function registerAdminRoutes(app: FastifyInstance): void {
     const b = body(req);
     const status = oneOf(b, "status", ["active", "disabled"] as const);
     const name = typeof b.name === "string" ? b.name.trim().slice(0, 200) : undefined;
+    // spec WP7.1 budgets: null / 0 = unlimited; checked before a new conversation is bound, never kills in-flight work.
+    const budget = (k: "dailyTokenBudget" | "dailyCostBudget" | "maxConcurrency"): number | null | undefined => {
+      if (!(k in b)) return undefined;
+      if (b[k] === null || b[k] === 0 || b[k] === "") return null;
+      const n = Number(b[k]);
+      if (!Number.isFinite(n) || n < 0 || n > 1e12) bad("invalid_request", `${k} must be a non-negative number or null`);
+      return k === "dailyCostBudget" ? n : Math.floor(n);
+    };
+    const tok = budget("dailyTokenBudget"), cost = budget("dailyCostBudget"), conc = budget("maxConcurrency");
     tx(() => {
-      if (status) run("UPDATE upstream_teams SET status=? WHERE id=?", status, id);
+      // Lifting a suspension (circuit breaker, spec WP7.2) is an explicit operator act: clears the reason fields too.
+      if (status === "active" && t.status === "suspended") resumeTeam(id, req.user!.id, typeof b.reason === "string" ? b.reason.slice(0, 300) : "operator resumed after organization-level error");
+      else if (status) run("UPDATE upstream_teams SET status=? WHERE id=?", status, id);
       if (name !== undefined) run("UPDATE upstream_teams SET name=? WHERE id=?", name || null, id);
-      if (status && status !== t.status) recordProxyTeamEvent({ resourceKey: `team:${id}`, teamId: id, actorId: req.user!.id, event: status === "active" ? "team_enabled" : "team_disabled", reason: "operator" });
+      if (tok !== undefined) run("UPDATE upstream_teams SET daily_token_budget=? WHERE id=?", tok, id);
+      if (cost !== undefined) run("UPDATE upstream_teams SET daily_cost_budget=? WHERE id=?", cost, id);
+      if (conc !== undefined) run("UPDATE upstream_teams SET max_concurrency=? WHERE id=?", conc, id);
+      if (status && status !== t.status && !(status === "active" && t.status === "suspended")) recordProxyTeamEvent({ resourceKey: `team:${id}`, teamId: id, actorId: req.user!.id, event: status === "active" ? "team_enabled" : "team_disabled", reason: "operator" });
     });
-    return { data: one("SELECT id, name, status, created_at AS createdAt FROM upstream_teams WHERE id=?", id) };
+    const r = one<{ id: string; name: string | null; status: string; created_at: string; daily_token_budget: number | null; daily_cost_budget: number | null; max_concurrency: number | null; suspended_reason: string | null; suspended_until: string | null; last_error_code: string | null }>("SELECT * FROM upstream_teams WHERE id=?", id)!;
+    return { data: { id: r.id, name: r.name, status: r.status, createdAt: r.created_at, dailyTokenBudget: r.daily_token_budget, dailyCostBudget: r.daily_cost_budget, maxConcurrency: r.max_concurrency, suspendedReason: r.suspended_reason, suspendedUntil: r.suspended_until, lastErrorCode: r.last_error_code, usageToday: teamUsageToday(id) } };
   });
   app.post("/api/admin/teams/:id/cleanup-nodes", pre, async (req) => {
     const { id } = req.params as { id: string };
@@ -1022,6 +1045,27 @@ export function registerAdminRoutes(app: FastifyInstance): void {
   });
 
   // ---------- proxy freeze (operator rule 2026-11-01): the only two ways out of status 'proxy_down' ----------
+  // ---- telemetry evidence (spec §6.4 / WP6): what proves this account's native Claude Code telemetry is accepted ----
+  app.get("/api/admin/accounts/:id/telemetry-evidence", pre, async (req) => {
+    const { id } = req.params as { id: string };
+    if (!one("SELECT 1 FROM accounts WHERE id = ?", id)) notFound("account");
+    const q = req.query as { profileId?: string };
+    const profileId = typeof q.profileId === "string" && q.profileId ? q.profileId.slice(0, 64) : `cc-${CC_VERSION}-restricted`;
+    return { data: { verdict: telemetryEvidenceLevel(id, profileId), rows: listTelemetryEvidence(id), structural: listTelemetryEvidence(null, profileId) } };
+  });
+  app.post("/api/admin/accounts/:id/telemetry-evidence", pre, async (req) => {
+    const { id } = req.params as { id: string };
+    if (!one("SELECT 1 FROM accounts WHERE id = ?", id)) notFound("account");
+    const evidenceId = recordTelemetryEvidence(parseEvidenceBody(body(req), id));
+    return { data: { id: evidenceId } };
+  });
+  // Structural (controlled, G10-A) evidence describes a profile — the binary — not an account.
+  app.post("/api/admin/telemetry-evidence", pre, async (req) => {
+    const b = body(req);
+    if (b.source !== "controlled") bad("invalid_request", "account-less evidence must be source=controlled (structural); real evidence belongs to an account");
+    return { data: { id: recordTelemetryEvidence(parseEvidenceBody(b, null)) } };
+  });
+
   app.post("/api/admin/accounts/:id/proxy-release", pre, async (req) => {
     const { id } = req.params as { id: string };
     loadAccount(id);
@@ -1809,12 +1853,38 @@ function validateSetting(key: SettingKey, v: string): void {
       return;
     }
     case "direct_cc_entrypoint_normalize": case "direct_strip_user_email": case "direct_cc_canonical_fields": case "worker_prompt_hide_platform_path":
-    case "direct_profile_strict": case "cc_client_response_profile": case "key_policy_auto": case "worker_canonical":
+    case "direct_profile_strict": case "cc_client_response_profile": case "key_policy_auto": case "worker_canonical": case "telemetry_evidence_required": case "canonical_history_import":
       // 铁律 2 three-state switches
       if (v !== "0" && v !== "canary" && v !== "1") bad("invalid_request", `${key} must be 0 | canary | 1`);
       return;
+    case "telemetry_health_days": {
+      const n = Number(v);
+      if (!Number.isInteger(n) || n < 1 || n > 60) bad("invalid_request", "telemetry_health_days must be an integer 1..60");
+      return;
+    }
     case "cc_shape_policy":
       if (!(CC_SHAPE_POLICIES as readonly string[]).includes(v)) bad("invalid_request", `cc_shape_policy must be one of ${CC_SHAPE_POLICIES.join(", ")}`);
       return;
   }
+}
+
+
+/** spec §6.4: validated evidence row from an admin body; `accountId` null = structural (controlled) evidence for a profile. */
+function parseEvidenceBody(b: Record<string, unknown>, accountId: string | null): Parameters<typeof recordTelemetryEvidence>[0] {
+  const source = b.source === "real" || b.source === "controlled" ? b.source : null;
+  if (!source) bad("invalid_request", "source must be real | controlled");
+  const profileId = typeof b.profileId === "string" && /^cc-\d+\.\d+\.\d+-(cli|sdk-cli|restricted)$/.test(b.profileId) ? b.profileId : null;
+  if (!profileId) bad("invalid_request", "profileId must look like cc-<version>-<cli|sdk-cli|restricted>");
+  const status = b.status === undefined || b.status === null ? null : Number(b.status);
+  if (status !== null && (!Number.isInteger(status) || status < 100 || status > 599)) bad("invalid_request", "status must be an HTTP status");
+  if (source === "real" && (status === null || status < 200 || status >= 300)) bad("invalid_request", "real evidence requires a 2xx status");
+  const days = b.expiresInDays === undefined ? (source === "real" ? 30 : 90) : Number(b.expiresInDays);
+  if (!Number.isFinite(days) || days < 1 || days > 365) bad("invalid_request", "expiresInDays must be 1..365");
+  const str = (k: string, max: number): string | null => (typeof b[k] === "string" && (b[k] as string).trim() ? (b[k] as string).trim().slice(0, max) : null);
+  return {
+    accountId, profileId: profileId!, source: source!, status,
+    nodeId: str("nodeId", 64), proxyId: str("proxyId", 64), nativeSessionId: str("nativeSessionId", 64), ccVersion: str("ccVersion", 32),
+    endpoint: str("endpoint", 200), digest: str("digest", 64), note: str("note", 1000),
+    expiresAt: new Date(Date.now() + days * 86_400_000).toISOString(),
+  };
 }

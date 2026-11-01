@@ -79,6 +79,9 @@ export const SETTING_DEFAULTS = {
   // 遥测证据（spec §6.4 / WP6）：native-required 的 Key 开 canonical 会话前，账号 × profile 的证据等级必须 ≥ secondary，
   // 否则跳过该账号（计 native_telemetry_unverified_total；无合格账号 → 503 native_telemetry_unverified）。
   // 0 = 不要求（观察期：让健康天数先累积）；canary；1。secondary = profile 有 controlled 结构证据 + 账号连续 telemetry_health_days 天健康。
+  // canonical 外部历史导入（spec WP3 / G3）：开 → 带着外部多轮历史的 canonical 新会话由网关按 Claude Code transcript 格式构造
+  // （剥掉 thinking：G3 证明零校验、真上游会 400）、节点写入后 --resume；关 → 409 history_import_unsupported。上游可见（导入的历史会上行）。
+  canonical_history_import: "0",
   telemetry_evidence_required: "0",
   telemetry_health_days: "7",
   direct_cc_version_pin: "2.1.312",

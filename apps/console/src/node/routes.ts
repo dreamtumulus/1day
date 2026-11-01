@@ -263,6 +263,8 @@ export function registerNodeRoutes(app: FastifyInstance): void {
       nativeSessionId?: string;
       builtInToolProfile?: string;
       jsonSchema?: unknown;
+      nativeSession?: unknown;
+      historyImport?: unknown;
       thinkingBudget?: number;
       effort?: string;
       maxTokens?: number;
@@ -314,6 +316,8 @@ export function registerNodeRoutes(app: FastifyInstance): void {
               ...(typeof b.nativeSessionId === "string" && /^[0-9a-f-]{36}$/i.test(b.nativeSessionId) ? { nativeSessionId: b.nativeSessionId } : {}),
               ...(b.builtInToolProfile === "tools-disabled-canonical" ? { builtInToolProfile: "tools-disabled-canonical" as const } : { builtInToolProfile: "restricted-default" as const }),
               ...(b.jsonSchema && typeof b.jsonSchema === "object" ? { jsonSchema: b.jsonSchema as Record<string, unknown> } : {}),
+              ...(validNativeSession(b.nativeSession) ? { nativeSession: b.nativeSession as { id: string; action: "start" | "resume" | "fork"; revision?: number } } : {}),
+              ...(Array.isArray(b.historyImport) && b.historyImport.length > 0 && b.historyImport.length <= 5000 ? { historyImport: b.historyImport as Array<Record<string, unknown>> } : {}),
             }
           : {}),
         ...(typeof b.thinkingBudget === "number" && b.thinkingBudget > 0 ? { thinkingBudget: Math.floor(b.thinkingBudget) } : {}),
@@ -447,4 +451,11 @@ export function registerNodeRoutes(app: FastifyInstance): void {
     reply.header("x-bundle-sha256", bundle.sha256);
     return reply.send(createReadStream(bundle.path));
   });
+}
+
+/** spec §6.3: {id: UUID, action: start|resume|fork, revision?: int} */
+function validNativeSession(v: unknown): boolean {
+  if (!v || typeof v !== "object") return false;
+  const r = v as Record<string, unknown>;
+  return typeof r.id === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(r.id) && (r.action === "start" || r.action === "resume" || r.action === "fork") && (r.revision === undefined || Number.isInteger(r.revision));
 }

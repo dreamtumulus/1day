@@ -800,6 +800,9 @@ export interface Settings {
   cc_client_response_profile?: string;
   key_policy_auto?: string;
   worker_canonical?: string;
+  telemetry_evidence_required?: string;
+  canonical_history_import?: string;
+  telemetry_health_days?: string;
   history_policy_default?: string;
   history_policy_canary?: string;
   default_group_id: string;

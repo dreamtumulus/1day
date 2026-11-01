@@ -196,6 +196,8 @@ function SettingsForm({ initial, groups, onSaved }: { initial: Settings; groups:
                 ["cc_client_response_profile", "ccClientResponseProfile"],
                 ["key_policy_auto", "keyPolicyAuto"],
                 ["worker_canonical", "workerCanonical"],
+                ["telemetry_evidence_required", "telemetryEvidenceRequired"],
+                ["canonical_history_import", "canonicalHistoryImport"],
               ] as const
             ).map(([key, label]) => (
               <Field key={key} label={t(`admin.settings.${label}`)} hint={t(`admin.settings.${label}Hint`)}>
@@ -210,6 +212,9 @@ function SettingsForm({ initial, groups, onSaved }: { initial: Settings; groups:
                 />
               </Field>
             ))}
+            <Field label={t("admin.settings.telemetryHealthDays")} hint={t("admin.settings.telemetryHealthDaysHint")}>
+              <Input type="number" min={1} max={60} step="1" value={s.telemetry_health_days ?? "7"} onChange={(e) => set("telemetry_health_days", e.target.value)} />
+            </Field>
             <Field label={t("admin.settings.historyPolicyDefault")} hint={t("admin.settings.historyPolicyDefaultHint")}>
               <Select
                 value={s.history_policy_default ?? "reset"}

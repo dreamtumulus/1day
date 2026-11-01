@@ -459,6 +459,8 @@ export interface CcWorkerOpenRequest {
   nativeSessionId?: string;
   builtInToolProfile?: "restricted-default" | "tools-disabled-canonical";
   jsonSchema?: Record<string, unknown>;
+  nativeSession?: { id: string; action: "start" | "resume" | "fork"; revision?: number };
+  historyImport?: Array<Record<string, unknown>>;
   /** Extended thinking budget (node: `--max-thinking-tokens`); 0/absent = Claude Code default. */
   thinkingBudget?: number;
   /** Reasoning effort (node: `--effort`), from the client's `effort` field when present. */
@@ -521,6 +523,8 @@ export async function openCcWorker(
               ...(req.nativeSessionId ? { nativeSessionId: req.nativeSessionId } : {}),
               ...(req.builtInToolProfile ? { builtInToolProfile: req.builtInToolProfile } : {}),
               ...(req.jsonSchema ? { jsonSchema: req.jsonSchema } : {}),
+              ...(req.nativeSession ? { nativeSession: req.nativeSession } : {}),
+              ...(req.historyImport ? { historyImport: req.historyImport } : {}),
             }
           : {}),
         ...(req.thinkingBudget ? { thinkingBudget: req.thinkingBudget } : {}),

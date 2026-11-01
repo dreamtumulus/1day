@@ -1040,6 +1040,8 @@ function migration37(d: DatabaseSync, log: Log): void {
     ["suspended_until", "TEXT"],
     ["last_error_code", "TEXT"],
   ]);
-  d.exec("CREATE INDEX IF NOT EXISTS idx_usage_team_time ON usage_logs(team_id, created_at)");
+  // Index only where the columns exist (a pre-migration-30 usage_logs has no team_id; the upgrade test's legacy schema none).
+  const cols = (d.prepare("PRAGMA table_info(usage_logs)").all() as Array<{ name: string }>).map((r) => r.name);
+  if (cols.includes("team_id") && cols.includes("created_at")) d.exec("CREATE INDEX IF NOT EXISTS idx_usage_team_time ON usage_logs(team_id, created_at)");
   log("migration 37: upstream_teams budgets / suspension fields; idx_usage_team_time");
 }

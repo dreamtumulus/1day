@@ -246,6 +246,21 @@ claude-jetbrains / claude-desktop(-3p) / local-agent）的后缀改成 "(externa
 依次尝试，最多 `GATEWAY_MAX_ATTEMPTS`（默认 3）次真实上游调用。`route=node` 的账户若开不了隧道（号商无在线节点 / 节点拒绝 / TLS 失败），
 视为基础设施不可用，直接跳过且不计入尝试、不标记账户。
 
+### 3a. 组织预算与组织级熔断（2026-11-01，spec WP7，`packages/core/src/org-guard.ts`）
+
+- **预算**：`upstream_teams.daily_token_budget / daily_cost_budget / max_concurrency`（迁移 37；`PATCH /api/admin/teams/:id`，null/0 = 不限）。新对话选组织（`pickTeam` 之前）时，
+  当日（UTC）`usage_logs` 成功请求的 token / `actual_cost` 已达预算，或组织在途数达上限的组织不参与；已绑定组织的对话不受影响、在途请求不杀。计 `org_budget_exhausted_total`。
+- **熔断**：上游错误文本是组织级的（`orgLevelErrorCode`：`organization has disabled` / 整组织 `suspended for this organization` / `oauth_not_allowed_for_organization`）→ `suspendTeam`
+  把组织置为 `suspended`（`listCandidates` 立刻不再调度它的任何账号），写 `proxy_team_events.team_suspended_org_error`，journald `[ALERT][org]`；本请求换组织继续，不重试、不 reauth。
+  人工 `PATCH /api/admin/teams/:id {status:"active"}` 解除。按模型限时的 "model: X is suspended for this organization until T" 仍走模型冷却，不触发熔断。
+
+### 3b. 遥测证据门（2026-11-01，spec §6.4 / WP6，`packages/core/src/telemetry-evidence.ts`）
+
+`telemetry_evidence`（迁移 36）只存两类行：`real`（该账号遥测真实上游 2xx 的受控取证）、`controlled`（profile 的 G10-A 结构证据，可不绑账号）。`secondary` 不落库，
+由 "profile 有 controlled 行 + 账号连续 `telemetry_health_days`（默认 7）天健康（每天 ≥1 请求、无 `upstream_request_rejected`、无组织级错误文本）" 算出；证据按账号 × profile，不外推（I10）。
+开关 `telemetry_evidence_required`（三态，默认 0）：开时，`telemetryPolicy=native-required` 的 Key 只在证据 ≥ secondary 的账号上开 canonical 会话，否则跳过该账号（`native_telemetry_unverified_total`），
+无合格账号 → 503 `native_telemetry_unverified`。管理接口：`GET/POST /api/admin/accounts/:id/telemetry-evidence`、`POST /api/admin/telemetry-evidence`（结构证据）。
+
 ## 4. 协议模式
 
 | 客户端端点 | 账户 `protocol=anthropic` | `protocol=openai` |

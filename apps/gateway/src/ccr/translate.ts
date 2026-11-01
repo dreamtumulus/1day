@@ -596,6 +596,8 @@ export class SessionTranslator {
   private usageBaseline: TranslatedUsage | null = null;
   /** A `system/init` line arrived: this response came from a freshly started process (a continue that fell back). */
   private sawInit = false;
+  /** Canonical (spec WP3): the native session id Claude Code reported in system/init (authoritative over what we sent). */
+  nativeSessionId: string | null = null;
   private readonly nativeTools: boolean;
   private readonly internalTools: boolean;
   /** Canonical: built-in tool rounds the process ran on its own (metric canonical_internal_tool_rounds). */
@@ -1222,6 +1224,7 @@ export class SessionTranslator {
         if ((p as Json).subtype === "init") {
           this.usageBaseline = null;
           this.sawInit = true;
+          if (typeof (p as Json).session_id === "string") this.nativeSessionId = String((p as Json).session_id);
         }
         break;
       }

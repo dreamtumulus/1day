@@ -11,6 +11,8 @@
 | §6.2 Key policy | `{auto, override}` 两层 + 新字段；控制台 Key 页两层显示 | `key_policy_auto` | `cc-profile.test`（policy 用例） |
 | WP8 判断器 | `key-policy-auto.ts` 规则 + 3 天滞回 + `key_policy_events`（迁移 35）；控制台日批 + 管理接口 | `key_policy_auto`（0 = 只记录） | `key-policy-auto.test` |
 | WP2 canonical 进程 | 节点 `mode:"canonical"` 分支（原生 system + 追加、`--restricted`、`--session-id`、caller MCP、不折叠历史）、翻译器内置工具循环消费、控制台按 `canonical_v1` 选节点、网关 `canonicalTurn` 拒绝外部历史（409） | `worker_canonical` + 节点 `CC_WORKER_CANONICAL=1` + Key `workerMode=canonical` | `canonical-worker.test`、provider-node `cc-worker.test` canonical 段 |
+| WP6 遥测证据 | `telemetry_evidence` 表（迁移 36：real / controlled 行，secondary 由"profile 结构证据 + 账号连续 N 天健康"算出）；管理接口录入/查看；网关在 native-required + 开关下按证据等级放行 canonical | `telemetry_evidence_required`、`telemetry_health_days` | `org-guard-telemetry.test` |
+| WP7 组织预算/熔断 | `upstream_teams` 预算列（迁移 37）只拦新对话绑定；组织级错误文本 → 整组织 `suspended` + `[ALERT][org]` + 事件，人工 `PATCH status=active` 解除；直连/worker 同一套 | 预算默认 null（不限）；熔断无开关（只减少上游流量） | 同上 |
 | WP5（部分） | I12 裸 `429 "Error"` 请求级；`responseMode=strict` 不提前 200 / 不心跳；`anthropic-ratelimit-*` 本就不转发 | Key `responseMode` | `key-policy-auto.test`（I12） |
 
 ## WP1 第 4 项的决定
@@ -27,6 +29,7 @@
 
 ## 未做（按 spec 顺序）
 
+- WP6 余项：节点心跳 `telemetryEvidence` 元数据、账号页/组织页前端展示（目前只有管理 API）；G10-B 真实受理需专用测试账号 + 受控 CA 出口后录入 `source=real`。
 - WP2 余项：合成 cwd（mount namespace bind → attachments 可开）、遥测 `CLAUDE_CODE_DISABLE_ATTACHMENTS` 按 G9 决定、节点 bundle 发到 worker。WP3 原生会话（G4 的"无 transcript 崩溃窗口"与 G3 的 thinking 剥离已有证据）、WP4 strict 参数契约 / Responses 第一档、WP5 raw-v1 节点能力、WP6 `telemetry_evidence` 表、WP7 组织预算与组织级熔断。
 - 2.1.316 / 2.1.314 的 profile 采样（mirasim 客户版本），否则严格模式下它们是 `cc_profile_unknown`。
 - 判断器缺的观测：外来历史比例、`ignored-params` 命中、探针形态（需在 usage_logs 加列，迁移只增）。

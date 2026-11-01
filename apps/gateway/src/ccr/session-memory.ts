@@ -21,7 +21,21 @@ export interface TurnMemory {
   pendingCalls?: Array<{ toolUseId: string; callId: string; name: string }>;
   /** Diagnostics (2026-10-23): shape of the last blocks fed, so a prefix miss can be explained in the log. */
   tails?: BlockTail[];
+  /** Canonical native session (spec §6.3 / WP3): what `--resume` needs and where the session stands. */
+  native?: NativeSessionState;
   expiresAt: number;
+}
+
+export type NativeSessionStatus = "READY" | "RUNNING" | "COMMITTED" | "AWAITING_CALLER" | "DIRTY" | "LOST";
+export interface NativeSessionState {
+  sessionId: string;
+  profileId: string;
+  /** Committed turns (monotonic). */
+  revision: number;
+  state: NativeSessionStatus;
+  /** Resumes performed on this conversation (diagnostics). */
+  resumes: number;
+  imported?: boolean;
 }
 
 export type TurnMemoryInput = Omit<TurnMemory, "expiresAt">;
