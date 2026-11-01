@@ -256,6 +256,7 @@ mid-conversation-tool-changes / advanced-tool-use / effort / dangerous-tool-use 
 真实 2.1.312 二进制 + 假 OAuth + 本机假上游（CONNECT 只记录、必拒绝），G1–G10 结论见 `docs/evidence/cc-2.1.312/README.md`（`evidence.mjs` 自动生成），
 三个 profile（cli / sdk-cli / restricted，各 12 次 = 4 提示词 × sonnet-5-5 / opus-5-5 / haiku-4-5）的合成见 `profiles.json`，已回填 `packages/core/src/cc-profile.ts`。
 与本文此前记录的差异 / 补充：
+- **`mid-conversation-tool-changes-2026-07-01` 的触发条件**（Pi T10，`beta-midconv.json`）：与入口、MCP 无关，只跟 attachments：`CLAUDE_CODE_DISABLE_ATTACHMENTS` 未设 4/4 出现，设了 0/3。G9 36 次采样都设了该变量所以未见；canonical worker 关 attachments，其上游 beta 集因此少这一项。
 - **beta 集随模型族变**：sonnet/opus-5-5 的 sdk-cli 10 项、cli 12 项（多 `dangerous-tool-use-2026-09-03`、`afk-mode-2026-01-31`；§11 10-28 采样里的 `mid-conversation-tool-changes-2026-07-01` 本轮 12/12 未出现，属功能相关项）；haiku-4-5 只有 8 项且顺序不同
   （`oauth` 第一、`claude-code` 第四，无 `per-turn-control` / `effort`），`thinking={type:enabled,budget_tokens:31999}`、`max_tokens 32000`、无 `output_config`。
   网关的 `CC_BETAS` 注入集仍只取核心项；判定与 profile 断言按 `(入口, 模型族)` 分档。

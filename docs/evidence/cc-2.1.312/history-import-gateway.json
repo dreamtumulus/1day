@@ -1,0 +1,174 @@
+{
+ "gate": "history-import-gateway",
+ "task": "T9",
+ "sampledAt": "2026-11-01T15:09:46.463Z",
+ "importer": "apps/gateway/dist/ccr/native-session.js#buildNativeTranscript",
+ "customerMessages": 8,
+ "strippedThinking": 2,
+ "transcript": {
+  "file": "resume-streamjson-t9.json",
+  "lines": 8,
+  "shape": [
+   {
+    "type": "user",
+    "role": "user",
+    "parentUuid": null,
+    "uuid": "93b50bba-99a0-42ab-86b4-8d5e2b0879c2",
+    "blocks": [
+     "string"
+    ],
+    "head": "CUST-USER-1: what is the weather in Tokyo?",
+    "toolUse": [],
+    "toolResult": []
+   },
+   {
+    "type": "assistant",
+    "role": "assistant",
+    "parentUuid": "93b50bba-99a0-42ab-86b4-8d5e2b0879c2",
+    "uuid": "0ce80ef2-9141-4320-9da1-eebefd5b8593",
+    "blocks": [
+     "text",
+     "tool_use"
+    ],
+    "head": "CUST-ASSISTANT-1: let me look that up|mcp__caller__lookup",
+    "toolUse": [
+     "toolu_cust_01"
+    ],
+    "toolResult": []
+   },
+   {
+    "type": "user",
+    "role": "user",
+    "parentUuid": "0ce80ef2-9141-4320-9da1-eebefd5b8593",
+    "uuid": "8943a69a-973c-4d28-be07-a3cf964ffd03",
+    "blocks": [
+     "tool_result"
+    ],
+    "head": "toolu_cust_01",
+    "toolUse": [],
+    "toolResult": [
+     "toolu_cust_01"
+    ]
+   },
+   {
+    "type": "assistant",
+    "role": "assistant",
+    "parentUuid": "8943a69a-973c-4d28-be07-a3cf964ffd03",
+    "uuid": "8f449cad-c767-4f1e-a7d3-e9bf25592c9e",
+    "blocks": [
+     "text"
+    ],
+    "head": "CUST-ASSISTANT-2: 18C and cloudy",
+    "toolUse": [],
+    "toolResult": []
+   },
+   {
+    "type": "user",
+    "role": "user",
+    "parentUuid": "8f449cad-c767-4f1e-a7d3-e9bf25592c9e",
+    "uuid": "9b0f640c-285a-4b65-a1a7-9d5c31eff05e",
+    "blocks": [
+     "text",
+     "image"
+    ],
+    "head": "CUST-USER-2: and tomorrow?|image",
+    "toolUse": [],
+    "toolResult": []
+   },
+   {
+    "type": "assistant",
+    "role": "assistant",
+    "parentUuid": "9b0f640c-285a-4b65-a1a7-9d5c31eff05e",
+    "uuid": "336b552b-67db-45b6-ae2b-2d0ef016e82a",
+    "blocks": [
+     "text",
+     "tool_use"
+    ],
+    "head": "CUST-ASSISTANT-3: rain|mcp__caller__lookup",
+    "toolUse": [
+     "toolu_cust_02"
+    ],
+    "toolResult": []
+   },
+   {
+    "type": "user",
+    "role": "user",
+    "parentUuid": "336b552b-67db-45b6-ae2b-2d0ef016e82a",
+    "uuid": "378deb9e-d358-401e-bdb5-7ecbfb5a4ad9",
+    "blocks": [
+     "tool_result"
+    ],
+    "head": "toolu_cust_02",
+    "toolUse": [],
+    "toolResult": [
+     "toolu_cust_02"
+    ]
+   },
+   {
+    "type": "assistant",
+    "role": "assistant",
+    "parentUuid": "378deb9e-d358-401e-bdb5-7ecbfb5a4ad9",
+    "uuid": "d1a38618-0790-4c98-8eff-cc26aed6eba4",
+    "blocks": [
+     "text"
+    ],
+    "head": "CUST-ASSISTANT-4: bring an umbrella",
+    "toolUse": [],
+    "toolResult": []
+   }
+  ],
+  "digest": "c54ea48019507764"
+ },
+ "resumed": {
+  "file": "resume-streamjson-t9.json",
+  "exitCode": 0,
+  "initSessionId": "fbe63901-468f-409e-90b8-11b9b4551c4b",
+  "sessionIdMatches": true,
+  "requests": 1,
+  "blockOrder": [
+   "user:string",
+   "system:",
+   "assistant:text+tool_use",
+   "user:tool_result",
+   "assistant:text",
+   "user:text+image",
+   "assistant:text+tool_use",
+   "user:tool_result",
+   "assistant:text",
+   "user:text+text",
+   "system:text"
+  ],
+  "upstreamToolPairs": [
+   {
+    "kind": "use",
+    "id": "toolu_cust_01"
+   },
+   {
+    "kind": "result",
+    "id": "toolu_cust_01"
+   },
+   {
+    "kind": "use",
+    "id": "toolu_cust_02"
+   },
+   {
+    "kind": "result",
+    "id": "toolu_cust_02"
+   }
+  ],
+  "stderrTail": []
+ },
+ "checks": {
+  "requestSent": true,
+  "allCustomerTurnsPresent": true,
+  "liveTurnPresent": true,
+  "toolPairsInOrder": true,
+  "toolIdsPaired": true,
+  "noThinkingUpstream": true,
+  "noDuplicateHistory": true,
+  "noSyntheticNoResponse": true,
+  "sessionIdMatch": true,
+  "pass": true
+ },
+ "digest": "80a969175bacc0b8"
+}

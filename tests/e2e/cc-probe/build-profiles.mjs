@@ -35,5 +35,16 @@ for (const [key, file] of SRC) {
     evidence: d.evidence.map((e) => ({ file: e.file, source: `docs/evidence/cc-2.1.312/${e.file}`, sampledAt: e.sampledAt, digest: e.digest, model: e.model, grade: "sampled" })),
   };
 }
+// T10: which feature flips `mid-conversation-tool-changes-2026-07-01` (measured, docs/evidence/.../beta-midconv.json)
+try {
+  const beta = JSON.parse(readFileSync(join(OUT, "beta-midconv.json"), "utf8"));
+  out.betaPolicy = {
+    beta: beta.beta, trigger: beta.trigger, sampledAt: beta.sampledAt, digest: beta.digest,
+    byFeature: beta.betaPolicy?.byFeature ?? null,
+    verdicts: beta.verdicts ?? null,
+    evidence: { file: "beta-midconv.json", source: "docs/evidence/cc-2.1.312/beta-midconv.json", grade: "sampled" },
+    note: "measured: beta follows the attachments context (CLAUDE_CODE_DISABLE_ATTACHMENTS unset), not entrypoint and not MCP; every G9 sample ran with attachments disabled, which is why the 12 cli samples never carried it.",
+  };
+} catch { /* T10 not sampled yet */ }
 writeFileSync(join(OUT, "profiles.json"), JSON.stringify(out, null, 1));
-console.log(JSON.stringify(Object.fromEntries(Object.entries(out).map(([k, v]) => [k, { samples: v.samples, identityBlock: v.identityBlock, mainPromptLen: v.mainPromptLen, tools: v.tools?.length, toolsDigest: v.toolsDigest, betaPaths: v.betaSets.length, topLevelKeys: v.topLevelKeys.length, ccFields: v.ccFields.length }])), null, 1));
+console.log(JSON.stringify(Object.fromEntries(Object.entries(out).filter(([k]) => k.startsWith("cc-")).map(([k, v]) => [k, { samples: v.samples, identityBlock: v.identityBlock, mainPromptLen: v.mainPromptLen, tools: v.tools?.length, toolsDigest: v.toolsDigest, betaPaths: v.betaSets.length, topLevelKeys: v.topLevelKeys.length, ccFields: v.ccFields.length }])), null, 1));

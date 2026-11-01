@@ -1,0 +1,2034 @@
+{
+ "gate": "beta-midconv",
+ "task": "T10",
+ "beta": "mid-conversation-tool-changes-2026-07-01",
+ "sampledAt": "2026-11-01T15:14:21.786Z",
+ "cases": {
+  "sdk-cli/att-on/mcp-off": {
+   "evidence": "attachments-t10.json",
+   "summary": [
+    {
+     "userAgent": "claude-cli/2.1.312 (external, sdk-cli)",
+     "url": "/v1/messages?beta=true",
+     "betaList": [
+      "claude-code-20250219",
+      "oauth-2025-04-20",
+      "interleaved-thinking-2025-05-14",
+      "context-management-2025-06-27",
+      "per-turn-control-2026-07-01",
+      "mid-conversation-tool-changes-2026-07-01",
+      "thinking-token-count-2026-05-13",
+      "advanced-tool-use-2025-11-20",
+      "effort-2025-11-24",
+      "thinking-display-updates-2026-08-18",
+      "extended-cache-ttl-2025-04-11"
+     ],
+     "hasBeta": true,
+     "hasSystem": true,
+     "systemLens": [
+      74,
+      62,
+      5650
+     ],
+     "tools": 12,
+     "toolsDigest": "2106a37964466cf3"
+    }
+   ]
+  },
+  "sdk-cli/att-on/mcp-on": {
+   "evidence": "attachments-mcp-t10.json",
+   "summary": [
+    {
+     "userAgent": "claude-cli/2.1.312 (external, sdk-cli)",
+     "url": "/v1/messages?beta=true",
+     "betaList": [
+      "claude-code-20250219",
+      "oauth-2025-04-20",
+      "interleaved-thinking-2025-05-14",
+      "context-management-2025-06-27",
+      "per-turn-control-2026-07-01",
+      "mid-conversation-tool-changes-2026-07-01",
+      "thinking-token-count-2026-05-13",
+      "advanced-tool-use-2025-11-20",
+      "effort-2025-11-24",
+      "thinking-display-updates-2026-08-18",
+      "extended-cache-ttl-2025-04-11"
+     ],
+     "hasBeta": true,
+     "hasSystem": true,
+     "systemLens": [
+      74,
+      62,
+      5650
+     ],
+     "tools": 12,
+     "toolsDigest": "2106a37964466cf3"
+    }
+   ]
+  },
+  "sdk-cli/att-off/mcp-off": {
+   "evidence": "baseline.json",
+   "summary": [
+    {
+     "userAgent": "claude-cli/2.1.312 (external, sdk-cli)",
+     "url": "/v1/messages?beta=true",
+     "betaList": [
+      "claude-code-20250219",
+      "oauth-2025-04-20",
+      "interleaved-thinking-2025-05-14",
+      "context-management-2025-06-27",
+      "per-turn-control-2026-07-01",
+      "thinking-token-count-2026-05-13",
+      "advanced-tool-use-2025-11-20",
+      "effort-2025-11-24",
+      "thinking-display-updates-2026-08-18",
+      "extended-cache-ttl-2025-04-11"
+     ],
+     "hasBeta": false,
+     "hasSystem": true,
+     "systemLens": [
+      74,
+      62,
+      5599
+     ],
+     "tools": 12,
+     "toolsDigest": null
+    }
+   ]
+  },
+  "cli/att-off/mcp-off": {
+   "evidence": "beta-midconv.json#cases.cli/att-off/mcp-off",
+   "driverExit": 0,
+   "driverOut": "{\"tag\": \"beta-noatt-nomcp\", \"model\": \"claude-sonnet-5-5\", \"mainSeen\": true, \"requests\": 3, \"screenTail\": \"\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500 \\u23f5\\u23f5automodeon (shift+tabtocycle)\\u00b7esctointerrupt \\u273b \\u001b]0;\\u2733 Claude Code\\u0007 \\u25cfOK \\u273b Crunched for 0s \\u00b7 done 11:14 PM \\u276f \\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500 \\u23f5\\u23f5automodeon (shift+tabtocycle)\"}",
+   "driverErr": null,
+   "mcpLogLines": 0,
+   "requests": [
+    {
+     "url": "/v1/messages?beta=true",
+     "method": "POST",
+     "headers": {
+      "accept": "application/json",
+      "content-type": "application/json",
+      "user-agent": "claude-cli/2.1.312 (external, cli)",
+      "x-claude-code-session-id": "9a7c7a19-cccf-4622-841b-f98e675b6e11",
+      "x-stainless-arch": "x64",
+      "x-stainless-lang": "js",
+      "x-stainless-os": "Linux",
+      "x-stainless-package-version": "0.128.0",
+      "x-stainless-retry-count": "0",
+      "x-stainless-runtime": "node",
+      "x-stainless-runtime-version": "v26.12.1",
+      "x-stainless-timeout": "600",
+      "anthropic-beta": "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,redact-thinking-2026-02-12,context-management-2025-06-27",
+      "anthropic-dangerous-direct-browser-access": "true",
+      "anthropic-version": "2023-06-01",
+      "x-app": "cli",
+      "accept-encoding": "gzip, deflate, br, zstd"
+     },
+     "betaList": [
+      "claude-code-20250219",
+      "oauth-2025-04-20",
+      "interleaved-thinking-2025-05-14",
+      "redact-thinking-2026-02-12",
+      "context-management-2025-06-27"
+     ],
+     "authScheme": "bearer",
+     "topLevelKeys": [
+      "model",
+      "max_tokens",
+      "messages",
+      "metadata"
+     ],
+     "system": [],
+     "systemDigest": "e3b0c44298fc1c14",
+     "systemBlockDigests": [],
+     "identitySentence": null,
+     "billingLine": null,
+     "messages": [
+      {
+       "role": "user",
+       "blocks": [
+        {
+         "type": "string",
+         "len": 5,
+         "head": "quota"
+        }
+       ]
+      }
+     ],
+     "messageDigest": "c0beea23f212e9cf",
+     "tools": null,
+     "toolsDigest": "74234e98afe7498f",
+     "metadataKeys": [
+      "user_id"
+     ],
+     "metadataUserIdKeys": [
+      "device_id",
+      "account_uuid",
+      "session_id"
+     ],
+     "thinking": null,
+     "context_management": null,
+     "output_config": null,
+     "output_format": null,
+     "stream": null,
+     "max_tokens": 1,
+     "ccFieldHits": [],
+     "bodyDigest": "7768bfaf15371faa",
+     "hasSystem": false
+    },
+    {
+     "url": "/v1/messages?beta=true",
+     "method": "POST",
+     "headers": {
+      "accept": "application/json",
+      "content-type": "application/json",
+      "user-agent": "claude-cli/2.1.312 (external, cli)",
+      "x-claude-code-session-id": "9a7c7a19-cccf-4622-841b-f98e675b6e11",
+      "x-stainless-arch": "x64",
+      "x-stainless-lang": "js",
+      "x-stainless-os": "Linux",
+      "x-stainless-package-version": "0.128.0",
+      "x-stainless-retry-count": "0",
+      "x-stainless-runtime": "node",
+      "x-stainless-runtime-version": "v26.12.1",
+      "x-stainless-timeout": "600",
+      "anthropic-beta": "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,redact-thinking-2026-02-12,context-management-2025-06-27,per-turn-control-2026-07-01,thinking-token-count-2026-05-13,effort-2025-11-24,structured-outputs-2025-12-15",
+      "anthropic-dangerous-direct-browser-access": "true",
+      "anthropic-version": "2023-06-01",
+      "x-app": "cli",
+      "accept-encoding": "gzip, deflate, br, zstd"
+     },
+     "betaList": [
+      "claude-code-20250219",
+      "oauth-2025-04-20",
+      "interleaved-thinking-2025-05-14",
+      "redact-thinking-2026-02-12",
+      "context-management-2025-06-27",
+      "per-turn-control-2026-07-01",
+      "thinking-token-count-2026-05-13",
+      "effort-2025-11-24",
+      "structured-outputs-2025-12-15"
+     ],
+     "authScheme": "bearer",
+     "topLevelKeys": [
+      "model",
+      "messages",
+      "system",
+      "tools",
+      "metadata",
+      "max_tokens",
+      "output_config",
+      "stream"
+     ],
+     "system": [
+      {
+       "len": 70,
+       "head": "x-anthropic-billing-header: cc_version=2.1.312.058; cc_entrypoint=cli;",
+       "cache_control": null,
+       "hasMarker": false
+      },
+      {
+       "len": 57,
+       "head": "You are Claude Code, Anthropic's official CLI for Claude.",
+       "cache_control": null,
+       "hasMarker": false
+      },
+      {
+       "len": 3059,
+       "head": "You are naming a coding session so the user can pick it out of a long list of sessions. The title is a name for what the session is about, not a sentence descri",
+       "cache_control": null,
+       "hasMarker": false
+      }
+     ],
+     "systemDigest": "792789e3fecf3733",
+     "systemBlockDigests": [
+      "8b40c0c18f2aec81",
+      "2719b7a469d904b3",
+      "765b5ba2fa0a315a"
+     ],
+     "identitySentence": "You are Claude Code, Anthropic's official CLI for Claude.",
+     "billingLine": "x-anthropic-billing-header: cc_version=2.1.312.058; cc_entrypoint=cli;",
+     "messages": [
+      {
+       "role": "user",
+       "blocks": [
+        {
+         "type": "text",
+         "len": 231,
+         "head": "<session>\nReply with the single word OK.\n</session>\n\nWrite the title in the predominant language of the session — a stray word or code token in another language",
+         "cache_control": null
+        }
+       ]
+      }
+     ],
+     "messageDigest": "2562676c7c8a975e",
+     "tools": [],
+     "toolsDigest": "4f53cda18c2baa0c",
+     "metadataKeys": [
+      "user_id"
+     ],
+     "metadataUserIdKeys": [
+      "device_id",
+      "account_uuid",
+      "session_id"
+     ],
+     "thinking": null,
+     "context_management": null,
+     "output_config": {
+      "effort": "medium",
+      "format": {
+       "type": "json_schema",
+       "schema": {
+        "type": "object",
+        "properties": {
+         "title": {
+          "type": "string"
+         }
+        },
+        "required": [
+         "title"
+        ],
+        "additionalProperties": false
+       }
+      }
+     },
+     "output_format": null,
+     "stream": true,
+     "max_tokens": 128000,
+     "ccFieldHits": [],
+     "bodyDigest": "312f0a96921df205",
+     "hasSystem": true
+    },
+    {
+     "url": "/v1/messages?beta=true",
+     "method": "POST",
+     "headers": {
+      "accept": "application/json",
+      "content-type": "application/json",
+      "user-agent": "claude-cli/2.1.312 (external, cli)",
+      "x-claude-code-session-id": "9a7c7a19-cccf-4622-841b-f98e675b6e11",
+      "x-stainless-arch": "x64",
+      "x-stainless-lang": "js",
+      "x-stainless-os": "Linux",
+      "x-stainless-package-version": "0.128.0",
+      "x-stainless-retry-count": "0",
+      "x-stainless-runtime": "node",
+      "x-stainless-runtime-version": "v26.12.1",
+      "x-stainless-timeout": "600",
+      "anthropic-beta": "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,context-management-2025-06-27,per-turn-control-2026-07-01,thinking-token-count-2026-05-13,advanced-tool-use-2025-11-20,effort-2025-11-24,dangerous-tool-use-2026-09-03,thinking-display-updates-2026-08-18,afk-mode-2026-01-31,extended-cache-ttl-2025-04-11",
+      "anthropic-dangerous-direct-browser-access": "true",
+      "anthropic-version": "2023-06-01",
+      "x-app": "cli",
+      "accept-encoding": "gzip, deflate, br, zstd"
+     },
+     "betaList": [
+      "claude-code-20250219",
+      "oauth-2025-04-20",
+      "interleaved-thinking-2025-05-14",
+      "context-management-2025-06-27",
+      "per-turn-control-2026-07-01",
+      "thinking-token-count-2026-05-13",
+      "advanced-tool-use-2025-11-20",
+      "effort-2025-11-24",
+      "dangerous-tool-use-2026-09-03",
+      "thinking-display-updates-2026-08-18",
+      "afk-mode-2026-01-31",
+      "extended-cache-ttl-2025-04-11"
+     ],
+     "authScheme": "bearer",
+     "topLevelKeys": [
+      "model",
+      "messages",
+      "system",
+      "tools",
+      "metadata",
+      "max_tokens",
+      "thinking",
+      "context_management",
+      "safeguards",
+      "output_config",
+      "stream"
+     ],
+     "system": [
+      {
+       "len": 70,
+       "head": "x-anthropic-billing-header: cc_version=2.1.312.6b4; cc_entrypoint=cli;",
+       "cache_control": null,
+       "hasMarker": false
+      },
+      {
+       "len": 57,
+       "head": "You are Claude Code, Anthropic's official CLI for Claude.",
+       "cache_control": {
+        "type": "ephemeral",
+        "ttl": "1h"
+       },
+       "hasMarker": false
+      },
+      {
+       "len": 5856,
+       "head": "\nYou are an agent working with the user toward their goals, using your own judgment along the way.\n\nIMPORTANT: Assist with authorized security testing, defensiv",
+       "cache_control": {
+        "type": "ephemeral",
+        "ttl": "1h"
+       },
+       "hasMarker": false
+      }
+     ],
+     "systemDigest": "29b8a8b614374b2b",
+     "systemBlockDigests": [
+      "f9884493ab12d24f",
+      "2719b7a469d904b3",
+      "59a166a5ec4b848c"
+     ],
+     "identitySentence": "You are Claude Code, Anthropic's official CLI for Claude.",
+     "billingLine": "x-anthropic-billing-header: cc_version=2.1.312.6b4; cc_entrypoint=cli;",
+     "messages": [
+      {
+       "role": "user",
+       "blocks": [
+        {
+         "type": "text",
+         "len": 583,
+         "head": "<system-reminder>\nAttribution for git commits and pull requests you create from here on (this replaces Claude Code's own earlier attribution guidance, such as a",
+         "cache_control": null
+        },
+        {
+         "type": "text",
+         "len": 30,
+         "head": "Reply with the single word OK.",
+         "cache_control": null
+        }
+       ]
+      },
+      {
+       "role": "system",
+       "blocks": [
+        {
+         "type": "text",
+         "len": 4299,
+         "head": "Available agent types for the Agent tool:\n- claude: Catch-all for any task that doesn't fit a more specific agent. FleetView's default when no agent name is typ",
+         "cache_control": {
+          "type": "ephemeral",
+          "ttl": "1h"
+         }
+        }
+       ]
+      }
+     ],
+     "messageDigest": "7a134f3be60d7bb1",
+     "tools": [
+      "Agent",
+      "AskUserQuestion",
+      "Bash",
+      "Edit",
+      "ListAgents",
+      "Read",
+      "ReportFindings",
+      "ScheduleWakeup",
+      "Skill",
+      "ToolSearch",
+      "Workflow",
+      "DeferredToolPlaceholder",
+      "Write"
+     ],
+     "toolsDigest": "51d4b5a2143407cb",
+     "metadataKeys": [
+      "user_id"
+     ],
+     "metadataUserIdKeys": [
+      "device_id",
+      "account_uuid",
+      "session_id"
+     ],
+     "thinking": {
+      "type": "adaptive",
+      "display": "updates"
+     },
+     "context_management": {
+      "edits": [
+       {
+        "type": "clear_thinking_20251015",
+        "keep": "all"
+       }
+      ]
+     },
+     "output_config": {
+      "effort": "medium"
+     },
+     "output_format": null,
+     "stream": true,
+     "max_tokens": 128000,
+     "ccFieldHits": [],
+     "bodyDigest": "0be979c532b233a2",
+     "hasSystem": true
+    }
+   ],
+   "connects": 17,
+   "summary": [
+    {
+     "userAgent": "claude-cli/2.1.312 (external, cli)",
+     "url": "/v1/messages?beta=true",
+     "betaList": [
+      "claude-code-20250219",
+      "oauth-2025-04-20",
+      "interleaved-thinking-2025-05-14",
+      "redact-thinking-2026-02-12",
+      "context-management-2025-06-27"
+     ],
+     "hasBeta": false,
+     "hasSystem": false,
+     "systemLens": [],
+     "tools": 0,
+     "toolsDigest": "74234e98afe7498f"
+    },
+    {
+     "userAgent": "claude-cli/2.1.312 (external, cli)",
+     "url": "/v1/messages?beta=true",
+     "betaList": [
+      "claude-code-20250219",
+      "oauth-2025-04-20",
+      "interleaved-thinking-2025-05-14",
+      "redact-thinking-2026-02-12",
+      "context-management-2025-06-27",
+      "per-turn-control-2026-07-01",
+      "thinking-token-count-2026-05-13",
+      "effort-2025-11-24",
+      "structured-outputs-2025-12-15"
+     ],
+     "hasBeta": false,
+     "hasSystem": true,
+     "systemLens": [
+      70,
+      57,
+      3059
+     ],
+     "tools": 0,
+     "toolsDigest": "4f53cda18c2baa0c"
+    },
+    {
+     "userAgent": "claude-cli/2.1.312 (external, cli)",
+     "url": "/v1/messages?beta=true",
+     "betaList": [
+      "claude-code-20250219",
+      "oauth-2025-04-20",
+      "interleaved-thinking-2025-05-14",
+      "context-management-2025-06-27",
+      "per-turn-control-2026-07-01",
+      "thinking-token-count-2026-05-13",
+      "advanced-tool-use-2025-11-20",
+      "effort-2025-11-24",
+      "dangerous-tool-use-2026-09-03",
+      "thinking-display-updates-2026-08-18",
+      "afk-mode-2026-01-31",
+      "extended-cache-ttl-2025-04-11"
+     ],
+     "hasBeta": false,
+     "hasSystem": true,
+     "systemLens": [
+      70,
+      57,
+      5856
+     ],
+     "tools": 13,
+     "toolsDigest": "51d4b5a2143407cb"
+    }
+   ]
+  },
+  "cli/att-off/mcp-on": {
+   "evidence": "beta-midconv.json#cases.cli/att-off/mcp-on",
+   "driverExit": 0,
+   "driverOut": "{\"tag\": \"beta-noatt-mcp\", \"model\": \"claude-sonnet-5-5\", \"mainSeen\": true, \"requests\": 3, \"screenTail\": \" \\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500 \\u23f5\\u23f5automodeon (shift+tabtocycle)\\u00b7esctointerrupt \\u001b]0;\\u2733 Claude Code\\u0007 \\u25cfOK \\u273b Crunched for 0s \\u00b7 done 11:15 PM \\u276f \\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500 \\u23f5\\u23f5automodeon (shift+tabtocycle)\"}",
+   "driverErr": null,
+   "mcpLogLines": 4,
+   "requests": [
+    {
+     "url": "/v1/messages?beta=true",
+     "method": "POST",
+     "headers": {
+      "accept": "application/json",
+      "content-type": "application/json",
+      "user-agent": "claude-cli/2.1.312 (external, cli)",
+      "x-claude-code-session-id": "f506b765-83d2-47ac-bd59-569cb409ae50",
+      "x-stainless-arch": "x64",
+      "x-stainless-lang": "js",
+      "x-stainless-os": "Linux",
+      "x-stainless-package-version": "0.128.0",
+      "x-stainless-retry-count": "0",
+      "x-stainless-runtime": "node",
+      "x-stainless-runtime-version": "v26.12.1",
+      "x-stainless-timeout": "600",
+      "anthropic-beta": "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,redact-thinking-2026-02-12,context-management-2025-06-27",
+      "anthropic-dangerous-direct-browser-access": "true",
+      "anthropic-version": "2023-06-01",
+      "x-app": "cli",
+      "accept-encoding": "gzip, deflate, br, zstd"
+     },
+     "betaList": [
+      "claude-code-20250219",
+      "oauth-2025-04-20",
+      "interleaved-thinking-2025-05-14",
+      "redact-thinking-2026-02-12",
+      "context-management-2025-06-27"
+     ],
+     "authScheme": "bearer",
+     "topLevelKeys": [
+      "model",
+      "max_tokens",
+      "messages",
+      "metadata"
+     ],
+     "system": [],
+     "systemDigest": "e3b0c44298fc1c14",
+     "systemBlockDigests": [],
+     "identitySentence": null,
+     "billingLine": null,
+     "messages": [
+      {
+       "role": "user",
+       "blocks": [
+        {
+         "type": "string",
+         "len": 5,
+         "head": "quota"
+        }
+       ]
+      }
+     ],
+     "messageDigest": "c0beea23f212e9cf",
+     "tools": null,
+     "toolsDigest": "74234e98afe7498f",
+     "metadataKeys": [
+      "user_id"
+     ],
+     "metadataUserIdKeys": [
+      "device_id",
+      "account_uuid",
+      "session_id"
+     ],
+     "thinking": null,
+     "context_management": null,
+     "output_config": null,
+     "output_format": null,
+     "stream": null,
+     "max_tokens": 1,
+     "ccFieldHits": [],
+     "bodyDigest": "e8ad8a3f88f6e64b",
+     "hasSystem": false
+    },
+    {
+     "url": "/v1/messages?beta=true",
+     "method": "POST",
+     "headers": {
+      "accept": "application/json",
+      "content-type": "application/json",
+      "user-agent": "claude-cli/2.1.312 (external, cli)",
+      "x-claude-code-session-id": "f506b765-83d2-47ac-bd59-569cb409ae50",
+      "x-stainless-arch": "x64",
+      "x-stainless-lang": "js",
+      "x-stainless-os": "Linux",
+      "x-stainless-package-version": "0.128.0",
+      "x-stainless-retry-count": "0",
+      "x-stainless-runtime": "node",
+      "x-stainless-runtime-version": "v26.12.1",
+      "x-stainless-timeout": "600",
+      "anthropic-beta": "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,redact-thinking-2026-02-12,context-management-2025-06-27,per-turn-control-2026-07-01,thinking-token-count-2026-05-13,effort-2025-11-24,structured-outputs-2025-12-15",
+      "anthropic-dangerous-direct-browser-access": "true",
+      "anthropic-version": "2023-06-01",
+      "x-app": "cli",
+      "accept-encoding": "gzip, deflate, br, zstd"
+     },
+     "betaList": [
+      "claude-code-20250219",
+      "oauth-2025-04-20",
+      "interleaved-thinking-2025-05-14",
+      "redact-thinking-2026-02-12",
+      "context-management-2025-06-27",
+      "per-turn-control-2026-07-01",
+      "thinking-token-count-2026-05-13",
+      "effort-2025-11-24",
+      "structured-outputs-2025-12-15"
+     ],
+     "authScheme": "bearer",
+     "topLevelKeys": [
+      "model",
+      "messages",
+      "system",
+      "tools",
+      "metadata",
+      "max_tokens",
+      "output_config",
+      "stream"
+     ],
+     "system": [
+      {
+       "len": 70,
+       "head": "x-anthropic-billing-header: cc_version=2.1.312.058; cc_entrypoint=cli;",
+       "cache_control": null,
+       "hasMarker": false
+      },
+      {
+       "len": 57,
+       "head": "You are Claude Code, Anthropic's official CLI for Claude.",
+       "cache_control": null,
+       "hasMarker": false
+      },
+      {
+       "len": 3059,
+       "head": "You are naming a coding session so the user can pick it out of a long list of sessions. The title is a name for what the session is about, not a sentence descri",
+       "cache_control": null,
+       "hasMarker": false
+      }
+     ],
+     "systemDigest": "792789e3fecf3733",
+     "systemBlockDigests": [
+      "8b40c0c18f2aec81",
+      "2719b7a469d904b3",
+      "765b5ba2fa0a315a"
+     ],
+     "identitySentence": "You are Claude Code, Anthropic's official CLI for Claude.",
+     "billingLine": "x-anthropic-billing-header: cc_version=2.1.312.058; cc_entrypoint=cli;",
+     "messages": [
+      {
+       "role": "user",
+       "blocks": [
+        {
+         "type": "text",
+         "len": 231,
+         "head": "<session>\nReply with the single word OK.\n</session>\n\nWrite the title in the predominant language of the session — a stray word or code token in another language",
+         "cache_control": null
+        }
+       ]
+      }
+     ],
+     "messageDigest": "2562676c7c8a975e",
+     "tools": [],
+     "toolsDigest": "4f53cda18c2baa0c",
+     "metadataKeys": [
+      "user_id"
+     ],
+     "metadataUserIdKeys": [
+      "device_id",
+      "account_uuid",
+      "session_id"
+     ],
+     "thinking": null,
+     "context_management": null,
+     "output_config": {
+      "effort": "medium",
+      "format": {
+       "type": "json_schema",
+       "schema": {
+        "type": "object",
+        "properties": {
+         "title": {
+          "type": "string"
+         }
+        },
+        "required": [
+         "title"
+        ],
+        "additionalProperties": false
+       }
+      }
+     },
+     "output_format": null,
+     "stream": true,
+     "max_tokens": 128000,
+     "ccFieldHits": [],
+     "bodyDigest": "73235e769de7588d",
+     "hasSystem": true
+    },
+    {
+     "url": "/v1/messages?beta=true",
+     "method": "POST",
+     "headers": {
+      "accept": "application/json",
+      "content-type": "application/json",
+      "user-agent": "claude-cli/2.1.312 (external, cli)",
+      "x-claude-code-session-id": "f506b765-83d2-47ac-bd59-569cb409ae50",
+      "x-stainless-arch": "x64",
+      "x-stainless-lang": "js",
+      "x-stainless-os": "Linux",
+      "x-stainless-package-version": "0.128.0",
+      "x-stainless-retry-count": "0",
+      "x-stainless-runtime": "node",
+      "x-stainless-runtime-version": "v26.12.1",
+      "x-stainless-timeout": "600",
+      "anthropic-beta": "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,context-management-2025-06-27,per-turn-control-2026-07-01,thinking-token-count-2026-05-13,advanced-tool-use-2025-11-20,effort-2025-11-24,dangerous-tool-use-2026-09-03,thinking-display-updates-2026-08-18,afk-mode-2026-01-31,extended-cache-ttl-2025-04-11",
+      "anthropic-dangerous-direct-browser-access": "true",
+      "anthropic-version": "2023-06-01",
+      "x-app": "cli",
+      "accept-encoding": "gzip, deflate, br, zstd"
+     },
+     "betaList": [
+      "claude-code-20250219",
+      "oauth-2025-04-20",
+      "interleaved-thinking-2025-05-14",
+      "context-management-2025-06-27",
+      "per-turn-control-2026-07-01",
+      "thinking-token-count-2026-05-13",
+      "advanced-tool-use-2025-11-20",
+      "effort-2025-11-24",
+      "dangerous-tool-use-2026-09-03",
+      "thinking-display-updates-2026-08-18",
+      "afk-mode-2026-01-31",
+      "extended-cache-ttl-2025-04-11"
+     ],
+     "authScheme": "bearer",
+     "topLevelKeys": [
+      "model",
+      "messages",
+      "system",
+      "tools",
+      "metadata",
+      "max_tokens",
+      "thinking",
+      "context_management",
+      "safeguards",
+      "output_config",
+      "stream"
+     ],
+     "system": [
+      {
+       "len": 70,
+       "head": "x-anthropic-billing-header: cc_version=2.1.312.6b4; cc_entrypoint=cli;",
+       "cache_control": null,
+       "hasMarker": false
+      },
+      {
+       "len": 57,
+       "head": "You are Claude Code, Anthropic's official CLI for Claude.",
+       "cache_control": {
+        "type": "ephemeral",
+        "ttl": "1h"
+       },
+       "hasMarker": false
+      },
+      {
+       "len": 5856,
+       "head": "\nYou are an agent working with the user toward their goals, using your own judgment along the way.\n\nIMPORTANT: Assist with authorized security testing, defensiv",
+       "cache_control": {
+        "type": "ephemeral",
+        "ttl": "1h"
+       },
+       "hasMarker": false
+      }
+     ],
+     "systemDigest": "7d679826a5d962e7",
+     "systemBlockDigests": [
+      "f9884493ab12d24f",
+      "2719b7a469d904b3",
+      "6f99876e152a13c3"
+     ],
+     "identitySentence": "You are Claude Code, Anthropic's official CLI for Claude.",
+     "billingLine": "x-anthropic-billing-header: cc_version=2.1.312.6b4; cc_entrypoint=cli;",
+     "messages": [
+      {
+       "role": "user",
+       "blocks": [
+        {
+         "type": "text",
+         "len": 583,
+         "head": "<system-reminder>\nAttribution for git commits and pull requests you create from here on (this replaces Claude Code's own earlier attribution guidance, such as a",
+         "cache_control": null
+        },
+        {
+         "type": "text",
+         "len": 30,
+         "head": "Reply with the single word OK.",
+         "cache_control": null
+        }
+       ]
+      },
+      {
+       "role": "system",
+       "blocks": [
+        {
+         "type": "text",
+         "len": 4299,
+         "head": "Available agent types for the Agent tool:\n- claude: Catch-all for any task that doesn't fit a more specific agent. FleetView's default when no agent name is typ",
+         "cache_control": {
+          "type": "ephemeral",
+          "ttl": "1h"
+         }
+        }
+       ]
+      }
+     ],
+     "messageDigest": "b013a4f4b6850954",
+     "tools": [
+      "Agent",
+      "AskUserQuestion",
+      "Bash",
+      "Edit",
+      "ListAgents",
+      "Read",
+      "ReportFindings",
+      "ScheduleWakeup",
+      "Skill",
+      "ToolSearch",
+      "Workflow",
+      "DeferredToolPlaceholder",
+      "Write"
+     ],
+     "toolsDigest": "51d4b5a2143407cb",
+     "metadataKeys": [
+      "user_id"
+     ],
+     "metadataUserIdKeys": [
+      "device_id",
+      "account_uuid",
+      "session_id"
+     ],
+     "thinking": {
+      "type": "adaptive",
+      "display": "updates"
+     },
+     "context_management": {
+      "edits": [
+       {
+        "type": "clear_thinking_20251015",
+        "keep": "all"
+       }
+      ]
+     },
+     "output_config": {
+      "effort": "medium"
+     },
+     "output_format": null,
+     "stream": true,
+     "max_tokens": 128000,
+     "ccFieldHits": [],
+     "bodyDigest": "3d5700990fc0bf15",
+     "hasSystem": true
+    }
+   ],
+   "connects": 16,
+   "summary": [
+    {
+     "userAgent": "claude-cli/2.1.312 (external, cli)",
+     "url": "/v1/messages?beta=true",
+     "betaList": [
+      "claude-code-20250219",
+      "oauth-2025-04-20",
+      "interleaved-thinking-2025-05-14",
+      "redact-thinking-2026-02-12",
+      "context-management-2025-06-27"
+     ],
+     "hasBeta": false,
+     "hasSystem": false,
+     "systemLens": [],
+     "tools": 0,
+     "toolsDigest": "74234e98afe7498f"
+    },
+    {
+     "userAgent": "claude-cli/2.1.312 (external, cli)",
+     "url": "/v1/messages?beta=true",
+     "betaList": [
+      "claude-code-20250219",
+      "oauth-2025-04-20",
+      "interleaved-thinking-2025-05-14",
+      "redact-thinking-2026-02-12",
+      "context-management-2025-06-27",
+      "per-turn-control-2026-07-01",
+      "thinking-token-count-2026-05-13",
+      "effort-2025-11-24",
+      "structured-outputs-2025-12-15"
+     ],
+     "hasBeta": false,
+     "hasSystem": true,
+     "systemLens": [
+      70,
+      57,
+      3059
+     ],
+     "tools": 0,
+     "toolsDigest": "4f53cda18c2baa0c"
+    },
+    {
+     "userAgent": "claude-cli/2.1.312 (external, cli)",
+     "url": "/v1/messages?beta=true",
+     "betaList": [
+      "claude-code-20250219",
+      "oauth-2025-04-20",
+      "interleaved-thinking-2025-05-14",
+      "context-management-2025-06-27",
+      "per-turn-control-2026-07-01",
+      "thinking-token-count-2026-05-13",
+      "advanced-tool-use-2025-11-20",
+      "effort-2025-11-24",
+      "dangerous-tool-use-2026-09-03",
+      "thinking-display-updates-2026-08-18",
+      "afk-mode-2026-01-31",
+      "extended-cache-ttl-2025-04-11"
+     ],
+     "hasBeta": false,
+     "hasSystem": true,
+     "systemLens": [
+      70,
+      57,
+      5856
+     ],
+     "tools": 13,
+     "toolsDigest": "51d4b5a2143407cb"
+    }
+   ]
+  },
+  "cli/att-on/mcp-off": {
+   "evidence": "beta-midconv.json#cases.cli/att-on/mcp-off",
+   "driverExit": 0,
+   "driverOut": "{\"tag\": \"beta-att-nomcp\", \"model\": \"claude-sonnet-5-5\", \"mainSeen\": true, \"requests\": 3, \"screenTail\": \" \\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500 \\u23f5\\u23f5automodeon (shift+tabtocycle)\\u00b7esctointerrupt \\u2736 \\u001b]0;\\u2733 Claude Code\\u0007 \\u25cfOK \\u273b Cooked for 0s \\u00b7 done 11:15 PM \\u276f \\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500 \\u23f5\\u23f5automodeon (shift+tabtocycle)\"}",
+   "driverErr": null,
+   "mcpLogLines": 0,
+   "requests": [
+    {
+     "url": "/v1/messages?beta=true",
+     "method": "POST",
+     "headers": {
+      "accept": "application/json",
+      "content-type": "application/json",
+      "user-agent": "claude-cli/2.1.312 (external, cli)",
+      "x-claude-code-session-id": "3f234746-fd6a-45c0-9c9c-96724cb370ee",
+      "x-stainless-arch": "x64",
+      "x-stainless-lang": "js",
+      "x-stainless-os": "Linux",
+      "x-stainless-package-version": "0.128.0",
+      "x-stainless-retry-count": "0",
+      "x-stainless-runtime": "node",
+      "x-stainless-runtime-version": "v26.12.1",
+      "x-stainless-timeout": "600",
+      "anthropic-beta": "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,redact-thinking-2026-02-12,context-management-2025-06-27",
+      "anthropic-dangerous-direct-browser-access": "true",
+      "anthropic-version": "2023-06-01",
+      "x-app": "cli",
+      "accept-encoding": "gzip, deflate, br, zstd"
+     },
+     "betaList": [
+      "claude-code-20250219",
+      "oauth-2025-04-20",
+      "interleaved-thinking-2025-05-14",
+      "redact-thinking-2026-02-12",
+      "context-management-2025-06-27"
+     ],
+     "authScheme": "bearer",
+     "topLevelKeys": [
+      "model",
+      "max_tokens",
+      "messages",
+      "metadata"
+     ],
+     "system": [],
+     "systemDigest": "e3b0c44298fc1c14",
+     "systemBlockDigests": [],
+     "identitySentence": null,
+     "billingLine": null,
+     "messages": [
+      {
+       "role": "user",
+       "blocks": [
+        {
+         "type": "string",
+         "len": 5,
+         "head": "quota"
+        }
+       ]
+      }
+     ],
+     "messageDigest": "c0beea23f212e9cf",
+     "tools": null,
+     "toolsDigest": "74234e98afe7498f",
+     "metadataKeys": [
+      "user_id"
+     ],
+     "metadataUserIdKeys": [
+      "device_id",
+      "account_uuid",
+      "session_id"
+     ],
+     "thinking": null,
+     "context_management": null,
+     "output_config": null,
+     "output_format": null,
+     "stream": null,
+     "max_tokens": 1,
+     "ccFieldHits": [],
+     "bodyDigest": "b42ae38929bd7fc7",
+     "hasSystem": false
+    },
+    {
+     "url": "/v1/messages?beta=true",
+     "method": "POST",
+     "headers": {
+      "accept": "application/json",
+      "content-type": "application/json",
+      "user-agent": "claude-cli/2.1.312 (external, cli)",
+      "x-claude-code-session-id": "3f234746-fd6a-45c0-9c9c-96724cb370ee",
+      "x-stainless-arch": "x64",
+      "x-stainless-lang": "js",
+      "x-stainless-os": "Linux",
+      "x-stainless-package-version": "0.128.0",
+      "x-stainless-retry-count": "0",
+      "x-stainless-runtime": "node",
+      "x-stainless-runtime-version": "v26.12.1",
+      "x-stainless-timeout": "600",
+      "anthropic-beta": "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,redact-thinking-2026-02-12,context-management-2025-06-27,per-turn-control-2026-07-01,mid-conversation-tool-changes-2026-07-01,thinking-token-count-2026-05-13,effort-2025-11-24,structured-outputs-2025-12-15",
+      "anthropic-dangerous-direct-browser-access": "true",
+      "anthropic-version": "2023-06-01",
+      "x-app": "cli",
+      "accept-encoding": "gzip, deflate, br, zstd"
+     },
+     "betaList": [
+      "claude-code-20250219",
+      "oauth-2025-04-20",
+      "interleaved-thinking-2025-05-14",
+      "redact-thinking-2026-02-12",
+      "context-management-2025-06-27",
+      "per-turn-control-2026-07-01",
+      "mid-conversation-tool-changes-2026-07-01",
+      "thinking-token-count-2026-05-13",
+      "effort-2025-11-24",
+      "structured-outputs-2025-12-15"
+     ],
+     "authScheme": "bearer",
+     "topLevelKeys": [
+      "model",
+      "messages",
+      "system",
+      "tools",
+      "metadata",
+      "max_tokens",
+      "output_config",
+      "stream"
+     ],
+     "system": [
+      {
+       "len": 70,
+       "head": "x-anthropic-billing-header: cc_version=2.1.312.058; cc_entrypoint=cli;",
+       "cache_control": null,
+       "hasMarker": false
+      },
+      {
+       "len": 57,
+       "head": "You are Claude Code, Anthropic's official CLI for Claude.",
+       "cache_control": null,
+       "hasMarker": false
+      },
+      {
+       "len": 3059,
+       "head": "You are naming a coding session so the user can pick it out of a long list of sessions. The title is a name for what the session is about, not a sentence descri",
+       "cache_control": null,
+       "hasMarker": false
+      }
+     ],
+     "systemDigest": "792789e3fecf3733",
+     "systemBlockDigests": [
+      "8b40c0c18f2aec81",
+      "2719b7a469d904b3",
+      "765b5ba2fa0a315a"
+     ],
+     "identitySentence": "You are Claude Code, Anthropic's official CLI for Claude.",
+     "billingLine": "x-anthropic-billing-header: cc_version=2.1.312.058; cc_entrypoint=cli;",
+     "messages": [
+      {
+       "role": "user",
+       "blocks": [
+        {
+         "type": "text",
+         "len": 231,
+         "head": "<session>\nReply with the single word OK.\n</session>\n\nWrite the title in the predominant language of the session — a stray word or code token in another language",
+         "cache_control": null
+        }
+       ]
+      }
+     ],
+     "messageDigest": "2562676c7c8a975e",
+     "tools": [],
+     "toolsDigest": "4f53cda18c2baa0c",
+     "metadataKeys": [
+      "user_id"
+     ],
+     "metadataUserIdKeys": [
+      "device_id",
+      "account_uuid",
+      "session_id"
+     ],
+     "thinking": null,
+     "context_management": null,
+     "output_config": {
+      "effort": "medium",
+      "format": {
+       "type": "json_schema",
+       "schema": {
+        "type": "object",
+        "properties": {
+         "title": {
+          "type": "string"
+         }
+        },
+        "required": [
+         "title"
+        ],
+        "additionalProperties": false
+       }
+      }
+     },
+     "output_format": null,
+     "stream": true,
+     "max_tokens": 128000,
+     "ccFieldHits": [],
+     "bodyDigest": "eddba01c3b9fae72",
+     "hasSystem": true
+    },
+    {
+     "url": "/v1/messages?beta=true",
+     "method": "POST",
+     "headers": {
+      "accept": "application/json",
+      "content-type": "application/json",
+      "user-agent": "claude-cli/2.1.312 (external, cli)",
+      "x-claude-code-session-id": "3f234746-fd6a-45c0-9c9c-96724cb370ee",
+      "x-stainless-arch": "x64",
+      "x-stainless-lang": "js",
+      "x-stainless-os": "Linux",
+      "x-stainless-package-version": "0.128.0",
+      "x-stainless-retry-count": "0",
+      "x-stainless-runtime": "node",
+      "x-stainless-runtime-version": "v26.12.1",
+      "x-stainless-timeout": "600",
+      "anthropic-beta": "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,context-management-2025-06-27,per-turn-control-2026-07-01,mid-conversation-tool-changes-2026-07-01,thinking-token-count-2026-05-13,advanced-tool-use-2025-11-20,effort-2025-11-24,dangerous-tool-use-2026-09-03,thinking-display-updates-2026-08-18,afk-mode-2026-01-31,extended-cache-ttl-2025-04-11",
+      "anthropic-dangerous-direct-browser-access": "true",
+      "anthropic-version": "2023-06-01",
+      "x-app": "cli",
+      "accept-encoding": "gzip, deflate, br, zstd"
+     },
+     "betaList": [
+      "claude-code-20250219",
+      "oauth-2025-04-20",
+      "interleaved-thinking-2025-05-14",
+      "context-management-2025-06-27",
+      "per-turn-control-2026-07-01",
+      "mid-conversation-tool-changes-2026-07-01",
+      "thinking-token-count-2026-05-13",
+      "advanced-tool-use-2025-11-20",
+      "effort-2025-11-24",
+      "dangerous-tool-use-2026-09-03",
+      "thinking-display-updates-2026-08-18",
+      "afk-mode-2026-01-31",
+      "extended-cache-ttl-2025-04-11"
+     ],
+     "authScheme": "bearer",
+     "topLevelKeys": [
+      "model",
+      "messages",
+      "system",
+      "tools",
+      "metadata",
+      "max_tokens",
+      "thinking",
+      "context_management",
+      "safeguards",
+      "output_config",
+      "stream"
+     ],
+     "system": [
+      {
+       "len": 70,
+       "head": "x-anthropic-billing-header: cc_version=2.1.312.6b4; cc_entrypoint=cli;",
+       "cache_control": null,
+       "hasMarker": false
+      },
+      {
+       "len": 57,
+       "head": "You are Claude Code, Anthropic's official CLI for Claude.",
+       "cache_control": {
+        "type": "ephemeral",
+        "ttl": "1h"
+       },
+       "hasMarker": false
+      },
+      {
+       "len": 5907,
+       "head": "\nYou are an agent working with the user toward their goals, using your own judgment along the way.\n\nIMPORTANT: Assist with authorized security testing, defensiv",
+       "cache_control": {
+        "type": "ephemeral",
+        "ttl": "1h"
+       },
+       "hasMarker": false
+      }
+     ],
+     "systemDigest": "0f6b60ed561e2059",
+     "systemBlockDigests": [
+      "f9884493ab12d24f",
+      "2719b7a469d904b3",
+      "cfe8e289803e4bf8"
+     ],
+     "identitySentence": "You are Claude Code, Anthropic's official CLI for Claude.",
+     "billingLine": "x-anthropic-billing-header: cc_version=2.1.312.6b4; cc_entrypoint=cli;",
+     "messages": [
+      {
+       "role": "user",
+       "blocks": [
+        {
+         "type": "text",
+         "len": 583,
+         "head": "<system-reminder>\nAttribution for git commits and pull requests you create from here on (this replaces Claude Code's own earlier attribution guidance, such as a",
+         "cache_control": null
+        },
+        {
+         "type": "text",
+         "len": 30,
+         "head": "Reply with the single word OK.",
+         "cache_control": null
+        }
+       ]
+      },
+      {
+       "role": "system",
+       "blocks": [
+        {
+         "type": "text",
+         "len": 11322,
+         "head": "# Environment\nYou have been invoked in the following environment: \n - Primary working directory: <tmp-path>\n - Is a git repository: false\n - Platf",
+         "cache_control": {
+          "type": "ephemeral",
+          "ttl": "1h"
+         }
+        }
+       ]
+      }
+     ],
+     "messageDigest": "8ea77c23ee8a38c5",
+     "tools": [
+      "Agent",
+      "AskUserQuestion",
+      "Bash",
+      "Edit",
+      "ListAgents",
+      "Read",
+      "ReportFindings",
+      "ScheduleWakeup",
+      "Skill",
+      "ToolSearch",
+      "Workflow",
+      "DeferredToolPlaceholder",
+      "Write"
+     ],
+     "toolsDigest": "51d4b5a2143407cb",
+     "metadataKeys": [
+      "user_id"
+     ],
+     "metadataUserIdKeys": [
+      "device_id",
+      "account_uuid",
+      "session_id"
+     ],
+     "thinking": {
+      "type": "adaptive",
+      "display": "updates"
+     },
+     "context_management": {
+      "edits": [
+       {
+        "type": "clear_thinking_20251015",
+        "keep": "all"
+       }
+      ]
+     },
+     "output_config": {
+      "effort": "medium"
+     },
+     "output_format": null,
+     "stream": true,
+     "max_tokens": 128000,
+     "ccFieldHits": [],
+     "bodyDigest": "023f619263cbd043",
+     "hasSystem": true
+    }
+   ],
+   "connects": 17,
+   "summary": [
+    {
+     "userAgent": "claude-cli/2.1.312 (external, cli)",
+     "url": "/v1/messages?beta=true",
+     "betaList": [
+      "claude-code-20250219",
+      "oauth-2025-04-20",
+      "interleaved-thinking-2025-05-14",
+      "redact-thinking-2026-02-12",
+      "context-management-2025-06-27"
+     ],
+     "hasBeta": false,
+     "hasSystem": false,
+     "systemLens": [],
+     "tools": 0,
+     "toolsDigest": "74234e98afe7498f"
+    },
+    {
+     "userAgent": "claude-cli/2.1.312 (external, cli)",
+     "url": "/v1/messages?beta=true",
+     "betaList": [
+      "claude-code-20250219",
+      "oauth-2025-04-20",
+      "interleaved-thinking-2025-05-14",
+      "redact-thinking-2026-02-12",
+      "context-management-2025-06-27",
+      "per-turn-control-2026-07-01",
+      "mid-conversation-tool-changes-2026-07-01",
+      "thinking-token-count-2026-05-13",
+      "effort-2025-11-24",
+      "structured-outputs-2025-12-15"
+     ],
+     "hasBeta": true,
+     "hasSystem": true,
+     "systemLens": [
+      70,
+      57,
+      3059
+     ],
+     "tools": 0,
+     "toolsDigest": "4f53cda18c2baa0c"
+    },
+    {
+     "userAgent": "claude-cli/2.1.312 (external, cli)",
+     "url": "/v1/messages?beta=true",
+     "betaList": [
+      "claude-code-20250219",
+      "oauth-2025-04-20",
+      "interleaved-thinking-2025-05-14",
+      "context-management-2025-06-27",
+      "per-turn-control-2026-07-01",
+      "mid-conversation-tool-changes-2026-07-01",
+      "thinking-token-count-2026-05-13",
+      "advanced-tool-use-2025-11-20",
+      "effort-2025-11-24",
+      "dangerous-tool-use-2026-09-03",
+      "thinking-display-updates-2026-08-18",
+      "afk-mode-2026-01-31",
+      "extended-cache-ttl-2025-04-11"
+     ],
+     "hasBeta": true,
+     "hasSystem": true,
+     "systemLens": [
+      70,
+      57,
+      5907
+     ],
+     "tools": 13,
+     "toolsDigest": "51d4b5a2143407cb"
+    }
+   ]
+  },
+  "cli/att-on/mcp-on": {
+   "evidence": "beta-midconv.json#cases.cli/att-on/mcp-on",
+   "driverExit": 0,
+   "driverOut": "{\"tag\": \"beta-att-mcp\", \"model\": \"claude-sonnet-5-5\", \"mainSeen\": true, \"requests\": 3, \"screenTail\": \"\\u276f \\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500 \\u23f5\\u23f5automodeon (shift+tabtocycle)\\u00b7esctointerrupt \\u001b]0;\\u2733 Claude Code\\u0007 \\u25cfOK \\u273b Saut\\u00e9ed for 0s \\u00b7 done 11:15 PM \\u276f \\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500 \\u23f5\\u23f5automodeon (shift+tabtocycle)\"}",
+   "driverErr": null,
+   "mcpLogLines": 4,
+   "requests": [
+    {
+     "url": "/v1/messages?beta=true",
+     "method": "POST",
+     "headers": {
+      "accept": "application/json",
+      "content-type": "application/json",
+      "user-agent": "claude-cli/2.1.312 (external, cli)",
+      "x-claude-code-session-id": "48bd343a-9278-4536-a8bd-33429d39a482",
+      "x-stainless-arch": "x64",
+      "x-stainless-lang": "js",
+      "x-stainless-os": "Linux",
+      "x-stainless-package-version": "0.128.0",
+      "x-stainless-retry-count": "0",
+      "x-stainless-runtime": "node",
+      "x-stainless-runtime-version": "v26.12.1",
+      "x-stainless-timeout": "600",
+      "anthropic-beta": "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,redact-thinking-2026-02-12,context-management-2025-06-27",
+      "anthropic-dangerous-direct-browser-access": "true",
+      "anthropic-version": "2023-06-01",
+      "x-app": "cli",
+      "accept-encoding": "gzip, deflate, br, zstd"
+     },
+     "betaList": [
+      "claude-code-20250219",
+      "oauth-2025-04-20",
+      "interleaved-thinking-2025-05-14",
+      "redact-thinking-2026-02-12",
+      "context-management-2025-06-27"
+     ],
+     "authScheme": "bearer",
+     "topLevelKeys": [
+      "model",
+      "max_tokens",
+      "messages",
+      "metadata"
+     ],
+     "system": [],
+     "systemDigest": "e3b0c44298fc1c14",
+     "systemBlockDigests": [],
+     "identitySentence": null,
+     "billingLine": null,
+     "messages": [
+      {
+       "role": "user",
+       "blocks": [
+        {
+         "type": "string",
+         "len": 5,
+         "head": "quota"
+        }
+       ]
+      }
+     ],
+     "messageDigest": "c0beea23f212e9cf",
+     "tools": null,
+     "toolsDigest": "74234e98afe7498f",
+     "metadataKeys": [
+      "user_id"
+     ],
+     "metadataUserIdKeys": [
+      "device_id",
+      "account_uuid",
+      "session_id"
+     ],
+     "thinking": null,
+     "context_management": null,
+     "output_config": null,
+     "output_format": null,
+     "stream": null,
+     "max_tokens": 1,
+     "ccFieldHits": [],
+     "bodyDigest": "c95a738121258d18",
+     "hasSystem": false
+    },
+    {
+     "url": "/v1/messages?beta=true",
+     "method": "POST",
+     "headers": {
+      "accept": "application/json",
+      "content-type": "application/json",
+      "user-agent": "claude-cli/2.1.312 (external, cli)",
+      "x-claude-code-session-id": "48bd343a-9278-4536-a8bd-33429d39a482",
+      "x-stainless-arch": "x64",
+      "x-stainless-lang": "js",
+      "x-stainless-os": "Linux",
+      "x-stainless-package-version": "0.128.0",
+      "x-stainless-retry-count": "0",
+      "x-stainless-runtime": "node",
+      "x-stainless-runtime-version": "v26.12.1",
+      "x-stainless-timeout": "600",
+      "anthropic-beta": "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,redact-thinking-2026-02-12,context-management-2025-06-27,per-turn-control-2026-07-01,mid-conversation-tool-changes-2026-07-01,thinking-token-count-2026-05-13,effort-2025-11-24,structured-outputs-2025-12-15",
+      "anthropic-dangerous-direct-browser-access": "true",
+      "anthropic-version": "2023-06-01",
+      "x-app": "cli",
+      "accept-encoding": "gzip, deflate, br, zstd"
+     },
+     "betaList": [
+      "claude-code-20250219",
+      "oauth-2025-04-20",
+      "interleaved-thinking-2025-05-14",
+      "redact-thinking-2026-02-12",
+      "context-management-2025-06-27",
+      "per-turn-control-2026-07-01",
+      "mid-conversation-tool-changes-2026-07-01",
+      "thinking-token-count-2026-05-13",
+      "effort-2025-11-24",
+      "structured-outputs-2025-12-15"
+     ],
+     "authScheme": "bearer",
+     "topLevelKeys": [
+      "model",
+      "messages",
+      "system",
+      "tools",
+      "metadata",
+      "max_tokens",
+      "output_config",
+      "stream"
+     ],
+     "system": [
+      {
+       "len": 70,
+       "head": "x-anthropic-billing-header: cc_version=2.1.312.058; cc_entrypoint=cli;",
+       "cache_control": null,
+       "hasMarker": false
+      },
+      {
+       "len": 57,
+       "head": "You are Claude Code, Anthropic's official CLI for Claude.",
+       "cache_control": null,
+       "hasMarker": false
+      },
+      {
+       "len": 3059,
+       "head": "You are naming a coding session so the user can pick it out of a long list of sessions. The title is a name for what the session is about, not a sentence descri",
+       "cache_control": null,
+       "hasMarker": false
+      }
+     ],
+     "systemDigest": "792789e3fecf3733",
+     "systemBlockDigests": [
+      "8b40c0c18f2aec81",
+      "2719b7a469d904b3",
+      "765b5ba2fa0a315a"
+     ],
+     "identitySentence": "You are Claude Code, Anthropic's official CLI for Claude.",
+     "billingLine": "x-anthropic-billing-header: cc_version=2.1.312.058; cc_entrypoint=cli;",
+     "messages": [
+      {
+       "role": "user",
+       "blocks": [
+        {
+         "type": "text",
+         "len": 231,
+         "head": "<session>\nReply with the single word OK.\n</session>\n\nWrite the title in the predominant language of the session — a stray word or code token in another language",
+         "cache_control": null
+        }
+       ]
+      }
+     ],
+     "messageDigest": "2562676c7c8a975e",
+     "tools": [],
+     "toolsDigest": "4f53cda18c2baa0c",
+     "metadataKeys": [
+      "user_id"
+     ],
+     "metadataUserIdKeys": [
+      "device_id",
+      "account_uuid",
+      "session_id"
+     ],
+     "thinking": null,
+     "context_management": null,
+     "output_config": {
+      "effort": "medium",
+      "format": {
+       "type": "json_schema",
+       "schema": {
+        "type": "object",
+        "properties": {
+         "title": {
+          "type": "string"
+         }
+        },
+        "required": [
+         "title"
+        ],
+        "additionalProperties": false
+       }
+      }
+     },
+     "output_format": null,
+     "stream": true,
+     "max_tokens": 128000,
+     "ccFieldHits": [],
+     "bodyDigest": "c66cf55c582d1e7a",
+     "hasSystem": true
+    },
+    {
+     "url": "/v1/messages?beta=true",
+     "method": "POST",
+     "headers": {
+      "accept": "application/json",
+      "content-type": "application/json",
+      "user-agent": "claude-cli/2.1.312 (external, cli)",
+      "x-claude-code-session-id": "48bd343a-9278-4536-a8bd-33429d39a482",
+      "x-stainless-arch": "x64",
+      "x-stainless-lang": "js",
+      "x-stainless-os": "Linux",
+      "x-stainless-package-version": "0.128.0",
+      "x-stainless-retry-count": "0",
+      "x-stainless-runtime": "node",
+      "x-stainless-runtime-version": "v26.12.1",
+      "x-stainless-timeout": "600",
+      "anthropic-beta": "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,context-management-2025-06-27,per-turn-control-2026-07-01,mid-conversation-tool-changes-2026-07-01,thinking-token-count-2026-05-13,advanced-tool-use-2025-11-20,effort-2025-11-24,dangerous-tool-use-2026-09-03,thinking-display-updates-2026-08-18,afk-mode-2026-01-31,extended-cache-ttl-2025-04-11",
+      "anthropic-dangerous-direct-browser-access": "true",
+      "anthropic-version": "2023-06-01",
+      "x-app": "cli",
+      "accept-encoding": "gzip, deflate, br, zstd"
+     },
+     "betaList": [
+      "claude-code-20250219",
+      "oauth-2025-04-20",
+      "interleaved-thinking-2025-05-14",
+      "context-management-2025-06-27",
+      "per-turn-control-2026-07-01",
+      "mid-conversation-tool-changes-2026-07-01",
+      "thinking-token-count-2026-05-13",
+      "advanced-tool-use-2025-11-20",
+      "effort-2025-11-24",
+      "dangerous-tool-use-2026-09-03",
+      "thinking-display-updates-2026-08-18",
+      "afk-mode-2026-01-31",
+      "extended-cache-ttl-2025-04-11"
+     ],
+     "authScheme": "bearer",
+     "topLevelKeys": [
+      "model",
+      "messages",
+      "system",
+      "tools",
+      "metadata",
+      "max_tokens",
+      "thinking",
+      "context_management",
+      "safeguards",
+      "output_config",
+      "stream"
+     ],
+     "system": [
+      {
+       "len": 70,
+       "head": "x-anthropic-billing-header: cc_version=2.1.312.6b4; cc_entrypoint=cli;",
+       "cache_control": null,
+       "hasMarker": false
+      },
+      {
+       "len": 57,
+       "head": "You are Claude Code, Anthropic's official CLI for Claude.",
+       "cache_control": {
+        "type": "ephemeral",
+        "ttl": "1h"
+       },
+       "hasMarker": false
+      },
+      {
+       "len": 5907,
+       "head": "\nYou are an agent working with the user toward their goals, using your own judgment along the way.\n\nIMPORTANT: Assist with authorized security testing, defensiv",
+       "cache_control": {
+        "type": "ephemeral",
+        "ttl": "1h"
+       },
+       "hasMarker": false
+      }
+     ],
+     "systemDigest": "7dde21374cabeeb9",
+     "systemBlockDigests": [
+      "f9884493ab12d24f",
+      "2719b7a469d904b3",
+      "9e4e03cecbf83f24"
+     ],
+     "identitySentence": "You are Claude Code, Anthropic's official CLI for Claude.",
+     "billingLine": "x-anthropic-billing-header: cc_version=2.1.312.6b4; cc_entrypoint=cli;",
+     "messages": [
+      {
+       "role": "user",
+       "blocks": [
+        {
+         "type": "text",
+         "len": 583,
+         "head": "<system-reminder>\nAttribution for git commits and pull requests you create from here on (this replaces Claude Code's own earlier attribution guidance, such as a",
+         "cache_control": null
+        },
+        {
+         "type": "text",
+         "len": 30,
+         "head": "Reply with the single word OK.",
+         "cache_control": null
+        }
+       ]
+      },
+      {
+       "role": "system",
+       "blocks": [
+        {
+         "type": "text",
+         "len": 11342,
+         "head": "# Environment\nYou have been invoked in the following environment: \n - Primary working directory: <tmp-path>\n - Is a git repository: false\n - Platf",
+         "cache_control": {
+          "type": "ephemeral",
+          "ttl": "1h"
+         }
+        }
+       ]
+      }
+     ],
+     "messageDigest": "450684210dda1dd8",
+     "tools": [
+      "Agent",
+      "AskUserQuestion",
+      "Bash",
+      "Edit",
+      "ListAgents",
+      "Read",
+      "ReportFindings",
+      "ScheduleWakeup",
+      "Skill",
+      "ToolSearch",
+      "Workflow",
+      "DeferredToolPlaceholder",
+      "Write"
+     ],
+     "toolsDigest": "51d4b5a2143407cb",
+     "metadataKeys": [
+      "user_id"
+     ],
+     "metadataUserIdKeys": [
+      "device_id",
+      "account_uuid",
+      "session_id"
+     ],
+     "thinking": {
+      "type": "adaptive",
+      "display": "updates"
+     },
+     "context_management": {
+      "edits": [
+       {
+        "type": "clear_thinking_20251015",
+        "keep": "all"
+       }
+      ]
+     },
+     "output_config": {
+      "effort": "medium"
+     },
+     "output_format": null,
+     "stream": true,
+     "max_tokens": 128000,
+     "ccFieldHits": [],
+     "bodyDigest": "7ef920ddab52048e",
+     "hasSystem": true
+    }
+   ],
+   "connects": 16,
+   "summary": [
+    {
+     "userAgent": "claude-cli/2.1.312 (external, cli)",
+     "url": "/v1/messages?beta=true",
+     "betaList": [
+      "claude-code-20250219",
+      "oauth-2025-04-20",
+      "interleaved-thinking-2025-05-14",
+      "redact-thinking-2026-02-12",
+      "context-management-2025-06-27"
+     ],
+     "hasBeta": false,
+     "hasSystem": false,
+     "systemLens": [],
+     "tools": 0,
+     "toolsDigest": "74234e98afe7498f"
+    },
+    {
+     "userAgent": "claude-cli/2.1.312 (external, cli)",
+     "url": "/v1/messages?beta=true",
+     "betaList": [
+      "claude-code-20250219",
+      "oauth-2025-04-20",
+      "interleaved-thinking-2025-05-14",
+      "redact-thinking-2026-02-12",
+      "context-management-2025-06-27",
+      "per-turn-control-2026-07-01",
+      "mid-conversation-tool-changes-2026-07-01",
+      "thinking-token-count-2026-05-13",
+      "effort-2025-11-24",
+      "structured-outputs-2025-12-15"
+     ],
+     "hasBeta": true,
+     "hasSystem": true,
+     "systemLens": [
+      70,
+      57,
+      3059
+     ],
+     "tools": 0,
+     "toolsDigest": "4f53cda18c2baa0c"
+    },
+    {
+     "userAgent": "claude-cli/2.1.312 (external, cli)",
+     "url": "/v1/messages?beta=true",
+     "betaList": [
+      "claude-code-20250219",
+      "oauth-2025-04-20",
+      "interleaved-thinking-2025-05-14",
+      "context-management-2025-06-27",
+      "per-turn-control-2026-07-01",
+      "mid-conversation-tool-changes-2026-07-01",
+      "thinking-token-count-2026-05-13",
+      "advanced-tool-use-2025-11-20",
+      "effort-2025-11-24",
+      "dangerous-tool-use-2026-09-03",
+      "thinking-display-updates-2026-08-18",
+      "afk-mode-2026-01-31",
+      "extended-cache-ttl-2025-04-11"
+     ],
+     "hasBeta": true,
+     "hasSystem": true,
+     "systemLens": [
+      70,
+      57,
+      5907
+     ],
+     "tools": 13,
+     "toolsDigest": "51d4b5a2143407cb"
+    }
+   ]
+  }
+ },
+ "verdicts": {
+  "sdk-cli/att-on/mcp-off": {
+   "entrypoint": "sdk-cli",
+   "attachments": true,
+   "mcp": false,
+   "betaPresent": true,
+   "betaCount": 11,
+   "betaList": [
+    "claude-code-20250219",
+    "oauth-2025-04-20",
+    "interleaved-thinking-2025-05-14",
+    "context-management-2025-06-27",
+    "per-turn-control-2026-07-01",
+    "mid-conversation-tool-changes-2026-07-01",
+    "thinking-token-count-2026-05-13",
+    "advanced-tool-use-2025-11-20",
+    "effort-2025-11-24",
+    "thinking-display-updates-2026-08-18",
+    "extended-cache-ttl-2025-04-11"
+   ]
+  },
+  "sdk-cli/att-on/mcp-on": {
+   "entrypoint": "sdk-cli",
+   "attachments": true,
+   "mcp": true,
+   "betaPresent": true,
+   "betaCount": 11,
+   "betaList": [
+    "claude-code-20250219",
+    "oauth-2025-04-20",
+    "interleaved-thinking-2025-05-14",
+    "context-management-2025-06-27",
+    "per-turn-control-2026-07-01",
+    "mid-conversation-tool-changes-2026-07-01",
+    "thinking-token-count-2026-05-13",
+    "advanced-tool-use-2025-11-20",
+    "effort-2025-11-24",
+    "thinking-display-updates-2026-08-18",
+    "extended-cache-ttl-2025-04-11"
+   ]
+  },
+  "sdk-cli/att-off/mcp-off": {
+   "entrypoint": "sdk-cli",
+   "attachments": false,
+   "mcp": false,
+   "betaPresent": false,
+   "betaCount": 10,
+   "betaList": [
+    "claude-code-20250219",
+    "oauth-2025-04-20",
+    "interleaved-thinking-2025-05-14",
+    "context-management-2025-06-27",
+    "per-turn-control-2026-07-01",
+    "thinking-token-count-2026-05-13",
+    "advanced-tool-use-2025-11-20",
+    "effort-2025-11-24",
+    "thinking-display-updates-2026-08-18",
+    "extended-cache-ttl-2025-04-11"
+   ]
+  },
+  "cli/att-off/mcp-off": {
+   "entrypoint": "cli",
+   "attachments": false,
+   "mcp": false,
+   "betaPresent": false,
+   "betaCount": 9,
+   "betaList": [
+    "claude-code-20250219",
+    "oauth-2025-04-20",
+    "interleaved-thinking-2025-05-14",
+    "redact-thinking-2026-02-12",
+    "context-management-2025-06-27",
+    "per-turn-control-2026-07-01",
+    "thinking-token-count-2026-05-13",
+    "effort-2025-11-24",
+    "structured-outputs-2025-12-15"
+   ]
+  },
+  "cli/att-off/mcp-on": {
+   "entrypoint": "cli",
+   "attachments": false,
+   "mcp": true,
+   "betaPresent": false,
+   "betaCount": 9,
+   "betaList": [
+    "claude-code-20250219",
+    "oauth-2025-04-20",
+    "interleaved-thinking-2025-05-14",
+    "redact-thinking-2026-02-12",
+    "context-management-2025-06-27",
+    "per-turn-control-2026-07-01",
+    "thinking-token-count-2026-05-13",
+    "effort-2025-11-24",
+    "structured-outputs-2025-12-15"
+   ]
+  },
+  "cli/att-on/mcp-off": {
+   "entrypoint": "cli",
+   "attachments": true,
+   "mcp": false,
+   "betaPresent": true,
+   "betaCount": 10,
+   "betaList": [
+    "claude-code-20250219",
+    "oauth-2025-04-20",
+    "interleaved-thinking-2025-05-14",
+    "redact-thinking-2026-02-12",
+    "context-management-2025-06-27",
+    "per-turn-control-2026-07-01",
+    "mid-conversation-tool-changes-2026-07-01",
+    "thinking-token-count-2026-05-13",
+    "effort-2025-11-24",
+    "structured-outputs-2025-12-15"
+   ]
+  },
+  "cli/att-on/mcp-on": {
+   "entrypoint": "cli",
+   "attachments": true,
+   "mcp": true,
+   "betaPresent": true,
+   "betaCount": 10,
+   "betaList": [
+    "claude-code-20250219",
+    "oauth-2025-04-20",
+    "interleaved-thinking-2025-05-14",
+    "redact-thinking-2026-02-12",
+    "context-management-2025-06-27",
+    "per-turn-control-2026-07-01",
+    "mid-conversation-tool-changes-2026-07-01",
+    "thinking-token-count-2026-05-13",
+    "effort-2025-11-24",
+    "structured-outputs-2025-12-15"
+   ]
+  }
+ },
+ "betaPolicy": {
+  "beta": "mid-conversation-tool-changes-2026-07-01",
+  "byFeature": {
+   "attachmentsOn": {
+    "present": 4,
+    "of": 4
+   },
+   "attachmentsOff": {
+    "present": 0,
+    "of": 3
+   },
+   "mcpOn": {
+    "present": 2,
+    "of": 3
+   },
+   "mcpOff": {
+    "present": 2,
+    "of": 4
+   },
+   "cliEntrypoint": {
+    "present": 2,
+    "of": 4
+   },
+   "sdkCliEntrypoint": {
+    "present": 2,
+    "of": 3
+   }
+  }
+ },
+ "trigger": "attachments-context (CLAUDE_CODE_DISABLE_ATTACHMENTS unset)",
+ "digest": "66957903e9a203a9"
+}

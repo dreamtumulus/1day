@@ -9,7 +9,9 @@
  * Data source: docs/evidence/cc-2.1.312/*.json (controlled probes, 2026-11-01) and docs/claude-code-compat.md
  * §11 (interactive `cli` captures, 2026-10-28). 2.1.312 entries are the G9 sampling (`docs/evidence/cc-2.1.312/profiles.json`,
  * 12 samples per profile, grade `sampled`); 2.1.300 entries are `interim` (single captures). Beta sets differ by model
- * family (haiku-4-5: 8 betas, different order, `thinking.enabled` + budget), hence `betaPolicy.byModel`.
+ * family (haiku-4-5: 8 betas, different order, `thinking.enabled` + budget), hence `betaPolicy.byModel`. Probe T10
+ * (2026-11-01): `mid-conversation-tool-changes-2026-07-01` is sent only with attachments enabled (4/4 vs 0/3), not
+ * by entrypoint or MCP — hence `betaPolicy.byFeature.attachments`; the canonical worker runs with attachments off.
  */
 
 import { CC_RUNTIME_VERSION, CC_SDK_VERSION, CC_VERSION } from "./fingerprint.js";
@@ -111,7 +113,7 @@ export const CC_PROFILES: Readonly<Record<string, CcProfile>> = Object.freeze({
   [ccProfileId("2.1.300", "sdk-cli")]: profile("sdk-cli", { runtimeVersion: "v26.3.0", betaPolicy: { base: SDK_CLI_BETAS_300, byModel: {}, byFeature: {} }, evidence: [EVIDENCE_300] }, "2.1.300"),
   [ccProfileId(CC_VERSION, "cli")]: profile("cli", {
     // docs/evidence/cc-2.1.312/profiles.json (G9, 12 samples = 4 prompts × sonnet-5-5 / opus-5-5 / haiku-4-5, 2026-11-01)
-    betaPolicy: { base: ["claude-code-20250219", "oauth-2025-04-20", "interleaved-thinking-2025-05-14", "context-management-2025-06-27", "per-turn-control-2026-07-01", "thinking-token-count-2026-05-13", "advanced-tool-use-2025-11-20", "effort-2025-11-24", "dangerous-tool-use-2026-09-03", "thinking-display-updates-2026-08-18", "afk-mode-2026-01-31", "extended-cache-ttl-2025-04-11"], byModel: {"claude-haiku-4-5": ["oauth-2025-04-20", "interleaved-thinking-2025-05-14", "context-management-2025-06-27", "claude-code-20250219", "thinking-token-count-2026-05-13", "advanced-tool-use-2025-11-20", "thinking-display-updates-2026-08-18", "extended-cache-ttl-2025-04-11"]}, byFeature: {"title-generation": "structured-outputs-2025-12-15"} },
+    betaPolicy: { base: ["claude-code-20250219", "oauth-2025-04-20", "interleaved-thinking-2025-05-14", "context-management-2025-06-27", "per-turn-control-2026-07-01", "thinking-token-count-2026-05-13", "advanced-tool-use-2025-11-20", "effort-2025-11-24", "dangerous-tool-use-2026-09-03", "thinking-display-updates-2026-08-18", "afk-mode-2026-01-31", "extended-cache-ttl-2025-04-11"], byModel: {"claude-haiku-4-5": ["oauth-2025-04-20", "interleaved-thinking-2025-05-14", "context-management-2025-06-27", "claude-code-20250219", "thinking-token-count-2026-05-13", "advanced-tool-use-2025-11-20", "thinking-display-updates-2026-08-18", "extended-cache-ttl-2025-04-11"]}, byFeature: {"title-generation": "structured-outputs-2025-12-15", "attachments": "mid-conversation-tool-changes-2026-07-01"} },
     identityBlocks: ["You are Claude Code, Anthropic's official CLI for Claude."],
     mainPromptLengths: [5854, 27282],
     mainPromptDigest: "f2265d048e328235",
@@ -122,7 +124,7 @@ export const CC_PROFILES: Readonly<Record<string, CcProfile>> = Object.freeze({
   }),
   [ccProfileId(CC_VERSION, "sdk-cli")]: profile("sdk-cli", {
     // docs/evidence/cc-2.1.312/profiles.json (G9, 12 samples = 4 prompts × sonnet-5-5 / opus-5-5 / haiku-4-5, 2026-11-01)
-    betaPolicy: { base: ["claude-code-20250219", "oauth-2025-04-20", "interleaved-thinking-2025-05-14", "context-management-2025-06-27", "per-turn-control-2026-07-01", "thinking-token-count-2026-05-13", "advanced-tool-use-2025-11-20", "effort-2025-11-24", "thinking-display-updates-2026-08-18", "extended-cache-ttl-2025-04-11"], byModel: {"claude-haiku-4-5": ["oauth-2025-04-20", "interleaved-thinking-2025-05-14", "context-management-2025-06-27", "claude-code-20250219", "thinking-token-count-2026-05-13", "advanced-tool-use-2025-11-20", "thinking-display-updates-2026-08-18", "extended-cache-ttl-2025-04-11"]}, byFeature: {"--json-schema": "structured-outputs-2025-12-15"} },
+    betaPolicy: { base: ["claude-code-20250219", "oauth-2025-04-20", "interleaved-thinking-2025-05-14", "context-management-2025-06-27", "per-turn-control-2026-07-01", "thinking-token-count-2026-05-13", "advanced-tool-use-2025-11-20", "effort-2025-11-24", "thinking-display-updates-2026-08-18", "extended-cache-ttl-2025-04-11"], byModel: {"claude-haiku-4-5": ["oauth-2025-04-20", "interleaved-thinking-2025-05-14", "context-management-2025-06-27", "claude-code-20250219", "thinking-token-count-2026-05-13", "advanced-tool-use-2025-11-20", "thinking-display-updates-2026-08-18", "extended-cache-ttl-2025-04-11"]}, byFeature: {"--json-schema": "structured-outputs-2025-12-15", "attachments": "mid-conversation-tool-changes-2026-07-01"} },
     identityBlocks: ["You are a Claude agent, built on Anthropic's Claude Agent SDK.", "You are Claude Code, Anthropic's official CLI for Claude, running within the Claude Agent SDK."],
     mainPromptLengths: [5599, 26946],
     mainPromptDigest: "c033f0aeb97f2b54",
@@ -133,7 +135,7 @@ export const CC_PROFILES: Readonly<Record<string, CcProfile>> = Object.freeze({
   }),
   [ccProfileId(CC_VERSION, "restricted")]: profile("restricted", {
     // docs/evidence/cc-2.1.312/profiles.json (G9, 12 samples = 4 prompts × sonnet-5-5 / opus-5-5 / haiku-4-5, 2026-11-01)
-    betaPolicy: { base: ["claude-code-20250219", "oauth-2025-04-20", "interleaved-thinking-2025-05-14", "context-management-2025-06-27", "per-turn-control-2026-07-01", "thinking-token-count-2026-05-13", "advanced-tool-use-2025-11-20", "effort-2025-11-24", "thinking-display-updates-2026-08-18", "extended-cache-ttl-2025-04-11"], byModel: {"claude-haiku-4-5": ["oauth-2025-04-20", "interleaved-thinking-2025-05-14", "context-management-2025-06-27", "claude-code-20250219", "thinking-token-count-2026-05-13", "advanced-tool-use-2025-11-20", "thinking-display-updates-2026-08-18", "extended-cache-ttl-2025-04-11"]}, byFeature: {"--json-schema": "structured-outputs-2025-12-15"} },
+    betaPolicy: { base: ["claude-code-20250219", "oauth-2025-04-20", "interleaved-thinking-2025-05-14", "context-management-2025-06-27", "per-turn-control-2026-07-01", "thinking-token-count-2026-05-13", "advanced-tool-use-2025-11-20", "effort-2025-11-24", "thinking-display-updates-2026-08-18", "extended-cache-ttl-2025-04-11"], byModel: {"claude-haiku-4-5": ["oauth-2025-04-20", "interleaved-thinking-2025-05-14", "context-management-2025-06-27", "claude-code-20250219", "thinking-token-count-2026-05-13", "advanced-tool-use-2025-11-20", "thinking-display-updates-2026-08-18", "extended-cache-ttl-2025-04-11"]}, byFeature: {"--json-schema": "structured-outputs-2025-12-15", "attachments": "mid-conversation-tool-changes-2026-07-01"} },
     identityBlocks: ["You are a Claude agent, built on Anthropic's Claude Agent SDK."],
     mainPromptLengths: [3513, 14138],
     mainPromptDigest: "635d9d17f2409f3f",

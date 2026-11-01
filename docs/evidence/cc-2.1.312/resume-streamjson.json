@@ -1,0 +1,183 @@
+{
+ "gate": "resume-streamjson",
+ "task": "T7",
+ "sampledAt": "2026-11-01T15:09:59.558Z",
+ "firstTurn": {
+  "file": "session-t7.json",
+  "sessionId": "84fa7033-5612-4a1d-8519-93c3e84bc2bd",
+  "requests": 1,
+  "shapes": [
+   {
+    "roles": [
+     "user:text+text",
+     "system:text"
+    ],
+    "messages": [
+     {
+      "role": "user",
+      "blocks": [
+       {
+        "type": "text",
+        "len": 583,
+        "head": "<system-reminder>\nAttribution for git commits and pull requests you create from here on (this replaces Claude Code's own earlier attribution guidance, such as a",
+        "is_error": null
+       },
+       {
+        "type": "text",
+        "len": 30,
+        "head": "Reply with the single word OK.",
+        "is_error": null
+       }
+      ]
+     },
+     {
+      "role": "system",
+      "blocks": [
+       {
+        "type": "text",
+        "len": 2513,
+        "head": "Available agent types for the Agent tool:\n- claude: Catch-all for any task that doesn't fit a more specific agent. FleetView's default when no agent name is typ",
+        "is_error": null
+       }
+      ]
+     }
+    ],
+    "systemLens": [
+     74,
+     62,
+     5599
+    ],
+    "markerCounts": [
+     0,
+     0,
+     0
+    ],
+    "markerTotal": 0,
+    "hasSyntheticNoResponse": false
+   }
+  ]
+ },
+ "resume": {
+  "file": "resume-streamjson-t7.json",
+  "exitCode": 0,
+  "args": [
+   "-p",
+   "--model",
+   "claude-sonnet-5-5",
+   "--output-format",
+   "stream-json",
+   "--verbose",
+   "--resume",
+   "84fa7033-5612-4a1d-8519-93c3e84bc2bd",
+   "--input-format",
+   "stream-json"
+  ],
+  "initSessionId": "84fa7033-5612-4a1d-8519-93c3e84bc2bd",
+  "sessionIdMatches": true,
+  "requests": 1,
+  "stderrTail": [],
+  "stdoutTypes": [
+   "system/init",
+   "assistant",
+   "rate_limit_event",
+   "result/success"
+  ],
+  "shapes": [
+   {
+    "roles": [
+     "user:text+text",
+     "system:string",
+     "assistant:text",
+     "user:text"
+    ],
+    "messages": [
+     {
+      "role": "user",
+      "blocks": [
+       {
+        "type": "text",
+        "len": 583,
+        "head": "<system-reminder>\nAttribution for git commits and pull requests you create from here on (this replaces Claude Code's own earlier attribution guidance, such as a",
+        "is_error": null
+       },
+       {
+        "type": "text",
+        "len": 30,
+        "head": "Reply with the single word OK.",
+        "is_error": null
+       }
+      ]
+     },
+     {
+      "role": "system",
+      "blocks": [
+       {
+        "type": "string",
+        "len": 2513,
+        "head": "Available agent types for the Agent tool:\n- claude: Catch-all for any task that ",
+        "is_error": null
+       }
+      ]
+     },
+     {
+      "role": "assistant",
+      "blocks": [
+       {
+        "type": "text",
+        "len": 2,
+        "head": "OK",
+        "is_error": null
+       }
+      ]
+     },
+     {
+      "role": "user",
+      "blocks": [
+       {
+        "type": "text",
+        "len": 32,
+        "head": "T7-TURN2: what did I ask before?",
+        "is_error": null
+       }
+      ]
+     }
+    ],
+    "systemLens": [
+     74,
+     62,
+     5599
+    ],
+    "markerCounts": [
+     0,
+     0,
+     0
+    ],
+    "markerTotal": 0,
+    "hasSyntheticNoResponse": false
+   }
+  ]
+ },
+ "checks": {
+  "requestSent": true,
+  "historyUserPresent": true,
+  "historyAssistantPresent": true,
+  "newTurnPresent": true,
+  "noDuplicateHistoryUser": true,
+  "noSyntheticNoResponse": true,
+  "linearRoles": "user:text+text > system:string > assistant:text > user:text",
+  "sessionIdMatch": true,
+  "pass": true
+ },
+ "crossCheckPositionalResume": {
+  "file": "resume.json",
+  "roles": [
+   "user:text+text",
+   "system:string",
+   "assistant:text",
+   "user:string",
+   "system:text"
+  ],
+  "digest": "1dc146d715e00882"
+ },
+ "digest": "7774f419927ebd8c"
+}

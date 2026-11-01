@@ -8,6 +8,8 @@ import json, os, pty, re, select, signal, subprocess, sys, time
 BIN, HOME, MODEL, BASE, PROXY = sys.argv[1:6]
 PROMPT = os.environ.get("CLI_PROMPT", "Reply with the single word OK.")
 DUMP = os.environ["CLI_DUMP"]  # ndjson file the node capture server appends to
+EXTRA = json.loads(os.environ.get("CLI_EXTRA_ARGS", "[]"))  # T10: extra argv (e.g. --mcp-config)
+ATTACH = os.environ.get("CLI_ATTACHMENTS", "0") == "1"       # T10: leave the attachments context ON
 cfg = os.path.join(HOME, "cfg")
 work = os.path.join(HOME, "work")
 os.makedirs(cfg, mode=0o700, exist_ok=True)
@@ -32,13 +34,14 @@ env = {"PATH": os.environ["PATH"], "HOME": HOME, "TMPDIR": HOME, "CLAUDE_CONFIG_
        "ANTHROPIC_BASE_URL": BASE, "HTTPS_PROXY": PROXY, "HTTP_PROXY": PROXY,
        "NO_PROXY": "127.0.0.1,localhost", "no_proxy": "127.0.0.1,localhost",
        "DISABLE_AUTOUPDATER": "1", "DISABLE_ERROR_REPORTING": "1", "CLAUDE_CODE_NO_MODEL_FALLBACK": "1",
-       "CLAUDE_CODE_DISABLE_ATTACHMENTS": "1",
        "TERM": "xterm-256color", "COLUMNS": "120", "LINES": "40", "LANG": "C.UTF-8", "SHELL": "/bin/bash"}
+if not ATTACH:
+    env["CLAUDE_CODE_DISABLE_ATTACHMENTS"] = "1"
 
 pid, fd = pty.fork()
 if pid == 0:
     os.chdir(work)
-    os.execve(BIN, [BIN, "--model", MODEL], env)
+    os.execve(BIN, [BIN, "--model", MODEL] + EXTRA, env)
 
 buf = b""
 def pump(sec):

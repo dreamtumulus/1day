@@ -285,4 +285,7 @@ Claude Code 2.1.300 已具备做持久会话所需的全部开关（worker-01 �
   节点写到账号 config dir 的 `projects/<cwd-hash>/<id>.jsonl` 后 `--resume`，再喂最后一轮。工具轮做尾巴的历史不导入（没有生成可接续）。计 `native_history_import_total`。
 - **已知窗口**（Pi 探针 T1）：请求在途被杀且 transcript 未落盘 → `--resume` 报 "No conversation found" → 翻译器报错 → 记忆删除（LOST）；有 user 无 assistant 的 transcript resume 会出现
   `assistant:"No response requested."`。两者都只影响被杀那一轮，下一轮在网关侧表现为"会话丢失，重新开始"。
-- **未验证项**：`--resume` 与 `--input-format stream-json` 同用是否被真二进制接受（Pi 的探针用的是位置参数提示词）——灰度前先用探针 gate 跑一次。
+- **已验证（Pi 第二批，2026-11-01）**：T7 `--resume` + `--input-format stream-json` 只喂一条 stdin user → 历史 + 新一轮，无重复、无伪造（`resume-streamjson.json`）；
+  T9 `buildNativeTranscript` 生成的 transcript 被 `--resume` 读入，工具对成对按序、thinking 全部未上行、image 保留（`history-import-gateway.json`）。
+- **T8 限制**：resume 回放 transcript 里持久化的 `prompt_snapshot`，当次 `--append-system-prompt-file` / `--append-system-prompt` **被静默忽略**（`append-resume.json`）——
+  客户 system 在会话首轮定死。网关的 reuseKey 含客户 system 文本，system 变了即新会话，行为一致；**导入的 transcript 没有 snapshot，append 是否生效待探针确认**（列入第三批）。

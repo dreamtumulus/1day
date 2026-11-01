@@ -1448,5 +1448,178 @@
     "grade": "sampled"
    }
   ]
+ },
+ "betaPolicy": {
+  "beta": "mid-conversation-tool-changes-2026-07-01",
+  "trigger": "attachments-context (CLAUDE_CODE_DISABLE_ATTACHMENTS unset)",
+  "sampledAt": "2026-11-01T15:14:21.786Z",
+  "digest": "66957903e9a203a9",
+  "byFeature": {
+   "attachmentsOn": {
+    "present": 4,
+    "of": 4
+   },
+   "attachmentsOff": {
+    "present": 0,
+    "of": 3
+   },
+   "mcpOn": {
+    "present": 2,
+    "of": 3
+   },
+   "mcpOff": {
+    "present": 2,
+    "of": 4
+   },
+   "cliEntrypoint": {
+    "present": 2,
+    "of": 4
+   },
+   "sdkCliEntrypoint": {
+    "present": 2,
+    "of": 3
+   }
+  },
+  "verdicts": {
+   "sdk-cli/att-on/mcp-off": {
+    "entrypoint": "sdk-cli",
+    "attachments": true,
+    "mcp": false,
+    "betaPresent": true,
+    "betaCount": 11,
+    "betaList": [
+     "claude-code-20250219",
+     "oauth-2025-04-20",
+     "interleaved-thinking-2025-05-14",
+     "context-management-2025-06-27",
+     "per-turn-control-2026-07-01",
+     "mid-conversation-tool-changes-2026-07-01",
+     "thinking-token-count-2026-05-13",
+     "advanced-tool-use-2025-11-20",
+     "effort-2025-11-24",
+     "thinking-display-updates-2026-08-18",
+     "extended-cache-ttl-2025-04-11"
+    ]
+   },
+   "sdk-cli/att-on/mcp-on": {
+    "entrypoint": "sdk-cli",
+    "attachments": true,
+    "mcp": true,
+    "betaPresent": true,
+    "betaCount": 11,
+    "betaList": [
+     "claude-code-20250219",
+     "oauth-2025-04-20",
+     "interleaved-thinking-2025-05-14",
+     "context-management-2025-06-27",
+     "per-turn-control-2026-07-01",
+     "mid-conversation-tool-changes-2026-07-01",
+     "thinking-token-count-2026-05-13",
+     "advanced-tool-use-2025-11-20",
+     "effort-2025-11-24",
+     "thinking-display-updates-2026-08-18",
+     "extended-cache-ttl-2025-04-11"
+    ]
+   },
+   "sdk-cli/att-off/mcp-off": {
+    "entrypoint": "sdk-cli",
+    "attachments": false,
+    "mcp": false,
+    "betaPresent": false,
+    "betaCount": 10,
+    "betaList": [
+     "claude-code-20250219",
+     "oauth-2025-04-20",
+     "interleaved-thinking-2025-05-14",
+     "context-management-2025-06-27",
+     "per-turn-control-2026-07-01",
+     "thinking-token-count-2026-05-13",
+     "advanced-tool-use-2025-11-20",
+     "effort-2025-11-24",
+     "thinking-display-updates-2026-08-18",
+     "extended-cache-ttl-2025-04-11"
+    ]
+   },
+   "cli/att-off/mcp-off": {
+    "entrypoint": "cli",
+    "attachments": false,
+    "mcp": false,
+    "betaPresent": false,
+    "betaCount": 9,
+    "betaList": [
+     "claude-code-20250219",
+     "oauth-2025-04-20",
+     "interleaved-thinking-2025-05-14",
+     "redact-thinking-2026-02-12",
+     "context-management-2025-06-27",
+     "per-turn-control-2026-07-01",
+     "thinking-token-count-2026-05-13",
+     "effort-2025-11-24",
+     "structured-outputs-2025-12-15"
+    ]
+   },
+   "cli/att-off/mcp-on": {
+    "entrypoint": "cli",
+    "attachments": false,
+    "mcp": true,
+    "betaPresent": false,
+    "betaCount": 9,
+    "betaList": [
+     "claude-code-20250219",
+     "oauth-2025-04-20",
+     "interleaved-thinking-2025-05-14",
+     "redact-thinking-2026-02-12",
+     "context-management-2025-06-27",
+     "per-turn-control-2026-07-01",
+     "thinking-token-count-2026-05-13",
+     "effort-2025-11-24",
+     "structured-outputs-2025-12-15"
+    ]
+   },
+   "cli/att-on/mcp-off": {
+    "entrypoint": "cli",
+    "attachments": true,
+    "mcp": false,
+    "betaPresent": true,
+    "betaCount": 10,
+    "betaList": [
+     "claude-code-20250219",
+     "oauth-2025-04-20",
+     "interleaved-thinking-2025-05-14",
+     "redact-thinking-2026-02-12",
+     "context-management-2025-06-27",
+     "per-turn-control-2026-07-01",
+     "mid-conversation-tool-changes-2026-07-01",
+     "thinking-token-count-2026-05-13",
+     "effort-2025-11-24",
+     "structured-outputs-2025-12-15"
+    ]
+   },
+   "cli/att-on/mcp-on": {
+    "entrypoint": "cli",
+    "attachments": true,
+    "mcp": true,
+    "betaPresent": true,
+    "betaCount": 10,
+    "betaList": [
+     "claude-code-20250219",
+     "oauth-2025-04-20",
+     "interleaved-thinking-2025-05-14",
+     "redact-thinking-2026-02-12",
+     "context-management-2025-06-27",
+     "per-turn-control-2026-07-01",
+     "mid-conversation-tool-changes-2026-07-01",
+     "thinking-token-count-2026-05-13",
+     "effort-2025-11-24",
+     "structured-outputs-2025-12-15"
+    ]
+   }
+  },
+  "evidence": {
+   "file": "beta-midconv.json",
+   "source": "docs/evidence/cc-2.1.312/beta-midconv.json",
+   "grade": "sampled"
+  },
+  "note": "measured: beta follows the attachments context (CLAUDE_CODE_DISABLE_ATTACHMENTS unset), not entrypoint and not MCP; every G9 sample ran with attachments disabled, which is why the 12 cli samples never carried it."
  }
 }

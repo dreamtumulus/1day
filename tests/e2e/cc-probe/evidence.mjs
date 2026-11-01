@@ -46,19 +46,26 @@ const g2 = row("G2 stream-json", injected ? "部分" : "失败", ["streamjson.js
 // ---- G3 external history ----
 const g3cases = ["user", "assistant-text", "tool-use", "thinking-last", "thinking-earlier", "thinking-nosig", "thinking-badsig", "combined"];
 const g3docs = g3cases.map((c) => doc(`history-import-${c}.json`)).filter(Boolean);
+const g3gateway = doc("history-import-gateway.json");
 const g3ok = g3docs.filter((d) => (d.resumed?.requests?.[0]?.messages?.length ?? 0) > 0).length;
-const g3 = row("G3 history import", g3ok === g3cases.length ? "通过（thinking 需剥离）" : `部分 ${g3ok}/${g3cases.length}`, g3cases.map((c) => `history-import-${c}.json`), g3docs[0]);
+const g3verdict = g3ok === g3cases.length
+  ? (g3gateway?.checks?.pass ? "通过（thinking 需剥离；gateway 导入器真机验证通过）" : "通过（thinking 需剥离）")
+  : `部分 ${g3ok}/${g3cases.length}`;
+const g3 = row("G3 history import", g3verdict, [...g3cases.map((c) => `history-import-${c}.json`), "history-import-gateway.json"], g3docs[0]);
 
 // ---- G4 resume ----
 const resume = doc("resume.json");
 const resumeKill = doc("resume-kill.json");
 const resumeEarly = doc("resume-midflight-early.json");
 const resumeNoFile = doc("resume-midflight-nofile.json");
-const g4pass = (resume?.requests?.length ?? 0) > 0 && (resumeKill?.requests?.length ?? 0) > 0;
+// T7/T8 (second batch): stream-json continuation works; resume-time append is ignored (prompt_snapshot wins)
+const g4sj = doc("resume-streamjson.json");
+const g4app = doc("append-resume.json");
+const g4pass = (resume?.requests?.length ?? 0) > 0 && (resumeKill?.requests?.length ?? 0) > 0 && (g4sj?.checks?.pass ?? false);
 const g4lost = (resumeNoFile?.exitCode ?? 0) === 1 && (resumeNoFile?.requests?.length ?? 0) === 0;
 const g4synthetic = flat(resumeEarly).includes("No response requested.");
-const g4verdict = g4pass && !g4lost ? "通过" : g4pass ? "部分（有会话丢失窗口）" : "失败";
-const g4 = row("G4 resume", g4verdict, ["session.json", "resume.json", "resume-2.json", "session-kill.json", "resume-kill.json", "session-kill-midflight.json", "resume-midflight-early.json", "session-kill-midflight-nofile.json", "resume-midflight-nofile.json"], resume);
+const g4verdict = g4pass && !g4lost ? (g4app?.pass ? "通过" : "部分（resume 时 append 被忽略）") : g4pass ? "部分（有会话丢失窗口）" : "失败";
+const g4 = row("G4 resume", g4verdict, ["session.json", "resume.json", "resume-2.json", "session-kill.json", "resume-kill.json", "session-kill-midflight.json", "resume-midflight-early.json", "session-kill-midflight-nofile.json", "resume-midflight-nofile.json", "resume-streamjson.json", "resume-streamjson-t7.json", "append-resume.json"], g4sj ?? resume);
 
 // ---- G5 tool interrupt ----
 const rMcp = doc("resume-mcp.json"); const rBuiltin = doc("resume-builtin.json");
@@ -82,8 +89,8 @@ const g8 = row("G8 --json-schema", schemaTools === 13 ? "通过" : "失败", ["s
 
 // ---- G9 profiles ----
 const profiles = doc("profiles.json");
-const profileRows = profiles ? Object.entries(profiles).map(([k, v]) => `${k}: ${v.samples} 次 / ${v.betaSets.length} 组 beta / identity 「${v.identityBlock}」`).join("<br>") : "缺失";
-const g9 = row("G9 profile", profiles ? "通过" : "失败", ["profiles.json", "profile-sdk-cli.json", "profile-cc-2.1.312-cli.json", "profile-restricted.json"], profiles?.["cc-2.1.312-sdk-cli"]?.evidence?.[0] ? { sampledAt: profiles["cc-2.1.312-sdk-cli"].evidence[0].sampledAt, digest: profiles["cc-2.1.312-sdk-cli"].evidence[0].digest } : null);
+const profileRows = profiles ? Object.entries(profiles).filter(([k]) => k.startsWith("cc-")).map(([k, v]) => `${k}: ${v.samples} 次 / ${v.betaSets.length} 组 beta / identity 「${v.identityBlock}」`).join("<br>") : "缺失";
+const g9 = row("G9 profile", profiles ? "通过" : "失败", ["profiles.json", "profile-sdk-cli.json", "profile-cc-2.1.312-cli.json", "profile-restricted.json", "beta-midconv.json"], profiles?.["cc-2.1.312-sdk-cli"]?.evidence?.[0] ? { sampledAt: profiles["cc-2.1.312-sdk-cli"].evidence[0].sampledAt, digest: profiles["cc-2.1.312-sdk-cli"].evidence[0].digest } : null);
 
 // ---- G10 telemetry ----
 const targets = new Set();
@@ -99,7 +106,7 @@ const DISPOSITION = {
   "G1 append": ["改用 caller-instructions / mid-conversation system", "未触发（追加位可用，客户 system 不进 argv）"],
   "G2 stream-json": ["不假设 assistant 注入；历史走 G3", "未触发（assistant 注入被接受并原样入下一轮）"],
   "G3 history import": ["`history_import_unsupported` / historyPolicy=reset", "未触发（可导），但必须新增 thinking 剥离策略"],
-  "G4 resume": ["不启用 native 灰度", "未触发（可启用），需自建 DIRTY/LOST 状态机覆盖无 transcript 的崩溃窗口"],
+  "G4 resume": ["不启用 native 灰度", g4app?.resumeTimeAppendIgnored ? "未触发（可启用）；但 resume 时 `--append-system-prompt-file` 被 prompt_snapshot 静默忽略 → 客户指令必须在建会话时固定" : "未触发（可启用），需自建 DIRTY/LOST 状态机覆盖无 transcript 的崩溃窗口"],
   "G5 tool interrupt": ["409 `tool_continuation_lost`", "未触发（原生补 is_error tool_result、不重跑），caller 工具仍建议保留 409 兜底"],
   "G6 restricted": ["只用 tools-disabled-canonical", "未触发"],
   "G7 Bash": ["本期不开放", "未触发（restricted 无 Bash 工具）"],
@@ -137,6 +144,13 @@ md.push(`- **G9** ${profileRows}`);
 md.push("- **G9 细节**：beta 集/顺序与 `thinking`/`max_tokens` **随模型**变（haiku 8 个 beta、`thinking={type:enabled,budget_tokens:31999}`、无 `output_config`）；cli 主轮 12 个 beta（含 `dangerous-tool-use-2026-09-03`、`afk-mode-2026-01-31`）、tools 13、顶层多 `safeguards`；`cch`/`cc_prev_req`/`cc_prompt_id`/`cc_turn_origin` 在 36 次采样中 0 出现。");
 md.push("- **G10-A** 遥测不跟 `ANTHROPIC_BASE_URL`，只打 `api.anthropic.com:443`（cli 入口另试 `github.com` / `raw.githubusercontent.com` / `downloads.claude.ai`，均被拒）。");
 md.push(`- **G10-B** \`SSLKEYLOGFILE\` 不可用（Bun 1.4.4 不写 keylog）；\`NODE_EXTRA_CA_CERTS\` 可用 → 受控 TLS 终结即可读到 \`/api/event_logging/v2/batch\` 等 9 个端点明文（UA \`Bun/1.4.4\`）。`);
+md.push("");
+md.push("## 第二批（T7–T10）");
+md.push("");
+md.push(`- **T7 stream-json 续轮** \`${g4sj?.checks?.pass ? "通过" : "失败"}\`：\`--resume <id> --input-format stream-json\` 的 REQ0 = 历史 + stdin 新一轮（角色序 \`${g4sj?.checks?.linearRoles ?? "—"}\`），无重复、无 \`No response requested.\`、\`system/init.session_id\` 与传入值一致。`);
+md.push(`- **T8 append × resume** \`${g4app?.pass ? "通过" : "失败"}\`：resume 时再带 \`--append-system-prompt-file\` **不重复追加**——transcript 里持久化了 \`prompt_snapshot\`（system 10 块 + tools），resume 回放快照、**静默忽略**当次 append（file 与 inline 都忽略，主提示词仍是 5599 而非 5655）；首轮带 append 的会话 resume 后仍为 5655 且 marker 恰好 1 次 → 客户 system 必须在建会话时固定。`);
+md.push(`- **T9 gateway 导入器真机验证** \`${g3gateway?.checks?.pass ? "通过" : "失败"}\`：\`buildNativeTranscript\`（\`apps/gateway/dist/ccr/native-session.js\`）生成 8 行 transcript，resume 后 tool_use/tool_result 两对按序保真、thinking/redacted_thinking（${g3gateway?.strippedThinking ?? "—"} 块）全部剥离、image 块保留、无重复。`);
+md.push(`- **T10 beta 触发条件** \`${profiles?.betaPolicy?.trigger ?? "未做"}\`：\`mid-conversation-tool-changes-2026-07-01\` 只在 attachments 上下文开启时出现（4/4），关闭 attachments 时 0/3，与入口（cli/sdk-cli）和 MCP 工具集无关；G9 的 36 次采样都设了 \`CLAUDE_CODE_DISABLE_ATTACHMENTS=1\`，所以未见该 beta。`);
 md.push("");
 md.push("## 证据文件索引", "");
 md.push("| 文件 | gate | sampledAt | digest |");

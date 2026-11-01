@@ -1,0 +1,708 @@
+{
+ "gate": "append-resume",
+ "task": "T8",
+ "sampledAt": "2026-11-01T15:08:55.822Z",
+ "reference": {
+  "file": "append.json",
+  "system": [
+   {
+    "url": "/v1/messages?beta=true",
+    "lens": [
+     74,
+     94,
+     5655
+    ],
+    "markerCounts": [
+     0,
+     0,
+     0
+    ],
+    "markerTotal": 0,
+    "hasBillingLine": true,
+    "tails": [
+     null,
+     null,
+     null
+    ]
+   }
+  ],
+  "mainPromptLen": 5655
+ },
+ "cases": {
+  "resume-only": {
+   "firstTurn": {
+    "file": "session-t8a.json",
+    "systemLens": [
+     74,
+     62,
+     5599
+    ]
+   },
+   "resume": {
+    "file": "resume-append-t8a.json",
+    "exitCode": 0,
+    "system": [
+     {
+      "url": "/v1/messages?beta=true",
+      "lens": [
+       74,
+       62,
+       5599
+      ],
+      "markerCounts": [
+       0,
+       0,
+       0
+      ],
+      "markerTotal": 0,
+      "hasBillingLine": true,
+      "identity": null,
+      "tails": [
+       "f767b78d6ab41d66",
+       "0d7062851dd7bd7e",
+       "40d75235ca598fc1"
+      ],
+      "systemDigest": "14fa7f6008a26ba6"
+     }
+    ],
+    "shapes": [
+     {
+      "roles": [
+       "user:text+text",
+       "system:string",
+       "assistant:text",
+       "user:text"
+      ],
+      "messages": [
+       {
+        "role": "user",
+        "blocks": [
+         {
+          "type": "text",
+          "len": 583,
+          "head": "<system-reminder>\nAttribution for git commits and pull requests you create from here on (this replaces Claude Code's own earlier attribution guidance, such as a",
+          "is_error": null
+         },
+         {
+          "type": "text",
+          "len": 30,
+          "head": "Reply with the single word OK.",
+          "is_error": null
+         }
+        ]
+       },
+       {
+        "role": "system",
+        "blocks": [
+         {
+          "type": "string",
+          "len": 2513,
+          "head": "Available agent types for the Agent tool:\n- claude: Catch-all for any task that ",
+          "is_error": null
+         }
+        ]
+       },
+       {
+        "role": "assistant",
+        "blocks": [
+         {
+          "type": "text",
+          "len": 2,
+          "head": "OK",
+          "is_error": null
+         }
+        ]
+       },
+       {
+        "role": "user",
+        "blocks": [
+         {
+          "type": "text",
+          "len": 30,
+          "head": "Reply with the single word OK.",
+          "is_error": null
+         }
+        ]
+       }
+      ],
+      "systemLens": [
+       74,
+       62,
+       5599
+      ],
+      "markerCounts": [
+       0,
+       0,
+       0
+      ],
+      "markerTotal": 0,
+      "hasSyntheticNoResponse": false
+     }
+    ]
+   },
+   "verdict": {
+    "ok": false,
+    "markerTotal": 0,
+    "mainPromptMarker": 0,
+    "otherBlocksMarker": 0,
+    "mainPromptLen": 5599,
+    "billingLine": true,
+    "identity": null
+   }
+  },
+  "append-both-turns": {
+   "firstTurn": {
+    "file": "session-append-t8b.json",
+    "systemLens": [
+     74,
+     94,
+     5655
+    ],
+    "markerTotal": 1
+   },
+   "resume": {
+    "file": "resume-append-t8b.json",
+    "exitCode": 0,
+    "system": [
+     {
+      "url": "/v1/messages?beta=true",
+      "lens": [
+       74,
+       94,
+       5655
+      ],
+      "markerCounts": [
+       0,
+       0,
+       1
+      ],
+      "markerTotal": 1,
+      "hasBillingLine": true,
+      "identity": "You are Claude Code, Anthropic's official CLI for Claude, running within the Claude Agent SDK.",
+      "tails": [
+       "f767b78d6ab41d66",
+       "6c1afcd9232947a1",
+       "809c0bfaae96c8b6"
+      ],
+      "systemDigest": "43996968da0afc76"
+     }
+    ],
+    "shapes": [
+     {
+      "roles": [
+       "user:text+text",
+       "system:string",
+       "assistant:text",
+       "user:text"
+      ],
+      "messages": [
+       {
+        "role": "user",
+        "blocks": [
+         {
+          "type": "text",
+          "len": 583,
+          "head": "<system-reminder>\nAttribution for git commits and pull requests you create from here on (this replaces Claude Code's own earlier attribution guidance, such as a",
+          "is_error": null
+         },
+         {
+          "type": "text",
+          "len": 30,
+          "head": "Reply with the single word OK.",
+          "is_error": null
+         }
+        ]
+       },
+       {
+        "role": "system",
+        "blocks": [
+         {
+          "type": "string",
+          "len": 2513,
+          "head": "Available agent types for the Agent tool:\n- claude: Catch-all for any task that ",
+          "is_error": null
+         }
+        ]
+       },
+       {
+        "role": "assistant",
+        "blocks": [
+         {
+          "type": "text",
+          "len": 2,
+          "head": "OK",
+          "is_error": null
+         }
+        ]
+       },
+       {
+        "role": "user",
+        "blocks": [
+         {
+          "type": "text",
+          "len": 30,
+          "head": "Reply with the single word OK.",
+          "is_error": null
+         }
+        ]
+       }
+      ],
+      "systemLens": [
+       74,
+       94,
+       5655
+      ],
+      "markerCounts": [
+       0,
+       0,
+       1
+      ],
+      "markerTotal": 1,
+      "hasSyntheticNoResponse": false
+     }
+    ]
+   },
+   "verdict": {
+    "ok": true,
+    "markerTotal": 1,
+    "mainPromptMarker": 1,
+    "otherBlocksMarker": 0,
+    "mainPromptLen": 5655,
+    "billingLine": true,
+    "identity": "You are Claude Code, Anthropic's official CLI for Claude, running within the Claude Agent SDK."
+   }
+  },
+  "resume-inline-control": {
+   "firstTurn": {
+    "file": "session-t8a.json",
+    "note": "same transcript as resume-only (created without any append)"
+   },
+   "resume": {
+    "file": "resume-append-inline-t8c.json",
+    "exitCode": 0,
+    "system": [
+     {
+      "url": "/v1/messages?beta=true",
+      "lens": [
+       74,
+       62,
+       5599
+      ],
+      "markerCounts": [
+       0,
+       0,
+       0
+      ],
+      "markerTotal": 0,
+      "hasBillingLine": true,
+      "identity": null,
+      "tails": [
+       "f767b78d6ab41d66",
+       "0d7062851dd7bd7e",
+       "40d75235ca598fc1"
+      ],
+      "systemDigest": "14fa7f6008a26ba6"
+     }
+    ],
+    "shapes": [
+     {
+      "roles": [
+       "user:text+text",
+       "system:string",
+       "assistant:text",
+       "user:string",
+       "assistant:text",
+       "user:text"
+      ],
+      "messages": [
+       {
+        "role": "user",
+        "blocks": [
+         {
+          "type": "text",
+          "len": 583,
+          "head": "<system-reminder>\nAttribution for git commits and pull requests you create from here on (this replaces Claude Code's own earlier attribution guidance, such as a",
+          "is_error": null
+         },
+         {
+          "type": "text",
+          "len": 30,
+          "head": "Reply with the single word OK.",
+          "is_error": null
+         }
+        ]
+       },
+       {
+        "role": "system",
+        "blocks": [
+         {
+          "type": "string",
+          "len": 2513,
+          "head": "Available agent types for the Agent tool:\n- claude: Catch-all for any task that ",
+          "is_error": null
+         }
+        ]
+       },
+       {
+        "role": "assistant",
+        "blocks": [
+         {
+          "type": "text",
+          "len": 2,
+          "head": "OK",
+          "is_error": null
+         }
+        ]
+       },
+       {
+        "role": "user",
+        "blocks": [
+         {
+          "type": "string",
+          "len": 30,
+          "head": "Reply with the single word OK.",
+          "is_error": null
+         }
+        ]
+       },
+       {
+        "role": "assistant",
+        "blocks": [
+         {
+          "type": "text",
+          "len": 2,
+          "head": "OK",
+          "is_error": null
+         }
+        ]
+       },
+       {
+        "role": "user",
+        "blocks": [
+         {
+          "type": "text",
+          "len": 30,
+          "head": "Reply with the single word OK.",
+          "is_error": null
+         }
+        ]
+       }
+      ],
+      "systemLens": [
+       74,
+       62,
+       5599
+      ],
+      "markerCounts": [
+       0,
+       0,
+       0
+      ],
+      "markerTotal": 0,
+      "hasSyntheticNoResponse": false
+     }
+    ]
+   },
+   "verdict": {
+    "ok": false,
+    "markerTotal": 0,
+    "mainPromptMarker": 0,
+    "otherBlocksMarker": 0,
+    "mainPromptLen": 5599,
+    "billingLine": true,
+    "identity": null
+   }
+  }
+ },
+ "duplicated": {
+  "resume-only": false,
+  "append-both-turns": false,
+  "resume-inline-control": false
+ },
+ "pass": true,
+ "resumeTimeAppendIgnored": true,
+ "duplicatedAcrossTurns": 1,
+ "promptSnapshot": {
+  "firstTurn": [
+   {
+    "systemBlocks": 9,
+    "systemLens": [
+     1229,
+     94,
+     357,
+     520,
+     163,
+     2084,
+     579,
+     280,
+     277
+    ],
+    "systemMarkerCounts": [
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0
+    ],
+    "tools": 0,
+    "keys": [
+     "type",
+     "systemPrompt",
+     "contextRendering"
+    ]
+   },
+   {
+    "systemBlocks": 9,
+    "systemLens": [
+     1229,
+     94,
+     357,
+     520,
+     163,
+     2084,
+     579,
+     280,
+     277
+    ],
+    "systemMarkerCounts": [
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0
+    ],
+    "tools": 11,
+    "keys": [
+     "type",
+     "systemPrompt",
+     "tools",
+     "cliPrefix",
+     "systemTurns",
+     "keptReminders",
+     "contextRendering"
+    ]
+   }
+  ],
+  "resumeTurn": [
+   {
+    "systemBlocks": 9,
+    "systemLens": [
+     1229,
+     94,
+     357,
+     520,
+     163,
+     2084,
+     579,
+     280,
+     277
+    ],
+    "systemMarkerCounts": [
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0
+    ],
+    "tools": 0,
+    "keys": [
+     "type",
+     "systemPrompt",
+     "contextRendering"
+    ]
+   },
+   {
+    "systemBlocks": 9,
+    "systemLens": [
+     1229,
+     94,
+     357,
+     520,
+     163,
+     2084,
+     579,
+     280,
+     277
+    ],
+    "systemMarkerCounts": [
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0
+    ],
+    "tools": 11,
+    "keys": [
+     "type",
+     "systemPrompt",
+     "tools",
+     "cliPrefix",
+     "systemTurns",
+     "keptReminders",
+     "contextRendering"
+    ]
+   }
+  ],
+  "bothTurns": [
+   {
+    "systemBlocks": 10,
+    "systemLens": [
+     1229,
+     94,
+     357,
+     520,
+     163,
+     2084,
+     579,
+     280,
+     277,
+     54
+    ],
+    "systemMarkerCounts": [
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     1
+    ],
+    "tools": 0,
+    "keys": [
+     "type",
+     "systemPrompt",
+     "contextRendering"
+    ]
+   },
+   {
+    "systemBlocks": 10,
+    "systemLens": [
+     1229,
+     94,
+     357,
+     520,
+     163,
+     2084,
+     579,
+     280,
+     277,
+     54
+    ],
+    "systemMarkerCounts": [
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     1
+    ],
+    "tools": 11,
+    "keys": [
+     "type",
+     "systemPrompt",
+     "tools",
+     "cliPrefix",
+     "systemTurns",
+     "keptReminders",
+     "contextRendering"
+    ]
+   }
+  ],
+  "bothTurnsResume": [
+   {
+    "systemBlocks": 10,
+    "systemLens": [
+     1229,
+     94,
+     357,
+     520,
+     163,
+     2084,
+     579,
+     280,
+     277,
+     54
+    ],
+    "systemMarkerCounts": [
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     1
+    ],
+    "tools": 0,
+    "keys": [
+     "type",
+     "systemPrompt",
+     "contextRendering"
+    ]
+   },
+   {
+    "systemBlocks": 10,
+    "systemLens": [
+     1229,
+     94,
+     357,
+     520,
+     163,
+     2084,
+     579,
+     280,
+     277,
+     54
+    ],
+    "systemMarkerCounts": [
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     1
+    ],
+    "tools": 11,
+    "keys": [
+     "type",
+     "systemPrompt",
+     "tools",
+     "cliPrefix",
+     "systemTurns",
+     "keptReminders",
+     "contextRendering"
+    ]
+   }
+  ]
+ },
+ "digest": "c8fcfa2f0c9847b2"
+}

@@ -3,6 +3,7 @@
 //   node tests/e2e/cc-probe/run-gate.mjs <gate>
 //   gate ∈ baseline | append | restricted | schema | streamjson | attachments | session | resume
 //        | session-kill | tool-interrupt | tool-interrupt-builtin | restricted-* | unrestricted-* | history-first
+//        | resume-streamjson (T7) | session-append / resume-append / resume-append-inline (T8) | attachments-mcp (T10)
 // env knobs (all optional): CC_PROBE_TAG (evidence filename suffix), CC_PROBE_PROMPT, CC_PROBE_MODEL,
 //   CC_PROBE_HOME / CC_PROBE_SESSION (reuse an earlier probe home), CC_PROBE_KEEP=1, CC_PROBE_OUT.
 import { spawn } from "node:child_process";
@@ -41,8 +42,8 @@ const toolProbe = gate === "restricted-read-creds" ? { name: "Read", input: { fi
 // the MCP gate needs a real (fake) MCP server so the binary issues mcp__caller__lookup and parks on the result
 const mcpLog = join(home, "fake-mcp.log");
 const mcpConfig = join(home, "mcp-config.json");
-const needsMcp = gate === "tool-interrupt" || gate === "resume-mcp";
-if (gate === "tool-interrupt" || gate === "resume-mcp") {
+const needsMcp = gate === "tool-interrupt" || gate === "resume-mcp" || gate === "attachments-mcp";
+if (gate === "tool-interrupt" || gate === "resume-mcp" || gate === "attachments-mcp") {
   writeFileSync(mcpConfig, JSON.stringify({ mcpServers: { caller: { command: process.execPath, args: [resolve("tests/e2e/cc-probe/fake-mcp-server.mjs")], env: { FAKE_MCP_LOG: mcpLog } } } }));
 }
 let killed = false, killedAt = null, killReason = null;
@@ -66,6 +67,13 @@ switch (gate) {
     JSON.stringify({ type: "user", message: { role: "user", content: [{ type: "text", text: "Second turn: what did you say before?" }] } }),
   ]; break;
   case "session": args = [...common, "--session-id", SESSION, PROMPT]; break; // G4 step 1: persisted session
+  case "session-append": appendFile = join(home, "caller-system.txt"); writeFileSync(appendFile, "CALLER-SYSTEM-MARKER-7f3a: always answer in uppercase."); args = [...common, "--session-id", SESSION, "--append-system-prompt-file", appendFile, PROMPT]; break; // T8 step 1: session created WITH the append file
+  case "resume-streamjson": args = [...common, "--resume", SESSION, "--input-format", "stream-json"]; stdinLines = [
+    // T7: the whole next turn arrives on stdin (node canonical continuation shape), not as a positional prompt
+    JSON.stringify({ type: "user", message: { role: "user", content: [{ type: "text", text: process.env.CC_PROBE_STDIN_TEXT ?? "T7-TURN2: what did I ask before?" }] } }),
+  ]; break; // G4/WP3 step 2: resume + stream-json stdin
+  case "resume-append": appendFile = join(home, "caller-system.txt"); writeFileSync(appendFile, "CALLER-SYSTEM-MARKER-7f3a: always answer in uppercase."); args = [...common, "--resume", SESSION, "--append-system-prompt-file", appendFile, PROMPT]; break; // T8 step 2: resume WITH the append file again
+  case "resume-append-inline": args = [...common, "--resume", SESSION, "--append-system-prompt", "INLINE-SYSTEM-MARKER-9b21: always answer in lowercase.", PROMPT]; break; // T8 control: inline append on resume (different flag/content)
   case "session-kill": args = [...common, "--session-id", SESSION, PROMPT]; break; // G4 step 1b: SIGKILL right after first assistant event
   case "session-kill-midflight": args = [...common, "--session-id", SESSION, PROMPT]; break; // G4 step 1c: SIGKILL with REQ0 unanswered 
   case "resume": args = [...common, "--resume", SESSION, PROMPT]; break;
@@ -74,6 +82,7 @@ switch (gate) {
   case "tool-interrupt": args = [...common, "--session-id", SESSION, "--strict-mcp-config", "--mcp-config", mcpConfig, "--permission-prompts", "none", PROMPT, "--allowedTools", "mcp__caller__lookup"]; break; // G5: caller tool parked
   case "tool-interrupt-builtin": args = [...common, "--session-id", SESSION, "--permission-prompts", "none", PROMPT, "--allowedTools", "Bash"]; break; // G5: built-in tool running
   case "attachments": args = [...common, PROMPT]; break;
+  case "attachments-mcp": args = [...common, "--strict-mcp-config", "--mcp-config", mcpConfig, "--permission-prompts", "none", PROMPT, "--allowedTools", "mcp__caller__lookup"]; break; // T10: attachments ON + a fake MCP server (does the beta follow the MCP tool set or the attachments path?) // NB: --allowedTools is variadic — the prompt must come first
   case "attachments-email": args = [...common, PROMPT]; break; // CC_PROBE_EMAIL set: does `# userEmail` travel with OAuth login?
   case "attachments-apikey-email": args = [...common, PROMPT]; break; // CC_PROBE_EMAIL set + ANTHROPIC_AUTH_TOKEN, no OAuth credentials: platform-key login // attachments ON (no CLAUDE_CODE_DISABLE_ATTACHMENTS) to see userEmail/Environment shape
   case "restricted-read-creds": case "restricted-read-hostname": case "restricted-bash": args = [...common, "--restricted", "--permission-prompts", "none", "Read the file I mention."]; break;
@@ -142,7 +151,8 @@ const describe = (r) => {
     betaList: String(r.headers?.["anthropic-beta"] ?? "").split(",").map((s) => s.trim()).filter(Boolean),
     authScheme: auth.startsWith("Bearer ") ? "bearer" : r.headers?.["x-api-key"] ? "x-api-key" : "none",
     topLevelKeys: Object.keys(b),
-    system: sys.map((s) => ({ len: textOf(s).length, head: textOf(s).slice(0, 160), cache_control: s?.cache_control ?? null, hasMarker: textOf(s).includes("CALLER-SYSTEM-MARKER") })),
+    system: sys.map((s) => ({ len: textOf(s).length, head: textOf(s).slice(0, 160), cache_control: s?.cache_control ?? null, hasMarker: textOf(s).includes("CALLER-SYSTEM-MARKER"), markerCount: (textOf(s).match(/(?:CALLER|INLINE)-SYSTEM-MARKER/g) ?? []).length, tailDigest: sha(textOf(s).slice(-160)) })),
+    markerTotal: (sysTexts.join("\u0000").match(/(?:CALLER|INLINE)-SYSTEM-MARKER/g) ?? []).length,
     systemDigest: sha(sysTexts.join("\u0000")),
     systemBlockDigests: sysTexts.map(sha),
     identitySentence: (sysTexts.join("\n").match(IDENTITY) ?? [null])[0],
@@ -195,6 +205,22 @@ if (needsMcp) {
   evidence.transcriptPresent = lines.length > 0 ? (() => { try { return readLog(transcript).split("\n").filter(Boolean).length; } catch { return 0; } })() : 0;
 }
 evidence.digest = createHash("sha256").update(JSON.stringify({ requests: evidence.requests, otherEndpoints: evidence.otherEndpoints })).digest("hex").slice(0, 16);
+// T7/T8: what does the transcript itself persist? `prompt_snapshot` attachments are what `--resume` replays
+// (system prompt + tools pinned at session creation) — structure only (counts, lengths, marker hits, key names).
+const txPath = join(cfg, "projects", String(work).replace(/[^a-zA-Z0-9]/g, "-"), `${SESSION}.jsonl`);
+const txLines = readLog(txPath).split("\n").filter(Boolean).map((l) => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
+const snapshots = txLines.map((l) => l.attachment).filter((a) => a && a.type === "prompt_snapshot");
+const blockText = (b) => (typeof b === "string" ? b : String(b?.text ?? ""));
+evidence.transcript = {
+  present: txLines.length > 0, lines: txLines.length,
+  lineTypes: [...new Set(txLines.map((l) => l.type))],
+  promptSnapshots: snapshots.map((s) => ({
+    systemBlocks: (s.systemPrompt ?? []).length,
+    systemLens: (s.systemPrompt ?? []).map((b) => blockText(b).length),
+    systemMarkerCounts: (s.systemPrompt ?? []).map((b) => (blockText(b).match(/(?:CALLER|INLINE)-SYSTEM-MARKER/g) ?? []).length),
+    tools: (s.tools ?? []).length, keys: Object.keys(s),
+  })),
+};
 writeFileSync(join(outDir, tag ? `${gate}-${tag}.json` : `${gate}.json`), scrub(JSON.stringify(evidence, null, 1)));
 cap.save(join(home, `raw-capture-${gate}${tag ? "-" + tag : ""}.json`));
 console.log(JSON.stringify({ gate, tag: tag || null, exitCode: code, killed, killReason, requests: cap.requests.length, messagesCalls: cap.requests.filter((r) => r.url.startsWith("/v1/messages")).length, other: evidence.otherEndpoints, connects: cap.connects.length, init: initInfo, stdoutTypes, stderrTail: evidence.stderrTail, digest: evidence.digest }, null, 1));
