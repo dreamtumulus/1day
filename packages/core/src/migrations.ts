@@ -321,6 +321,8 @@ const MIGRATIONS: Array<{ version: number; up: (d: DatabaseSync, log: Log) => vo
   { version: 33, up: migration33 },
   { version: 34, up: migration34 },
   { version: 35, up: migration35 },
+  { version: 36, up: migration36 },
+  { version: 37, up: migration37 },
 ];
 
 // 上号员令牌（独立鉴权的上号站点 /onboard）：admin 签发，绑定目标节点；
@@ -1002,4 +1004,42 @@ function migration35(d: DatabaseSync, log: Log): void {
       BEGIN SELECT RAISE(ABORT, 'key policy history is append-only'); END;
   `);
   log("migration 35: key_policy_events (judge flips, append-only)");
+}
+
+// Telemetry evidence (spec §6.4 / WP6): what proves an account's native Claude Code telemetry is accepted upstream.
+function migration36(d: DatabaseSync, log: Log): void {
+  d.exec(`
+    CREATE TABLE IF NOT EXISTS telemetry_evidence (
+      id TEXT PRIMARY KEY,
+      account_id TEXT,
+      profile_id TEXT NOT NULL,
+      node_id TEXT,
+      proxy_id TEXT,
+      native_session_id TEXT,
+      cc_version TEXT,
+      endpoint TEXT,
+      status INTEGER,
+      source TEXT NOT NULL CHECK (source IN ('real', 'controlled')),
+      observed_at TEXT NOT NULL DEFAULT (${SQL_NOW}),
+      digest TEXT,
+      expires_at TEXT,
+      note TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_telemetry_evidence_account ON telemetry_evidence(account_id, profile_id, observed_at);
+  `);
+  log("migration 36: telemetry_evidence (real / controlled rows; secondary is computed)");
+}
+
+// Organization budgets and circuit breaker (spec WP7): additive columns on upstream_teams; usage_logs index by organization.
+function migration37(d: DatabaseSync, log: Log): void {
+  addColumns(d, log, "upstream_teams", [
+    ["daily_token_budget", "INTEGER"],
+    ["daily_cost_budget", "REAL"],
+    ["max_concurrency", "INTEGER"],
+    ["suspended_reason", "TEXT"],
+    ["suspended_until", "TEXT"],
+    ["last_error_code", "TEXT"],
+  ]);
+  d.exec("CREATE INDEX IF NOT EXISTS idx_usage_team_time ON usage_logs(team_id, created_at)");
+  log("migration 37: upstream_teams budgets / suspension fields; idx_usage_team_time");
 }

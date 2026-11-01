@@ -1069,6 +1069,9 @@ async function proxyRequest(req: FastifyRequest, reply: FastifyReply, format: Cl
                 stickyKey: sKey,
                 isolation,
                 signal: ctx.abort.signal,
+                // Canonical worker (spec WP2): the key's effective workerMode (override ?? judge ?? legacy) AND the
+                // three-state master switch for this key group / account (铁律 2).
+                canonical: caller.policy.workerMode === "canonical" && featureFor("worker_canonical", { groupId: caller.groupId, accountId: account.id }),
               });
               if (!res) break; // no worker-capable node accepted: infra state, try next account without counting
             } else {
@@ -1322,13 +1325,15 @@ async function proxyRequest(req: FastifyRequest, reply: FastifyReply, format: Cl
 
   if (requestError) {
     const tooLarge = requestError.nodeCode === "spec_too_large";
-    // Node-side codes (spec_too_large, bad_spec …) name the node; platform-side ones (console_*, empty_prompt) carry their own text.
-    const fromNode = !requestError.nodeCode.startsWith("console_") && requestError.nodeCode !== "empty_prompt";
+    // Canonical worker refusals (spec WP2/WP3) keep their own code: the client can route the turn elsewhere.
+    const canonicalCode = requestError.nodeCode === "history_import_unsupported" ? 409 : requestError.nodeCode === "canonical_requires_persistent_session" ? 400 : null;
+    // Node-side codes (spec_too_large, bad_spec …) name the node; platform-side ones (console_*, empty_prompt, canonical) carry their own text.
+    const fromNode = !requestError.nodeCode.startsWith("console_") && requestError.nodeCode !== "empty_prompt" && canonicalCode === null;
     fail(
       ctx,
       lastAccount,
-      tooLarge ? 413 : 400,
-      tooLarge ? "request_too_large" : "invalid_request",
+      tooLarge ? 413 : canonicalCode ?? 400,
+      tooLarge ? "request_too_large" : canonicalCode ? requestError.nodeCode : "invalid_request",
       tooLarge ? `Request body is too large for the node egress path (${requestError.message}); Anthropic's own limit is 32 MB.` : fromNode ? `The node rejected the request: ${requestError.message}` : requestError.message,
       "invalid_request_error",
     );

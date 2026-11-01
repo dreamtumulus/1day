@@ -1,5 +1,5 @@
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -171,6 +171,8 @@ export interface CcWorkerManagerOptions {
    */
   runAsUser?: string | null;
   tools?: string[];
+  /** Canonical worker (spec WP2): accept `mode:"canonical"` opens. Env CC_WORKER_CANONICAL=1. Default off. */
+  canonical?: boolean;
   /**
    * Root for per-account config dirs and per-session scratch dirs. When workers
    * are privilege-dropped this must be traversable by that user, so the default
@@ -218,6 +220,8 @@ export class CcWorkerManager {
   private readonly mcp: McpServer;
   readonly runAs: RunAs | null;
   readonly tools: string[];
+  /** spec WP2: canonical opens accepted (env CC_WORKER_CANONICAL=1). */
+  readonly canonicalEnabled: boolean;
   readonly workerRoot: string;
   private readonly sessionsDir: string;
   private readonly teamUsers = new Map<string, RunAs>();
@@ -282,6 +286,7 @@ export class CcWorkerManager {
     this.runAs = resolveRunAs(opts.runAsUser === undefined ? (process.env.CC_WORKER_USER ?? "ccworker") : (opts.runAsUser ?? undefined));
     const toolsEnv = process.env.CC_WORKER_TOOLS;
     this.tools = opts.tools ?? (toolsEnv ? toolsEnv.split(",").map((t) => t.trim()).filter(Boolean) : []);
+    this.canonicalEnabled = opts.canonical ?? process.env.CC_WORKER_CANONICAL === "1";
     this.workerRoot = opts.workerRoot ?? process.env.CC_WORKER_ROOT ?? (this.runAs ? "/var/lib/1dayapi-cc-worker" : opts.dataDir);
     fs.mkdirSync(this.workerRoot, { recursive: true, mode: 0o711 });
     fs.mkdirSync(path.join(this.workerRoot, "cc-accounts"), { recursive: true, mode: 0o711 });
@@ -389,6 +394,7 @@ export class CcWorkerManager {
     active: number;
     queued: number;
     pool: { live: number; idle: number; busy: number; awaitingTools: number; maxLive: number; rssMb: number; evictions: Record<string, number> };
+    canonical: { enabled: boolean; profiles: string[] };
   } {
     let busy = 0;
     let awaiting = 0;
@@ -405,6 +411,7 @@ export class CcWorkerManager {
       maxConcurrency: this.maxConcurrency,
       active: this.sessions.size,
       queued: this.queue.length,
+      canonical: { enabled: this.canonicalEnabled, profiles: this.canonicalEnabled && this.claudeVersion && /\d+\.\d+\.\d+/.test(this.claudeVersion) ? [`cc-${/\d+\.\d+\.\d+/.exec(this.claudeVersion)![0]}-restricted`] : [] },
       pool: { live: this.procs.size, idle: this.procs.size - busy - awaiting, busy, awaitingTools: awaiting, maxLive: this.maxLive, rssMb: Math.round(rss / 1048576), evictions: { ...this.evictions } },
     };
   }
@@ -737,6 +744,12 @@ export class CcWorkerManager {
     }
     if (typeof msg.cred?.accessToken !== "string" || !msg.cred.accessToken) return this.reject(msg.sessionId, "bad_credential");
     if (this.sessions.has(msg.sessionId)) return this.reject(msg.sessionId, "duplicate_session");
+    // Canonical worker (spec WP2): only when the operator enabled it on this node (capability canonical_v1); a
+    // supplied native session id must be a UUID (it becomes `--session-id`, i.e. a file name under the config dir).
+    if (msg.mode === "canonical") {
+      if (!this.canonicalEnabled) return this.reject(msg.sessionId, "canonical_unsupported");
+      if (msg.nativeSessionId !== undefined && !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(msg.nativeSessionId)) return this.reject(msg.sessionId, "bad_native_session_id");
+    }
 
     if (msg.isolation !== undefined && !validIsolation(msg.isolation)) return this.reject(msg.sessionId, "invalid_isolation");
     if (this.isolation.teamRequired && !msg.isolation) return this.reject(msg.sessionId, "isolation_required");
@@ -891,8 +904,9 @@ export class CcWorkerManager {
       // The caller's system prompt replaces Claude Code's own identity/tool
       // instructions: with no tools, the default prompt made the model write
       // <invoke>…</invoke> markup into customer answers. File, not argv (size, /proc).
+      const canonical = msg.mode === "canonical";
       let systemPromptFile: string | null = null;
-      if (typeof msg.systemPrompt === "string" && msg.systemPrompt) {
+      if (!canonical && typeof msg.systemPrompt === "string" && msg.systemPrompt) {
         systemPromptFile = path.join(workDir, "system-prompt.md");
         fs.writeFileSync(systemPromptFile, msg.systemPrompt, { mode: 0o600 });
         this.chownTree(workDir, identity);
@@ -913,6 +927,15 @@ export class CcWorkerManager {
         fs.writeFileSync(mcpConfigFile, JSON.stringify({ mcpServers: { caller: { type: "http", url } } }), { mode: 0o600 });
         this.chownTree(workDir, identity);
       }
+      // Canonical (spec WP2, invariants I1/I3): the native system prompt stays; the caller's system text is appended
+      // (G1: lands at the tail of the main prompt block, billing header and identity sentence untouched).
+      let appendFile: string | null = null;
+      if (canonical && typeof msg.appendSystemPrompt === "string" && msg.appendSystemPrompt) {
+        appendFile = path.join(workDir, "caller-system.md");
+        fs.writeFileSync(appendFile, msg.appendSystemPrompt, { mode: 0o600 });
+        this.chownTree(workDir, identity);
+      }
+      const nativeSessionId = canonical ? (typeof msg.nativeSessionId === "string" && msg.nativeSessionId ? msg.nativeSessionId : randomUUID()) : null;
       const effort = typeof msg.effort === "string" && ["low", "medium", "high", "xhigh", "max"].includes(msg.effort) ? msg.effort : null;
       const args = [
         ...(this.opts.claudeArgsPrefix ?? []),
@@ -925,10 +948,22 @@ export class CcWorkerManager {
         "--verbose",
         // Customer prompts drive this process: no built-in tools unless the node
         // operator whitelists some (CC_WORKER_TOOLS), and no transcript on disk.
-        "--tools",
-        ...(this.tools.length ? this.tools : [""]),
-        "--no-session-persistence",
-        ...(systemPromptFile ? ["--system-prompt-file", systemPromptFile] : []),
+        ...(canonical
+          ? [
+              // Native session on disk (transcript under the account's CLAUDE_CONFIG_DIR, TTL by the node cleanup timer);
+              // `--restricted` keeps file tools inside cwd and drops Bash (G6/G7); no permission prompts in -p mode.
+              "--session-id", nativeSessionId!,
+              "--restricted", "--permission-prompts", "none",
+              ...(msg.builtInToolProfile === "tools-disabled-canonical" ? ["--tools", ""] : []),
+              ...(appendFile ? ["--append-system-prompt-file", appendFile] : []),
+              ...(msg.jsonSchema && typeof msg.jsonSchema === "object" ? ["--json-schema", JSON.stringify(msg.jsonSchema)] : []),
+            ]
+          : [
+              "--tools",
+              ...(this.tools.length ? this.tools : [""]),
+              "--no-session-persistence",
+              ...(systemPromptFile ? ["--system-prompt-file", systemPromptFile] : []),
+            ]),
         ...(mcpConfigFile ? ["--mcp-config", mcpConfigFile, "--strict-mcp-config", "--allowedTools", "mcp__caller"] : []),
         // Extended thinking on the client's request: the budget flag alone does not turn thinking on in -p mode,
         // the session setting does (plus MAX_THINKING_TOKENS in env below for older code paths).
@@ -998,7 +1033,8 @@ export class CcWorkerManager {
       // (MAX_THINKING_TOKENS=0 → thinking {type:"disabled"}). Otherwise the model spends the client's
       // max_tokens on reasoning they never see and are billed for (Haiku 4.5: 60–200 hidden tokens per
       // short answer, 2026-10-17). Never together with --effort: Claude Code rejects effort while thinking is off.
-      else if (!effort) env.MAX_THINKING_TOKENS = "0";
+      // Canonical keeps Claude Code's own default (adaptive thinking): the request shape must be the native one (I1).
+      else if (!effort && !canonical) env.MAX_THINKING_TOKENS = "0";
       // The client's max_tokens: Claude Code caps the API request with it (any positive value; it clamps to the
       // model's limit). The gateway ends the message at the first max_tokens stop and cancels the session, so
       // Claude Code's own "continue from where you left off" turn never runs.

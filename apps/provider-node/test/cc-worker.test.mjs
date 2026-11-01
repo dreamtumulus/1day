@@ -408,3 +408,40 @@ console.log("cc-worker: ALL PASSED");
   assert.equal(manager.activeSessions,0);
   manager.closeAll();fs.rmSync(dataDir,{recursive:true,force:true});
 }
+
+// ---- canonical worker (spec WP2): native identity kept, --restricted, native session, caller system appended ----
+{
+  const { manager, frames } = setup({ canonical: true });
+  manager.handleOpen(openMsg("s-canon", { mode: "canonical", appendSystemPrompt: "You are Acme's assistant.", nativeSessionId: "11111111-2222-4333-8444-555555555555", builtInToolProfile: "restricted-default" }));
+  await waitFor(() => framesFor(frames, "s-canon").some((f) => f.type === "cc_worker.close"));
+  const out = stdoutOf(frames, "s-canon");
+  const init = JSON.parse(out.split("\n").find((l) => l.includes('"subtype":"init"')));
+  const argv = init.argv;
+  for (const f of ["--restricted", "--permission-prompts", "--session-id", "--append-system-prompt-file", "--include-partial-messages"]) assert.ok(argv.includes(f), `canonical passes ${f}: ${argv.join(" ")}`);
+  for (const f of ["--tools", "--no-session-persistence", "--system-prompt-file"]) assert.ok(!argv.includes(f), `canonical never passes ${f}: ${argv.join(" ")}`);
+  assert.equal(init.systemPrompt, null, "the native system prompt is not replaced (I1)");
+  assert.ok(manager.stats().canonical.enabled);
+  assert.deepEqual(manager.stats().canonical.profiles, ["cc-2.1.312-restricted"]);
+  // tools-disabled variant adds --tools "" on top of --restricted
+  manager.handleOpen(openMsg("s-canon-nt", { mode: "canonical", builtInToolProfile: "tools-disabled-canonical" }));
+  await waitFor(() => framesFor(frames, "s-canon-nt").some((f) => f.type === "cc_worker.close"));
+  const init2 = JSON.parse(stdoutOf(frames, "s-canon-nt").split("\n").find((l) => l.includes('"subtype":"init"')));
+  assert.ok(init2.argv.includes("--tools") && init2.argv.includes("--restricted"));
+  // a malformed native session id is refused (it would become a file name)
+  manager.handleOpen(openMsg("s-canon-bad", { mode: "canonical", nativeSessionId: "../../etc" }));
+  await waitFor(() => framesFor(frames, "s-canon-bad").some((f) => f.type === "cc_worker.open_response"));
+  assert.deepEqual(framesFor(frames, "s-canon-bad").find((f) => f.type === "cc_worker.open_response"), { type: "cc_worker.open_response", sessionId: "s-canon-bad", accepted: false, reasonCode: "bad_native_session_id" });
+}
+// ---- canonical not enabled on the node: refused, never run as a legacy process (I9) ----
+{
+  const { manager, frames } = setup();
+  assert.equal(manager.canonicalEnabled, false, "default off (env CC_WORKER_CANONICAL unset)");
+  assert.equal(manager.stats().canonical.enabled, false);
+  manager.handleOpen(openMsg("s-canon-off", { mode: "canonical" }));
+  await waitFor(() => framesFor(frames, "s-canon-off").some((f) => f.type === "cc_worker.open_response"));
+  assert.equal(framesFor(frames, "s-canon-off").find((f) => f.type === "cc_worker.open_response").reasonCode, "canonical_unsupported");
+  // legacy opens unaffected
+  manager.handleOpen(openMsg("s-legacy"));
+  await waitFor(() => framesFor(frames, "s-legacy").some((f) => f.type === "cc_worker.close"));
+  assert.ok(JSON.parse(stdoutOf(frames, "s-legacy").split("\n").find((l) => l.includes('"subtype":"init"'))).argv.includes("--no-session-persistence"));
+}

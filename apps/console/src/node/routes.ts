@@ -256,6 +256,13 @@ export function registerNodeRoutes(app: FastifyInstance): void {
       model?: string;
       prompt?: string;
       systemPrompt?: string;
+      /** Canonical worker (spec WP2). */
+      mode?: string;
+      profileId?: string;
+      appendSystemPrompt?: string;
+      nativeSessionId?: string;
+      builtInToolProfile?: string;
+      jsonSchema?: unknown;
       thinkingBudget?: number;
       effort?: string;
       maxTokens?: number;
@@ -299,6 +306,16 @@ export function registerNodeRoutes(app: FastifyInstance): void {
         model: b.model,
         prompt: b.prompt,
         ...(typeof b.systemPrompt === "string" && b.systemPrompt ? { systemPrompt: b.systemPrompt } : {}),
+        ...(b.mode === "canonical"
+          ? {
+              mode: "canonical" as const,
+              ...(typeof b.profileId === "string" && b.profileId ? { profileId: b.profileId.slice(0, 64) } : {}),
+              ...(typeof b.appendSystemPrompt === "string" && b.appendSystemPrompt ? { appendSystemPrompt: b.appendSystemPrompt } : {}),
+              ...(typeof b.nativeSessionId === "string" && /^[0-9a-f-]{36}$/i.test(b.nativeSessionId) ? { nativeSessionId: b.nativeSessionId } : {}),
+              ...(b.builtInToolProfile === "tools-disabled-canonical" ? { builtInToolProfile: "tools-disabled-canonical" as const } : { builtInToolProfile: "restricted-default" as const }),
+              ...(b.jsonSchema && typeof b.jsonSchema === "object" ? { jsonSchema: b.jsonSchema as Record<string, unknown> } : {}),
+            }
+          : {}),
         ...(typeof b.thinkingBudget === "number" && b.thinkingBudget > 0 ? { thinkingBudget: Math.floor(b.thinkingBudget) } : {}),
         ...(typeof b.effort === "string" && ["low", "medium", "high", "xhigh", "max"].includes(b.effort) ? { effort: b.effort } : {}),
         ...(typeof b.maxTokens === "number" && b.maxTokens > 0 ? { maxTokens: Math.floor(b.maxTokens) } : {}),

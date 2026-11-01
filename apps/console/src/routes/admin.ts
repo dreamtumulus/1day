@@ -1809,7 +1809,7 @@ function validateSetting(key: SettingKey, v: string): void {
       return;
     }
     case "direct_cc_entrypoint_normalize": case "direct_strip_user_email": case "direct_cc_canonical_fields": case "worker_prompt_hide_platform_path":
-    case "direct_profile_strict": case "cc_client_response_profile": case "key_policy_auto":
+    case "direct_profile_strict": case "cc_client_response_profile": case "key_policy_auto": case "worker_canonical":
       // 铁律 2 three-state switches
       if (v !== "0" && v !== "canary" && v !== "1") bad("invalid_request", `${key} must be 0 | canary | 1`);
       return;

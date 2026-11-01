@@ -256,3 +256,20 @@ Claude Code 2.1.300 已具备做持久会话所需的全部开关（worker-01 �
   `[user]\n[tool_result for …]` 块只按结果 id 哈希、其它文本去掉 system-reminder 再哈希。gateway 单测 103。
   **统计口径**：`journalctl --since "HH:MM"` 按服务器本地时间（CEST）解析，之前几轮"切换后"统计混进了两小时旧进程日志；以后按 `_PID=<MainPID>` 过滤。
 
+
+## 8. canonical 模式（2026-11-01，spec WP2，`worker_canonical` 三态 + 节点 `CC_WORKER_CANONICAL=1` → capability `canonical_v1`）
+
+与 legacy 的差别（`apps/provider-node/src/cc-worker.ts` 分支、`apps/gateway/src/ccr/worker.ts canonicalTurn`）：
+
+| 项 | legacy（默认） | canonical |
+|---|---|---|
+| 系统提示词 | `--system-prompt-file` 替换为平台的 "API assistant" 文本 | **不替换**；客户 system（去掉其计费头行）用 `--append-system-prompt-file` 追加（G1：进主提示词块尾部） |
+| 历史 | 全量折叠成 `[user]/[assistant]` 转录喂入 | **不折叠**：fresh 只接受单条 user（原样 content 块）；多轮只能是活进程的 `continue`；否则 409 `history_import_unsupported`；continue 不带 `history` 回退（miss → `session_lost`，不会从折叠转录重启） |
+| 内置工具 | `--tools ""` | `--restricted --permission-prompts none`（G6/G7：文件工具限 cwd、无 Bash）；`tools-disabled-canonical` 档再加 `--tools ""`；内置工具的 tool_use/结果只被翻译器消费（`internalTools`），不下发、不当成客户的 tool_use 停止 |
+| 客户工具 | prompt 围栏模拟或 MCP | 一律 MCP（`mcp__caller__*`）；需 `ccr_worker_persistent=1`，否则 400 `canonical_requires_persistent_session` |
+| session | `--no-session-persistence` | `--session-id <uuid>`，transcript 落在账号 CLAUDE_CONFIG_DIR（节点清理定时器按天清），供 WP3 `--resume` |
+| thinking | 无请求则 `MAX_THINKING_TOKENS=0` | 保持 CC 默认（adaptive），I1 |
+| attachments | 关 | 仍关（`# Environment` 会带真实 scratch 路径，I2；合成 cwd 待 WP2 后续） |
+| 心跳 | — | `ccWorker.canonical = { enabled, profiles: ["cc-<ver>-restricted"] }` |
+
+计数：`canonical_worker_open_total{profile,result}`（`/health.counters`）。控制台只把 canonical open 派给声明 `canonical_v1` 的节点，旧 bundle 永不把它当 legacy 跑（I9）。

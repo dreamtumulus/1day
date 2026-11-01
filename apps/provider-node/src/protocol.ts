@@ -75,6 +75,8 @@ export interface ProviderHeartbeat {
     maxConcurrency: number;
     active: number;
     queued: number;
+    /** Canonical worker capability (spec WP2 §6.5): enabled by env CC_WORKER_CANONICAL=1; profiles the node's binary produces. */
+    canonical?: { enabled: boolean; profiles: string[] };
   };
 }
 
@@ -225,8 +227,23 @@ export interface CcWorkerOpen {
   accountId: string;
   isolation?: IsolationContext;
   model: string;
-  /** Folded prompt (translate.messagesToPrompt), passed as `claude -p`. */
+  /** Folded prompt (translate.messagesToPrompt), passed as `claude -p`. Canonical: placeholder when `content` carries the turn. */
   prompt: string;
+  /**
+   * Canonical worker (docs/canonical-implementation-spec-2026-11-01.md WP2): the node's own Claude Code runs with its
+   * native system prompt (never replaced), `--restricted` built-in tools, the caller's tools over MCP and native
+   * session persistence (`--session-id`). Absent / "legacy" = today's worker. Requires node capability canonical_v1.
+   */
+  mode?: "legacy" | "canonical";
+  profileId?: string;
+  /** Canonical: the caller's system text, appended with `--append-system-prompt-file` (G1); never `--system-prompt-file`. */
+  appendSystemPrompt?: string;
+  /** Canonical: UUID for `--session-id` (the native transcript the gateway may resume later, WP3). */
+  nativeSessionId?: string;
+  /** Canonical: `restricted-default` (G6 passed: --restricted set) or `tools-disabled-canonical` (--restricted + --tools ""). */
+  builtInToolProfile?: "restricted-default" | "tools-disabled-canonical";
+  /** Canonical: `--json-schema` (G8). */
+  jsonSchema?: Record<string, unknown>;
   /** System prompt replacing Claude Code's default (written to the scratch dir, `--system-prompt-file`). */
   systemPrompt?: string;
   /** Platform-side device id to seed a fresh config dir with (.claude.json userID); ignored when one exists. */

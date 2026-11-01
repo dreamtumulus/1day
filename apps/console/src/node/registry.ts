@@ -744,8 +744,15 @@ export type TunnelKind = "official_exit" | "http_egress" | "cc_worker";
 export interface CcWorkerParams {
   model: string;
   prompt: string;
-  /** Worker system prompt (replaces Claude Code's default; node passes it via --system-prompt-file). */
+  /** Worker system prompt (replaces Claude Code's default; node passes it via --system-prompt-file). Legacy only. */
   systemPrompt?: string;
+  /** Canonical worker (spec WP2): node runs its native Claude Code (requires node capability canonical_v1). */
+  mode?: "legacy" | "canonical";
+  profileId?: string;
+  appendSystemPrompt?: string;
+  nativeSessionId?: string;
+  builtInToolProfile?: "restricted-default" | "tools-disabled-canonical";
+  jsonSchema?: Record<string, unknown>;
   /** Extended thinking budget → node `--max-thinking-tokens`. */
   thinkingBudget?: number;
   /** Reasoning effort → node `--effort`. */
@@ -827,6 +834,9 @@ export async function openTunnel(
   if (!conn || signal?.aborted) return null;
   if (teamId && (!conn.capabilities?.includes("team_isolation_v1") || (conn.runtimeTeamId && conn.runtimeTeamId !== teamId))) return null;
   if (teamId && kind === "cc_worker" && process.env.REQUIRE_TEAM_UID_ISOLATION === "1" && !conn.capabilities?.includes("team_uid_isolation_v1")) return null;
+  // Canonical worker (spec WP2 §6.5): only a node that declared canonical_v1 (env CC_WORKER_CANONICAL=1) may take it;
+  // an older bundle must never run a canonical open as a legacy process (I9: no mixed modes).
+  if (kind === "cc_worker" && worker?.mode === "canonical" && !conn.capabilities?.includes("canonical_v1")) return null;
   if (!teamId && conn.runtimeTeamId) return null;
   if (isolation && !activeIsolation(isolation)) return null;
 
@@ -858,6 +868,16 @@ export async function openTunnel(
           model: worker!.model,
           prompt: worker!.prompt,
           ...(worker!.systemPrompt ? { systemPrompt: worker!.systemPrompt } : {}),
+          ...(worker!.mode === "canonical"
+            ? {
+                mode: "canonical",
+                ...(worker!.profileId ? { profileId: worker!.profileId } : {}),
+                ...(worker!.appendSystemPrompt ? { appendSystemPrompt: worker!.appendSystemPrompt } : {}),
+                ...(worker!.nativeSessionId ? { nativeSessionId: worker!.nativeSessionId } : {}),
+                ...(worker!.builtInToolProfile ? { builtInToolProfile: worker!.builtInToolProfile } : {}),
+                ...(worker!.jsonSchema ? { jsonSchema: worker!.jsonSchema } : {}),
+              }
+            : {}),
           ...(worker!.thinkingBudget ? { thinkingBudget: worker!.thinkingBudget } : {}),
           ...(worker!.effort ? { effort: worker!.effort } : {}),
           ...(worker!.maxTokens ? { maxTokens: worker!.maxTokens } : {}),

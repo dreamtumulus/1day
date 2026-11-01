@@ -799,6 +799,7 @@ export interface Settings {
   direct_profile_strict?: string;
   cc_client_response_profile?: string;
   key_policy_auto?: string;
+  worker_canonical?: string;
   history_policy_default?: string;
   history_policy_canary?: string;
   default_group_id: string;

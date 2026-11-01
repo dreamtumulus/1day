@@ -195,6 +195,7 @@ function SettingsForm({ initial, groups, onSaved }: { initial: Settings; groups:
                 ["direct_profile_strict", "directProfileStrict"],
                 ["cc_client_response_profile", "ccClientResponseProfile"],
                 ["key_policy_auto", "keyPolicyAuto"],
+                ["worker_canonical", "workerCanonical"],
               ] as const
             ).map(([key, label]) => (
               <Field key={key} label={t(`admin.settings.${label}`)} hint={t(`admin.settings.${label}Hint`)}>

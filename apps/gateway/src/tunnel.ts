@@ -450,8 +450,15 @@ export interface CcWorkerOpenRequest {
   isolation?: IsolationContext;
   model: string;
   prompt: string;
-  /** Worker system prompt (node: `--system-prompt-file`), replacing Claude Code's default identity. */
+  /** Worker system prompt (node: `--system-prompt-file`), replacing Claude Code's default identity. Legacy only. */
   systemPrompt?: string;
+  /** Canonical worker (spec WP2): node runs its native Claude Code (requires node capability canonical_v1). */
+  mode?: "legacy" | "canonical";
+  profileId?: string;
+  appendSystemPrompt?: string;
+  nativeSessionId?: string;
+  builtInToolProfile?: "restricted-default" | "tools-disabled-canonical";
+  jsonSchema?: Record<string, unknown>;
   /** Extended thinking budget (node: `--max-thinking-tokens`); 0/absent = Claude Code default. */
   thinkingBudget?: number;
   /** Reasoning effort (node: `--effort`), from the client's `effort` field when present. */
@@ -506,6 +513,16 @@ export async function openCcWorker(
         model: req.model,
         prompt: req.prompt,
         ...(req.systemPrompt ? { systemPrompt: req.systemPrompt } : {}),
+        ...(req.mode === "canonical"
+          ? {
+              mode: "canonical",
+              ...(req.profileId ? { profileId: req.profileId } : {}),
+              ...(req.appendSystemPrompt ? { appendSystemPrompt: req.appendSystemPrompt } : {}),
+              ...(req.nativeSessionId ? { nativeSessionId: req.nativeSessionId } : {}),
+              ...(req.builtInToolProfile ? { builtInToolProfile: req.builtInToolProfile } : {}),
+              ...(req.jsonSchema ? { jsonSchema: req.jsonSchema } : {}),
+            }
+          : {}),
         ...(req.thinkingBudget ? { thinkingBudget: req.thinkingBudget } : {}),
         ...(req.effort ? { effort: req.effort } : {}),
         ...(req.maxTokens ? { maxTokens: req.maxTokens } : {}),

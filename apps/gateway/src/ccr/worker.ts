@@ -9,15 +9,41 @@
 // worker-capable node / no_proxy_available / worker_overloaded) — the
 // candidate loop tries the next account without counting a failure.
 
-import { getSetting, sha256Hex, type AccountRow, type Credential, deleteTurnMemory, loadTurnMemory, saveTurnMemory, featureFor } from "@1dayapi/core";
+import { getSetting, sha256Hex, type AccountRow, type Credential, deleteTurnMemory, loadTurnMemory, saveTurnMemory, featureFor, CC_VERSION } from "@1dayapi/core";
 import { StreamDemand } from "../lifecycle.js";
 import { config } from "../config.js";
 import { TunnelRequestError, openCcWorker, type IsolationContext } from "../tunnel.js";
 import { SessionMemory, blockHash, blockTail, blockTails, diffContext, firstDiffOffset, planToolResult, planTurn, type TurnMemory, type TurnPlan } from "./session-memory.js";
-import { SessionTranslator, contentText, isSuggestionRequest, messagesToBlocks, messagesToBlocksWithRoles, messagesToPrompt, toolChoiceInstruction, workerSystemPrompt } from "./translate.js";
+import { SessionTranslator, callerSystemText, contentText, isSuggestionRequest, messagesToBlocks, messagesToBlocksWithRoles, messagesToPrompt, toolChoiceInstruction, workerSystemPrompt } from "./translate.js";
+import { bump } from "../metrics.js";
+import { randomUUID } from "node:crypto";
 import type { EventPayload } from "./types.js";
 
 type Json = Record<string, any>;
+
+/**
+ * Canonical worker turn (spec WP2, invariants I1 no replaced identity / I3 no folded history): what one request may
+ * send to the native process. `history_import_unsupported` = the request carries turns no live process holds (an
+ * external multi-turn history, or a tool round without a live session) — lane B imports nothing in R2 (G3 importer is
+ * WP3). The caller's system text is appended; the turn is the client's last user message, raw.
+ */
+export function canonicalTurn(body: Json, planMode: "fresh" | "continue" | "tool_result", hasLiveSession: boolean): { appendSystemPrompt: string; content: Json[] | null; error: { code: string; message: string } | null } {
+  const msgs: Json[] = Array.isArray(body.messages) ? body.messages : [];
+  const appendSystemPrompt = callerSystemText(body);
+  const last = msgs[msgs.length - 1];
+  const raw: Json[] = typeof last?.content === "string" ? [{ type: "text", text: last.content }] : Array.isArray(last?.content) ? last.content.filter((b: Json) => b && typeof b === "object" && b.type !== "tool_result") : [];
+  const hasToolResult = Array.isArray(last?.content) && last.content.some((b: Json) => b?.type === "tool_result");
+  if (planMode === "fresh" && msgs.length > 1) {
+    return { appendSystemPrompt, content: null, error: { code: "history_import_unsupported", message: "This key runs on the canonical Claude Code worker, which carries only conversations it started: the request brings earlier turns no live session holds (a history from another upstream, or a resumed conversation). Start a new conversation here (one user message) and keep the same conversation going; external history import is not available yet." } };
+  }
+  if (planMode === "fresh" && hasToolResult) {
+    return { appendSystemPrompt, content: null, error: { code: "history_import_unsupported", message: "This tool round belongs to a conversation no live canonical session holds; its tool_use cannot be continued here. Start the task again with a new independent question." } };
+  }
+  if (planMode === "tool_result" && !hasLiveSession) {
+    return { appendSystemPrompt, content: null, error: { code: "history_import_unsupported", message: "The canonical session holding this tool round is gone; start the task again." } };
+  }
+  return { appendSystemPrompt, content: planMode === "tool_result" ? null : raw, error: null };
+}
 
 export interface CcrWorkerInput {
   account: AccountRow;
@@ -32,6 +58,8 @@ export interface CcrWorkerInput {
   stickyKey?: string | null;
   isolation?: IsolationContext;
   signal?: AbortSignal;
+  /** Canonical worker (spec WP2): key workerMode=canonical and settings worker_canonical on for this key/account. */
+  canonical?: boolean;
 }
 
 /** Gateway-side memory of live node sessions (docs/worker-sessions.md §1), written through to core worker_turn_memory. */
@@ -116,8 +144,13 @@ export async function runCcrWorker(input: CcrWorkerInput): Promise<Response | nu
   const persistent = getSetting("ccr_worker_persistent") === "1" && !!input.stickyKey && !oneShot;
   const hasTools = Array.isArray(body.tools) && body.tools.length > 0;
   // Native tools (§3): only with a persistent process, which can hold the turn open across two client requests.
-  const nativeTools = persistent && hasTools && getSetting("ccr_worker_native_tools") === "1";
-  const systemPrompt = workerSystemPrompt(body, { nativeTools, hidePlatformPath: featureFor("worker_prompt_hide_platform_path", { accountId: account.id }) });
+  const canonical = input.canonical === true;
+  // Canonical: caller tools are always native (MCP); a tool round needs a live process to hold the turn across
+  // requests, so canonical with tools requires the persistent session pool.
+  if (canonical && hasTools && !persistent) throw new TunnelRequestError("canonical_requires_persistent_session", "This key runs on the canonical Claude Code worker; tool use there needs the persistent session pool (settings ccr_worker_persistent=1), which is off.");
+  const nativeTools = canonical ? hasTools : persistent && hasTools && getSetting("ccr_worker_native_tools") === "1";
+  // Legacy: the platform's replacement system prompt (I1 forbids it for canonical: the native identity stays).
+  const systemPrompt = canonical ? "" : workerSystemPrompt(body, { nativeTools, hidePlatformPath: featureFor("worker_prompt_hide_platform_path", { accountId: account.id }) });
   let prompt = messagesToPrompt(body, { omitSystem: true, omitTools: nativeTools });
   // Per-turn content blocks (cache-friendly, images in place); null for a bare single-turn request → plain prompt.
   const blocks = messagesToBlocks(body, { omitSystem: true, omitTools: nativeTools });
@@ -146,7 +179,7 @@ export async function runCcrWorker(input: CcrWorkerInput): Promise<Response | nu
   // The conversation root (first block) is part of the key: Claude Code subagents share the main thread's
   // session id, and interleaved on one key every turn of both missed the prefix (2026-10-23).
   const reuseKey = persistent
-    ? sha256Hex([account.id, input.stickyKey, input.upstreamModel, systemPrompt, JSON.stringify(body.tools ?? null), nativeTools ? "native" : "fence", `think:${thinkingBudget}:${thinkingWanted ? 1 : 0}`, `effort:${effort}`, `max:${maxTokens}`, `root:${blockHash(fullBlocks[0] ?? {})}`].join("|"))
+    ? sha256Hex([account.id, input.stickyKey, input.upstreamModel, canonical ? `canonical:${callerSystemText(body)}` : systemPrompt, JSON.stringify(body.tools ?? null), nativeTools ? "native" : "fence", `think:${thinkingBudget}:${thinkingWanted ? 1 : 0}`, `effort:${effort}`, `max:${maxTokens}`, `root:${blockHash(fullBlocks[0] ?? {})}`].join("|"))
     : null;
   // System-role blocks (per-turn-control) are fed in place but never hashed: later requests keep, rewrite or drop them.
   const persistentIdx: number[] = [];
@@ -191,9 +224,14 @@ export async function runCcrWorker(input: CcrWorkerInput): Promise<Response | nu
   // fresh / tool_result: the whole conversation.
   const echoAt = plan.mode === "continue" && mem ? persistentIdx[mem.hashes.length] ?? fullBlocks.length - 1 : -1;
   const content = reuseKey ? (plan.mode === "continue" ? (ephemeral ? fullBlocks.slice(echoAt + 1) : plan.content) : fullBlocks) : blocks;
+  // Canonical (I3): never the folded transcript — the raw last user turn (or nothing for a parked tool round);
+  // anything the live process does not hold is refused up front, not re-folded.
+  const canon = canonical ? canonicalTurn(body, plan.mode, !!mem && !!reuseKey) : null;
+  if (canon?.error) throw new TunnelRequestError(canon.error.code, canon.error.message);
+  const turnContent = canon ? canon.content : content;
   // The tool_choice instruction rides on this turn only: it is not part of the hashes the next request must echo.
-  const sendContent = content ? (toolChoice ? [...content, { type: "text", text: toolChoice }] : content) : null;
-  const sendPrompt = !sendContent && toolChoice ? `${prompt}\n\n${toolChoice}` : prompt;
+  const sendContent = turnContent ? (toolChoice ? [...turnContent, { type: "text", text: toolChoice }] : turnContent) : null;
+  const sendPrompt = canonical ? " " : !sendContent && toolChoice ? `${prompt}\n\n${toolChoice}` : prompt;
   const prevUsage = plan.mode === "fresh" ? null : (mem?.usage ?? null);
   const addUsage = (a: NonNullable<typeof prevUsage> | null, b: NonNullable<typeof prevUsage>) =>
     a ? { input_tokens: a.input_tokens + b.input_tokens, output_tokens: a.output_tokens + b.output_tokens, cache_read_input_tokens: a.cache_read_input_tokens + b.cache_read_input_tokens, cache_creation_input_tokens: a.cache_creation_input_tokens + b.cache_creation_input_tokens } : b;
@@ -237,7 +275,9 @@ export async function runCcrWorker(input: CcrWorkerInput): Promise<Response | nu
     // Continued / resumed turn: bill only the increment over what the process already reported.
     usageBaseline: plan.mode === "fresh" ? null : (mem?.usage ?? null),
     stopSequences,
-    transcriptGuard: true,
+    // Canonical: no folded transcript to guard, and the process's own --restricted tools are internal rounds.
+    transcriptGuard: !canonical,
+    internalTools: canonical,
     ...(toolDefs ? { toolNames: toolDefs.map((t) => t.name) } : {}),
   });
   const logGuard = (): void => {
@@ -249,6 +289,7 @@ export async function runCcrWorker(input: CcrWorkerInput): Promise<Response | nu
     isolation: input.isolation,
     prompt: sendPrompt,
     systemPrompt,
+    ...(canonical ? { mode: "canonical" as const, profileId: `cc-${CC_VERSION}-restricted`, appendSystemPrompt: canon!.appendSystemPrompt, nativeSessionId: randomUUID(), builtInToolProfile: "restricted-default" as const } : {}),
     ...(thinkingBudget > 0 ? { thinkingBudget } : {}),
     ...(effort ? { effort } : {}),
     ...(maxTokens > 0 ? { maxTokens } : {}),
@@ -256,7 +297,8 @@ export async function runCcrWorker(input: CcrWorkerInput): Promise<Response | nu
     ...(sendContent ? { content: sendContent } : {}),
     // continue: the node needs the whole conversation in hand in case its live process cannot
     // take the turn (busy / parked / gone); it must never start a process from the tail (10-22).
-    ...(plan.mode === "continue" ? { history: fullBlocks } : {}),
+    // Canonical: no history — a live-process miss must fail (session_lost), never restart from a folded transcript (I3/I9).
+    ...(plan.mode === "continue" && !canonical ? { history: fullBlocks } : {}),
     stream,
     cred: {
       accessToken: cred.accessToken,
@@ -270,9 +312,10 @@ export async function runCcrWorker(input: CcrWorkerInput): Promise<Response | nu
     if (err instanceof TunnelRequestError) throw err; // request-level: answered once by proxy.ts
     return null;
   });
+  if (canonical) bump("canonical_worker_open_total", { profile: `cc-${CC_VERSION}-restricted`, result: opened ? "accepted" : "no_node" });
   if (!opened) return null;
 
-  console.log(`[ccr-worker] ${input.requestId} on ${account.name} (session ${opened.sessionId}${reuseKey ? `, ${plan.mode} ${reuseKey.slice(0, 8)}${plan.mode === "continue" ? ` turn ${(plan.expectedTurn ?? 0) + 1}` : plan.reason ? ` (${plan.reason}, ${fullBlocks.length} blocks${ephemeral ? `, ${ephemeral} system` : ""})` : ""}` : oneShot ? ", one-shot suggestion" : ""})`);
+  console.log(`[ccr-worker] ${input.requestId} on ${account.name} (${canonical ? "canonical, " : ""}session ${opened.sessionId}${reuseKey ? `, ${plan.mode} ${reuseKey.slice(0, 8)}${plan.mode === "continue" ? ` turn ${(plan.expectedTurn ?? 0) + 1}` : plan.reason ? ` (${plan.reason}, ${fullBlocks.length} blocks${ephemeral ? `, ${ephemeral} system` : ""})` : ""}` : oneShot ? ", one-shot suggestion" : ""})`);
   const deadline = Date.now() + config.ccrSessionTimeoutMs;
   const startedAt = Date.now();
   const lines = new StreamJsonLines();

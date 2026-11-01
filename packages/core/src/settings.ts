@@ -73,6 +73,14 @@ export const SETTING_DEFAULTS = {
   cc_client_response_profile: "0",
   // Key 策略判断器（spec §6.2）：0 = 只记录建议（auto 层写入但不生效）；canary = 灰度组 Key 生效；1 = 全部生效。
   key_policy_auto: "0",
+  // 车道 B canonical 进程（spec WP2）总闸：开 → Key 生效 workerMode=canonical 的非直连请求由节点官方 Claude Code 以原生身份执行
+  // （--restricted、caller MCP、原生 session、追加式客户 system；不折叠历史、不替换主提示词）；节点需 CC_WORKER_CANONICAL=1。上游可见。
+  worker_canonical: "0",
+  // 遥测证据（spec §6.4 / WP6）：native-required 的 Key 开 canonical 会话前，账号 × profile 的证据等级必须 ≥ secondary，
+  // 否则跳过该账号（计 native_telemetry_unverified_total；无合格账号 → 503 native_telemetry_unverified）。
+  // 0 = 不要求（观察期：让健康天数先累积）；canary；1。secondary = profile 有 controlled 结构证据 + 账号连续 telemetry_health_days 天健康。
+  telemetry_evidence_required: "0",
+  telemetry_health_days: "7",
   direct_cc_version_pin: "2.1.312",
   // CCR 路径（worker / 云端会话）客户可见缓存 = 上游缓存 − 身份上下文基线（docs/ccr-supply.md §7.1）。
   // 基线 = 真 Claude Code 系统提示词 + 工具集的 token 数，按执行模式实测（worker 2026-10-16：16608–16777）；0 = 上游缓存全额计给客户。
