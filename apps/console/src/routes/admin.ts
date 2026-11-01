@@ -33,7 +33,9 @@ import {
   randomProbePrompt,
   readCredential,
   run,
-  setSetting,
+  settingsRevision,
+  updateSettings,
+  SettingsRevisionConflict,
   tx,
   validateAllowlistInput,
   type AccountRow,
@@ -45,7 +47,7 @@ import { importOAuthCredential } from "../onboard/jobs.js";
 import { parseAccountFields } from "../account-input.js";
 import { gatewayInFlight } from "../gateway-stats.js";
 import { probeWindow } from "../ccr/window-poll.js";
-import { enrichAccountProfile } from "../ccr/profile.js";
+import { enrichAccountProfile, validateAccountControlPlane } from "../ccr/profile.js";
 import {
   Where,
   bad,
@@ -1009,8 +1011,22 @@ export function registerAdminRoutes(app: FastifyInstance): void {
   app.post("/api/admin/accounts/:id/test", preOps, async (req) => {
     const { id } = req.params as { id: string };
     const a = loadAccount(id);
-    const result=await testAccount(a,str(body(req),"model"));
-    return { data:req.user!.role==='admin'?result:{...result,message:result.ok?"OK":"Account probe failed"} };
+    const b = body(req);
+    const mode = oneOf(b, "mode", ["profile", "inference"] as const) ?? (hasSubscriptionWindow(a) ? "profile" : "inference");
+    if (mode === "profile") {
+      if (!hasSubscriptionWindow(a)) bad("invalid_request", "Profile validation applies to Anthropic subscription accounts");
+      try {
+        const checked = await validateAccountControlPlane(a);
+        const result = { ok: true, statusCode: 200, latencyMs: 0, message: "Profile and roles validated without inference", validation: "profile" as const, profile: { email: checked.profile.email, subscriptionType: checked.profile.subscriptionType }, roles: checked.roles };
+        return { data: req.user!.role === "admin" ? result : { ...result, profile: undefined, roles: undefined } };
+      } catch (err) {
+        const result = { ok: false, statusCode: 0, latencyMs: 0, message: (err as Error).message, validation: "profile" as const };
+        return { data: req.user!.role === "admin" ? result : { ...result, message: "Account profile validation failed" } };
+      }
+    }
+    const result = await testAccount(a, str(b, "model"));
+    if (result.ok) run("UPDATE accounts SET last_inference_at = ? WHERE id = ?", nowIso(), id);
+    return { data: req.user!.role === "admin" ? { ...result, validation: "inference" as const } : { ...result, validation: "inference" as const, message: result.ok ? "OK" : "Account probe failed" } };
   });
 
   app.delete("/api/admin/accounts/:id", pre, async (req) => {
@@ -1563,25 +1579,39 @@ export function registerAdminRoutes(app: FastifyInstance): void {
 
   // ---------- settings ----------
 
-  app.get("/api/admin/settings", pre, async () => ({ data: getSettings() }));
+  app.get("/api/admin/settings", pre, async (_req, reply) => {
+    const revision = settingsRevision();
+    return reply.header("etag", `"settings-${revision}"`).send({ data: { ...getSettings(), _revision: revision } });
+  });
 
-  app.put("/api/admin/settings", pre, async (req) => {
+  app.put("/api/admin/settings", pre, async (req, reply) => {
     const b = body(req);
-    // 新号冷静期区间：min ≤ max（跨字段，按本次提交 + 现值合并后校验）。
+    const ifMatch = req.headers["if-match"];
+    const rawRevision = b._revision ?? (Array.isArray(ifMatch) ? ifMatch[0] : ifMatch)?.replace(/^W\//, "").replace(/^"?settings-(\d+)"?$/, "$1");
+    const expectedRevision = typeof rawRevision === "number" ? rawRevision : typeof rawRevision === "string" && /^\d+$/.test(rawRevision) ? Number(rawRevision) : NaN;
+    if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 1) bad("settings_revision_required", "Reload settings and send _revision or If-Match with the current settings revision", 428);
     if ("onboard_cooldown_min_sec" in b || "onboard_cooldown_max_sec" in b) {
       const lo = Number(b.onboard_cooldown_min_sec ?? getSetting("onboard_cooldown_min_sec"));
       const hi = Number(b.onboard_cooldown_max_sec ?? getSetting("onboard_cooldown_max_sec"));
       if (Number.isFinite(lo) && Number.isFinite(hi) && lo > hi) bad("invalid_request", "onboard_cooldown_min_sec must not exceed onboard_cooldown_max_sec");
     }
+    const values: Partial<Record<SettingKey, string>> = {};
     for (const key of SETTING_KEYS) {
       if (!(key in b)) continue;
       const v = b[key];
       const s = typeof v === "number" ? String(v) : typeof v === "string" ? v.trim() : null;
       if (s === null) bad("invalid_request", `${key} must be a string or number`);
       validateSetting(key, s);
-      setSetting(key, s);
+      values[key] = s;
     }
-    return { data: getSettings() };
+    let revision: number;
+    try {
+      revision = updateSettings(values, expectedRevision);
+    } catch (err) {
+      if (err instanceof SettingsRevisionConflict) bad("settings_revision_conflict", `Settings changed concurrently; reload revision ${err.actual} and review before saving`, 409);
+      throw err;
+    }
+    return reply.header("etag", `"settings-${revision}"`).send({ data: { ...getSettings(), _revision: revision } });
   });
 }
 

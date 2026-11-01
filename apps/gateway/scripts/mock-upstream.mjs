@@ -340,6 +340,8 @@ http
     const key = keyOf(req);
     const body = req.method === "POST" ? await readBody(req) : {};
     if (key === "mock-429") return json(res, 429, { error: { type: "rate_limit_error", message: "mock rate limited" } }, { "retry-after": "30" });
+    if (key === "mock-request-429") return json(res, 429, { error: { type: "rate_limit_error", code: "claude_code_version_too_old", message: "Claude Code 2.1.1 does not support this model; a newer client is required" } });
+    if (key === "mock-model-429") return json(res, 429, { error: { type: "rate_limit_error", details: { error_code: "credits_required" }, message: "model quota exhausted; credits required" } }, { "retry-after": "45" });
     if (key === "mock-window-429") {
       const s = Math.floor(Date.now() / 1000);
       return json(res, 429, { type: "error", error: { type: "rate_limit_error", message: "mock 5h window exhausted" } }, {

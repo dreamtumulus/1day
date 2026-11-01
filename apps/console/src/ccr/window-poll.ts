@@ -1,9 +1,8 @@
 import { createHash } from "node:crypto";
 import { setTimeout as wait } from "node:timers/promises";
 import {
-  CC_AUX_ACCEPT,
-  CC_AUX_UA,
   CCR,
+  oauthUsageHeaders,
   accountBaseUrl,
   all,
   canRefresh,
@@ -53,15 +52,9 @@ function exitKey(a: AccountRow): string {
   return p?.exit_ip ? `ip:${p.exit_ip}` : `proxy:${a.bound_proxy_id}`;
 }
 
-// 对齐真实 CC 的 usage 调用（bundle：axios 辅助函数，只有 Authorization + UA
-// claude-code/<ver> + axios 默认 Accept；不发不锈钢遥测头/anthropic-beta ——
-// docs/claude-code-compat.md §8）。多发的头反而是异常指纹。
+// Auxiliary calls never inherit the inference stainless/beta header set.
 function probeHeaders(accessToken: string): Record<string, string> {
-  return {
-    authorization: `Bearer ${accessToken}`,
-    "user-agent": CC_AUX_UA,
-    accept: CC_AUX_ACCEPT,
-  };
+  return oauthUsageHeaders(accessToken);
 }
 
 /**

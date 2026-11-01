@@ -1220,20 +1220,24 @@ interface TestResult {
   model?: string;
   message: string;
   nodeId?: string | null;
+  validation?: "profile" | "inference";
 }
 
 function TestModal({ account, nodeNames, onClose }: { account: AdminAccount | null; nodeNames: Map<string, string>; onClose: () => void }) {
   const { t } = useCT();
   const [model, setModel] = useState("");
+  const [mode, setMode] = useState<"profile" | "inference">("profile");
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<TestResult | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const subscription = account?.type === "oauth" && account.platform === "anthropic";
 
   const close = () => {
     if (busy) return;
     setResult(null);
     setError(null);
     setModel("");
+    setMode("profile");
     onClose();
   };
 
@@ -1243,7 +1247,7 @@ function TestModal({ account, nodeNames, onClose }: { account: AdminAccount | nu
     setError(null);
     setResult(null);
     try {
-      setResult(await api.post<TestResult>(`/api/admin/accounts/${account.id}/test`, model.trim() ? { model: model.trim() } : {}));
+      setResult(await api.post<TestResult>(`/api/admin/accounts/${account.id}/test`, { mode: subscription ? mode : "inference", ...(mode === "inference" && model.trim() ? { model: model.trim() } : {}) }));
     } catch (e) {
       setError(errMessage(e));
     } finally {
@@ -1274,9 +1278,16 @@ function TestModal({ account, nodeNames, onClose }: { account: AdminAccount | nu
             {t("admin.accounts.testNodeHint")}
           </p>
         )}
-        <Field label={`${t("admin.accounts.testModel")} (${t("common.optional")})`} hint={t("admin.accounts.testModelHint")}>
-          <Input value={model} onChange={(e) => setModel(e.target.value)} className="font-mono" placeholder={account?.models.find((m) => !m.includes("*")) ?? ""} />
-        </Field>
+        {subscription && (
+          <Field label={t("admin.accounts.testMode")}>
+            <Select value={mode} onChange={(e) => setMode(e.target.value as "profile" | "inference")} options={[{ value: "profile", label: t("admin.accounts.testModeProfile") }, { value: "inference", label: t("admin.accounts.testModeInference") }]} />
+          </Field>
+        )}
+        {(!subscription || mode === "inference") && (
+          <Field label={`${t("admin.accounts.testModel")} (${t("common.optional")})`} hint={t("admin.accounts.testModelHint")}>
+            <Input value={model} onChange={(e) => setModel(e.target.value)} className="font-mono" placeholder={account?.models.find((m) => !m.includes("*")) ?? ""} />
+          </Field>
+        )}
         {error && <p className="text-[13px] text-error">{error}</p>}
         {result && (
           <div

@@ -3,6 +3,7 @@ import { db, one, run, tx } from "./db.js";
 import { canonicalModelId, computeCost, getModelEntry, validateTokenUsage, type BasicPrices, type TokenUsage } from "./models.js";
 import { q8 } from "./money.js";
 import { nowIso } from "./time.js";
+import type { UpstreamErrorScope } from "./upstream-error.js";
 
 // Settlement (docs/v3-design.md §7.4): one IMMEDIATE transaction; the unique
 // usage_logs.request_id makes replays no-ops.
@@ -18,14 +19,23 @@ export interface SettleInput {
   payoutRate: number;
   model: string;
   upstreamModel: string | null;
+  actualModel?: string | null;
   endpoint: string;
   stream: boolean;
   statusCode: number;
   errorCode?: string | null;
+  errorScope?: UpstreamErrorScope | null;
+  retryable?: boolean | null;
+  credentialVersion?: number | null;
+  executionSequence?: number | null;
   usage: TokenUsage;
   usageEstimated: boolean;
   durationMs?: number | null;
   firstTokenMs?: number | null;
+  selectionMs?: number | null;
+  streamTruncated?: boolean;
+  toolCalls?: number;
+  toolResults?: number;
   clientIp?: string | null;
   /** Claude Code shape verdict for CC-UA requests (docs/gateway.md §2a); null = not a CC-UA request. */
   ccShape?: "genuine" | "suspect" | null;
@@ -103,14 +113,17 @@ export function settlePreparedRequest(p: SettleInput, price: SettlementPricing):
   const now = nowIso();
 
   return tx(() => {
+    const columns = [
+      "id", "request_id", "user_id", "api_key_id", "group_id", "account_id", "provider_id", "model", "upstream_model",
+      "endpoint", "stream", "status_code", "error_code", "input_tokens", "output_tokens", "cache_read_tokens",
+      "cache_write_tokens", "usage_estimated", "total_cost", "rate_multiplier", "actual_cost", "provider_earning",
+      "duration_ms", "first_token_ms", "client_ip", "cc_shape", "error_message", "mode", "upstream_status", "node_id",
+      "account_switched", "team_id", "proxy_id", "actual_model", "selection_ms", "stream_truncated", "tool_calls",
+      "tool_results", "error_scope", "retryable", "credential_version", "execution_sequence", "created_at",
+    ];
     const ins = db
       .prepare(
-        `INSERT INTO usage_logs
-           (id, request_id, user_id, api_key_id, group_id, account_id, provider_id, model, upstream_model,
-            endpoint, stream, status_code, error_code, input_tokens, output_tokens, cache_read_tokens,
-            cache_write_tokens, usage_estimated, total_cost, rate_multiplier, actual_cost, provider_earning,
-            duration_ms, first_token_ms, client_ip, cc_shape, error_message, mode, upstream_status, node_id, account_switched, team_id, proxy_id, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `INSERT INTO usage_logs (${columns.join(", ")}) VALUES (${columns.map(() => "?").join(", ")})
          ON CONFLICT(request_id) DO NOTHING`,
       )
       .run(
@@ -147,6 +160,15 @@ export function settlePreparedRequest(p: SettleInput, price: SettlementPricing):
         p.accountSwitched && ok ? 1 : 0,
         p.teamId ?? null,
         p.proxyId ?? null,
+        p.actualModel ?? null,
+        p.selectionMs ?? null,
+        p.streamTruncated ? 1 : 0,
+        p.toolCalls ?? 0,
+        p.toolResults ?? 0,
+        p.errorScope ?? null,
+        p.retryable === undefined || p.retryable === null ? null : p.retryable ? 1 : 0,
+        p.credentialVersion ?? null,
+        p.executionSequence ?? null,
         now,
       );
     if (Number(ins.changes) === 0) {

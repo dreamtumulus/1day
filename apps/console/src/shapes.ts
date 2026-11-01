@@ -213,6 +213,15 @@ function poolReasonFields(a: AccountRow) {
   }
 }
 
+export function accountReadiness(a: AccountRow, now = nowIso()): "logged_in" | "refreshed" | "profile_valid" | "inference_valid" | "rate_limited" | "reauth_required" {
+  if (a.status === "error") return "reauth_required";
+  if ((a.rate_limited_until && a.rate_limited_until > now) || (a.window_exhausted_until && a.window_exhausted_until > now)) return "rate_limited";
+  if (a.last_inference_at) return "inference_valid";
+  if (a.last_profile_at) return "profile_valid";
+  if (a.last_refresh_at) return "refreshed";
+  return "logged_in";
+}
+
 export function adminAccountShape(
   a: AccountRow & { owner_name?: string | null },
   groups: Array<{ groupId: string; name: string; priority: number }>,
@@ -241,6 +250,11 @@ export function adminAccountShape(
     boundProxyExitIp: bp?.ip ?? null,
     modelMapping: parseJsonMap(a.model_mapping),
     groups,
+    credentialVersion: a.credential_version,
+    readiness: accountReadiness(a),
+    lastProfileAt: a.last_profile_at,
+    lastRefreshAt: a.last_refresh_at,
+    lastInferenceAt: a.last_inference_at,
     rateLimitedUntil: a.rate_limited_until,
     overloadUntil: a.overload_until,
     tempUnschedulableUntil: a.temp_unschedulable_until,
@@ -355,10 +369,15 @@ export interface UsageRowDb {
   account_name?: string | null;
   model: string;
   upstream_model: string | null;
+  actual_model?: string | null;
   endpoint: string;
   stream: number;
   status_code: number;
   error_code: string | null;
+  error_scope?: string | null;
+  retryable?: number | null;
+  credential_version?: number | null;
+  execution_sequence?: number | null;
   input_tokens: number;
   output_tokens: number;
   cache_read_tokens: number;
@@ -370,6 +389,10 @@ export interface UsageRowDb {
   provider_earning: number;
   duration_ms: number | null;
   first_token_ms: number | null;
+  selection_ms?: number | null;
+  stream_truncated?: number | null;
+  tool_calls?: number | null;
+  tool_results?: number | null;
   client_ip?: string | null;
   cc_shape?: string | null;
   error_message?: string | null;
@@ -395,10 +418,15 @@ export function usageShape(u: UsageRowDb) {
     keyName: u.key_name ?? null,
     model: u.model,
     upstreamModel: u.upstream_model,
+    actualModel: u.actual_model ?? null,
     endpoint: u.endpoint,
     stream: u.stream === 1,
     statusCode: u.status_code,
     errorCode: u.error_code,
+    errorScope: u.error_scope ?? null,
+    retryable: u.retryable === undefined || u.retryable === null ? null : u.retryable === 1,
+    credentialVersion: u.credential_version ?? null,
+    executionSequence: u.execution_sequence ?? null,
     inputTokens: u.input_tokens,
     outputTokens: u.output_tokens,
     cacheReadTokens: u.cache_read_tokens,
@@ -408,6 +436,10 @@ export function usageShape(u: UsageRowDb) {
     actualCost: u.actual_cost,
     durationMs: u.duration_ms,
     firstTokenMs: u.first_token_ms,
+    selectionMs: u.selection_ms ?? null,
+    streamTruncated: (u.stream_truncated ?? 0) === 1,
+    toolCalls: u.tool_calls ?? 0,
+    toolResults: u.tool_results ?? 0,
     clientIp: u.client_ip ?? null,
     ccShape: u.cc_shape ?? null,
     errorMessage: u.error_message ?? null,

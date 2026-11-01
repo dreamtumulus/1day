@@ -1,4 +1,4 @@
-import { all, run } from "./db.js";
+import { all, one, run, tx } from "./db.js";
 
 // docs/v3-design.md §3.1
 export const SETTING_DEFAULTS = {
@@ -88,4 +88,31 @@ export function setSetting(key: SettingKey, value: string): void {
     key,
     value,
   );
+}
+
+const SETTINGS_REVISION_KEY = "__revision__";
+
+export function settingsRevision(): number {
+  const row = one<{ value: string }>("SELECT value FROM settings WHERE key = ?", SETTINGS_REVISION_KEY);
+  const revision = Number(row?.value ?? 1);
+  return Number.isSafeInteger(revision) && revision >= 1 ? revision : 1;
+}
+
+export class SettingsRevisionConflict extends Error {
+  constructor(public readonly actual: number) {
+    super(`settings revision conflict: current revision is ${actual}`);
+    this.name = "SettingsRevisionConflict";
+  }
+}
+
+/** Atomically validate and apply one settings document; no key-by-key lost updates. */
+export function updateSettings(values: Partial<Record<SettingKey, string>>, expectedRevision: number): number {
+  return tx(() => {
+    const current = settingsRevision();
+    if (current !== expectedRevision) throw new SettingsRevisionConflict(current);
+    for (const [key, value] of Object.entries(values)) setSetting(key as SettingKey, value);
+    const next = current + 1;
+    run("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", SETTINGS_REVISION_KEY, String(next));
+    return next;
+  });
 }

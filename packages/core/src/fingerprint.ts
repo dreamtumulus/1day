@@ -110,7 +110,7 @@ export function sessionMetadataUserId(sessionId: string): string {
 //
 // 对策：给每个账号一份**确定性**合成机器档（从 account id 派生，稳定、各实例一致、无需迁移）。
 // cwd/home 按号各异（强区分度，配合已按号唯一的 device_id），Platform/Shell 归一到节点同类（linux/bash）。
-// 这只改写直连 body；worker 遥测仍读取节点真实系统，不能把它当作按账号虚拟化后的主机事实。
+// 这只改写直连 body；生产 worker 由 CC_WORKER_MACHINE_IDENTITY 的按账号 mount namespace 对齐遥测，UID/scratch 才是实际权限边界。
 
 // 每账号「一台独立真实 Linux 开发机」——生成式，不是查表（sub2api 的 11 档会把几千个号聚成 11 个相同签名，
 // 本身就是号池特征）。关键约束（docs/claude-code-compat.md §8 + 实测）：
@@ -119,7 +119,7 @@ export function sessionMetadataUserId(sessionId: string): string {
 //      billing 后缀不是版本常量，由首条用户文本计算，见 ccBuildSuffix。
 //   2. TLS 由 Bun 版本与 HTTP 配置决定，不从 body 的 OS 字段推导。机器档只覆盖生产 worker 的 Linux/x64 形态，
 //      不让同一账号在 worker 报 x64、直连却声明 arm64。
-//   3. 内核串、shell、工作目录可以按号派生；它们只影响直连 body，不会改变 TLS 或 worker 遥测。
+//   3. 内核串、shell、工作目录按号派生，同时供直连 body 与 worker 的机器身份覆盖层使用；TLS 不随这些字段随机化。
 
 // 真实 Ubuntu/Debian 桌面与服务器常见内核线；-NN-generic 的 NN 按号从合理区间取。
 const MP_KERNEL_LINES = ["6.8.0", "6.8.0", "6.11.0", "6.5.0", "5.15.0", "6.2.0", "6.14.0", "6.12.0"];

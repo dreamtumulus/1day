@@ -283,12 +283,14 @@ export function normalizeThinking(body: Json, model: string): Json {
   };
   if (type === "enabled") {
     const rejectsBudget = version >= 5 || (family === "opus" && version >= 4.7);
-    return rejectsBudget ? { ...body, thinking: { type: "adaptive" } } : body;
+    if (!rejectsBudget) return body;
+    const { budget_tokens: _budget, ...preserved } = t;
+    return { ...body, thinking: { ...preserved, type: "adaptive" } };
   }
   if (type === "disabled") {
     const alwaysOn = ((family === "fable" || family === "mythos") && version >= 5) || (family === "opus" && version >= 5.5);
     if (alwaysOn) return drop();
-    if (family === "sonnet" && version >= 5.5) return highEffort ? drop() : { ...body, thinking: { type: "between_tools" } };
+    if (family === "sonnet" && version >= 5.5) return highEffort ? drop() : { ...body, thinking: { ...t, type: "between_tools" } };
     if (version >= 5 && highEffort) return drop();
     return body;
   }

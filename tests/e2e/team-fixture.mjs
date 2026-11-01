@@ -64,7 +64,8 @@ export async function createTeamFixture({ admin, provider, providerKey, consoleB
     }
     if (!healthy) throw new Error(`E2E exit observations did not become ready: ${log}`);
     // Disable the deliberate onboarding delay in this isolated test stack.
-    const settings = await admin("PUT", "/api/admin/settings", { onboard_cooldown_min_sec: "0", onboard_cooldown_max_sec: "0" });
+    const currentSettings = (await admin("GET", "/api/admin/settings")).data;
+    const settings = await admin("PUT", "/api/admin/settings", { onboard_cooldown_min_sec: "0", onboard_cooldown_max_sec: "0", _revision: currentSettings._revision });
     if (settings.status !== 200) throw new Error(`E2E onboarding settings: ${JSON.stringify(settings)}`);
     return {
       nodeId, orgUuid, log: () => log,

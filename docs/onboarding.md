@@ -456,6 +456,7 @@ wss://bridge.claudeusercontent.com/chrome/{accountUuid}
   作业完成后 console 立即经该账号的节点/绑定代理调用 `GET /api/oauth/profile`（Bearer，UA 为 Claude Code 辅助调用形态），回填
   `account_email` 与 `subscription_type`（`has_claude_max` → `max`、`has_claude_pro` → `pro`，否则取组织 `billing_type` / `rate_limit_tier`）；
   失败只记日志，管理员可 `POST /api/admin/accounts/:id/profile` 重试。env `ONBOARD_PROFILE_FETCH=0` 关闭（测试用）。
+  单条与批量上号默认只做组织/profile 验证和资料回填，**不为每个账号发最小推理**。账号测试默认也是 profile + `/api/oauth/claude_cli/roles` 控制面验证；只有显式 `mode=inference` 才发 8-token 请求（2026-11-01）。
 - 作业以 `scope='onboarder'`、`requester_id='onb:<tokenId>'` 落库：账号**归平台池**（owner NULL、approved、进默认分组），
   与管理员上号的区别仅在于无分组选择权。
 - 吊销令牌即断该上号员的访问；job 状态/列表接口均校验 requester 归属。

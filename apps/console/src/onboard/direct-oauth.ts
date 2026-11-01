@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
-import { CC_AUX_ACCEPT, CC_VERSION, CCR, isoIn, OAUTH_ENDPOINTS, CC_AUX_UA, parseOAuthProfile, type OAuthProfile } from "@1dayapi/core";
+import { CC_AUX_ACCEPT, CC_VERSION, CCR, isoIn, OAUTH_ENDPOINTS, CC_AUX_UA, REFRESH_UA, oauthProfileHeaders, oauthTokenHeaders, parseOAuthProfile, type OAuthProfile } from "@1dayapi/core";
 import { requestViaNodeProxy } from "../node/egress-request.js";
 
 // sessionKey → OAuth token pair without a browser (docs/onboarding.md §2.1):
@@ -206,7 +206,7 @@ export async function authorizeWithSessionKey(target: EgressTarget, sessionKey: 
   if (!code) throw new OnboardError("authorize_failed", "authorize: redirect_uri carries no code");
   if (state !== pkce.state) throw new OnboardError("authorize_failed", "authorize: state mismatch in redirect_uri");
 
-  const tok = await exchangeCode(target, d.tokenUrl, { ...JSON_HEADERS, authorization: `Bearer ${sk}` }, {
+  const tok = await exchangeCode(target, d.tokenUrl, oauthTokenHeaders(REFRESH_UA, `Bearer ${sk}`), {
     grant_type: "authorization_code",
     client_id: d.clientId,
     code,
@@ -237,7 +237,7 @@ export async function verifyAccessToken(target:EgressTarget,accessToken:string):
  */
 export async function fetchProfileViaEgress(target: EgressTarget, accessToken: string): Promise<OAuthProfile | null> {
   try {
-    const r = await call(target, `https://api.anthropic.com${CCR.profilePath}`, { authorization: `Bearer ${accessToken}`, "user-agent": CC_AUX_UA, accept: CC_AUX_ACCEPT });
+    const r = await call(target, `https://api.anthropic.com${CCR.profilePath}`, oauthProfileHeaders(accessToken));
     if (r.status < 200 || r.status >= 300) return null;
     return parseOAuthProfile(r.json);
   } catch {
@@ -273,7 +273,7 @@ async function lookupOrganization(target: EgressTarget, sk: string): Promise<str
 /** method=auth_url step 2: the code came back through the account owner's browser; exchange + validate through the node. */
 export async function exchangeCallbackCode(target: EgressTarget, code: string, codeVerifier: string, state: string): Promise<AuthResult> {
   const a = CCR.authorize;
-  const tok = await exchangeCode(target, OAUTH_ENDPOINTS.anthropic.tokenUrl, JSON_HEADERS, {
+  const tok = await exchangeCode(target, OAUTH_ENDPOINTS.anthropic.tokenUrl, oauthTokenHeaders(REFRESH_UA), {
     grant_type: "authorization_code",
     client_id: a.clientId,
     code,

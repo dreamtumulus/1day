@@ -64,6 +64,7 @@
 ### accounts
 - `type`：`apikey`（官方 Key）/ `upstream`（第三方中转）/ `oauth`（订阅令牌）；`protocol`：`anthropic | openai`。
 - `credential_enc`：`enc:v1:` 加密的 JSON：`{apiKey}` 或 `{accessToken, refreshToken?, expiresAt?, accountId?}`。
+- `credential_version`（迁移 32）：初始 1；任何改变 `credential_enc` 的写入（包括上号/重授权直接 SQL）由触发器加 1，并清空旧的 `last_profile_at` / `last_refresh_at` / `last_inference_at`。字节完全相同的写入不递增。控制台 `readiness` 依次区分 `reauth_required`、`rate_limited`、`inference_valid`、`profile_valid`、`refreshed`、`logged_in`；推理证明不会被较晚但较弱的 profile 检查降级。
 - `base_url` NULL = 平台默认（见 v3-design §5.1）。`models` JSON 数组（空 = 该平台全部注册模型），`model_mapping` JSON 对象。
 - `owner_id` NULL = 平台自有；非空 = 号商，`payout_rate` 为其分成。`route=node`：号商账户可用该号商任一在线节点或固定节点；平台自有账户（`owner_id` NULL）必须固定到**平台节点**（管理员部署、`nodes.provider_id` 为管理员的节点）。
 - `review_status`：号商提交 / 节点上传默认 `pending`，只有 `approved` 参与调度。
@@ -72,7 +73,7 @@
 - 订阅窗口（迁移 3 + 4，`gateway.md` §3/§5.1）：`executor`（`direct | ccr | ccr_worker`，后两者只有 oauth+anthropic 可设；`ccr_worker` = 节点真 Claude Code worker 模式，见 `ccr-supply.md` §8.1）；`window_used`
   （绑定窗口已用比例 0..1，NULL = 未采样）、`window_reset_at`、`window_checked_at`、`window_exhausted_until`（窗口级冷却，
   `listCandidates` 单独过滤，不计入 `coolingUntil`）、`window_5h_used/_reset_at`、`window_7d_used/_reset_at`、`window_reason`、
-  `model_cooldowns`（迁移 9，JSON `{scope:{until,reason,used,resetAt}}`，目前 scope 只有 `fable`；gateway.md §3）。
+  `model_cooldowns`（迁移 9，JSON `{scope:{until,reason,used,resetAt}}`；scope 可为 `fable` 或 `model:<id>`，分别用于模型族窗口和单模型限流/停用；gateway.md §3）。
   来源：网关对 Anthropic OAuth 账户每个响应的 `anthropic-ratelimit-unified-*` 头被动采样，以及 console 的 usage 探测。凭证 JSON 另含 `orgUuid`、`environmentId`。
 - 原样透传（迁移 19，gateway.md §4a）：`raw_passthrough`（1 = 同协议请求原样转给中转，不做 Claude Code 归一 / 指纹 / 身份固定）。
 - 上号（迁移 5，docs/onboarding.md）：`rpm_limit`（每分钟请求上限，0 = 不限，迁移 22 后由共享 SQLite 滑动窗口执行）、
@@ -88,6 +89,7 @@
 - `input_tokens` **不含**缓存读；`cache_read_tokens`、`cache_write_tokens` 单列。`usage_estimated=1` 表示上游未报告或报告非法 usage，按请求正文和已生成文本估算；图片/文档按媒体块估算，不按 base64 字节收费。计数必须为有限非负整数，每项及提示词合计最多十亿。
 - 费用三列：`total_cost`（标准价）、`actual_cost = q8(total × rate_multiplier)`（实扣）、`provider_earning = q8(total × payout_rate)`（仅号商账户；**倍率 0 的分组不记分成**——免费组即号商自用池，平台没收钱也不分钱，2026-10-29）。
 - `account_id` / `provider_id` 不设外键，账户删除后历史仍可查。
+- 迁移 32 的可观测字段：`actual_model`（上游实际返回模型，区别于请求映射 `upstream_model`）、`selection_ms`（首次取得账号租约耗时）、`stream_truncated`、`tool_calls`、`tool_results`；失败另有 `error_scope`、`retryable`、`credential_version`、`execution_sequence`，见 errors.md。
 - `account_switched`（迁移 15）：1 = 该请求命中了仍有效的粘性会话却被迫落到另一个账号（网关 ForceCacheBilling，gateway.md §6），
   提示词缓存被迫重建；`cache_refund_id` = 返还它的 `cache_refunds` 行（NULL = 尚未返还）。部分索引
   `idx_usage_cache_refund_pending(user_id, created_at) WHERE account_switched=1 AND cache_refund_id IS NULL` 就是"待返还集合"。
@@ -164,6 +166,8 @@ console 定时任务每 `cache_refund_interval_sec`（默认 86400）跑一轮�
 | `ccr_cache_baseline_worker` | `16600` | worker 模式身份上下文缓存基线（token），客户可见缓存 = 上游缓存 − 基线（ccr-supply.md §7.1） |
 | `ccr_cache_baseline_cloud` | `28000` | 云端会话模式同上 |
 | `cache_refund_enabled` / `cache_refund_percent` / `cache_refund_interval_sec` | `1` / `80` / `86400` | 缓存重建返还（本节 cache_refunds）：是否自动跑、返还差额的百分比（0 = 只标记不返钱）、定时间隔（≥ 3600）。关闭只停定时任务，手动返还仍可用 |
+
+设置表另有内部键 `__revision__`（2026-11-01）：初始为 1，管理台每次原子写入整份设置后加 1。`GET /api/admin/settings` 在 data 中返回 `_revision` 并带 `ETag: "settings-N"`；`PUT` 必须携带该 revision 或对应 `If-Match`，缺失 428、冲突 409。它不属于 `SETTING_DEFAULTS`，不会被业务读取或覆盖。
 
 `usage_logs.cc_shape`（迁移 7）：`genuine` / `suspect` / NULL（非 CC UA 请求），索引 `idx_usage_cc_shape(cc_shape, created_at)`。
 
@@ -252,6 +256,8 @@ console 定时任务每 `cache_refund_interval_sec`（默认 86400）跑一轮�
 | `gateway_account_leases` / `gateway_account_hits` | 所有蓝绿网关共享账号并发/RPM，避免双倍接入 |
 | `ccr_archive_jobs` | 仅新建清理任务；加密的清理凭据/路由快照、尝试次数、重试期限及完成状态，支持节点离线后补归档 |
 | `onboarding_jobs.expires_at` | 新任务绝对预约截止；旧行不回填，v1 作业可按原时间派生期限，v0 作业不自动维护 |
+
+**迁移 32（控制面、调度与观测，2026-11-01）**：仅新增列与 `accounts_credential_version_update` 触发器；`accounts` 增加凭据版本及 profile/refresh/inference 检查时间，`usage_logs` 增加实际模型、选号耗时、流截断、工具统计和统一错误对象。旧账号/账本不回填、不修改；新库由 `SCHEMA_V3` 直接带列，触发器在迁移时创建。测试：`settings-revision.test.mjs`、`control-plane.test.mjs`、`merkle-affinity.test.mjs`、`tests/e2e/p0-p2.test.mjs`。
 
 ### 结算持久化与恢复
 

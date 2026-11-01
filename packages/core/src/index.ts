@@ -16,6 +16,8 @@ export * from "./cc-shape.js";
 export * from "./profile.js";
 export * from "./window.js";
 export * from "./oauth.js";
+export * from "./control-plane.js";
+export * from "./upstream-error.js";
 export * from "./teams.js";
 export * from "./conversations.js";
 

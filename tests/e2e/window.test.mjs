@@ -59,14 +59,14 @@ check("window reason records rejected 5h window",/five_hour.*rejected \(429\)/.t
   {reason:f.windowReason,window5hUsed:f.window5hUsed});
 
 // Threshold pause: lower the threshold below the sampled 42% -> next sample pauses the account until reset.
-let st = await admin("PUT", "/api/admin/settings", { anthropic_window_threshold_percent: "40" });
+let st = await admin("PUT", "/api/admin/settings", { anthropic_window_threshold_percent: "40", _revision: windowSettings._revision });
 check("settings accept window keys", st.status === 200 && st.data.anthropic_window_threshold_percent === "40", st);
 r = await messages();
 u = await lastUsage();
 a = (await accounts()).find((x) => x.name === "sub-a");
 check("over threshold -> skipped, falls through to apikey account", r.status === 200 && u.accountName === "mock-anthropic", u);
 check("pause recorded with reason until window reset", hoursFromNow(a.windowExhaustedUntil) > 2.5 && /42% ≥ 40%/.test(a.windowReason ?? ""), a);
-await admin("PUT", "/api/admin/settings", { anthropic_window_threshold_percent: "95" });
+await admin("PUT", "/api/admin/settings", { anthropic_window_threshold_percent: "95", _revision: st.data._revision });
 const re = await admin("PATCH", `/api/admin/accounts/${sub.data.id}`, { status: "active" });
 check("re-enable clears window cooldown + reason", re.data.windowExhaustedUntil === null && re.data.windowReason === null, re.data);
 

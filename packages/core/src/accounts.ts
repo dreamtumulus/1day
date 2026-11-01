@@ -81,6 +81,7 @@ export interface AccountRow {
   protocol: Protocol;
   base_url: string | null;
   credential_enc: string;
+  credential_version: number;
   models: string | null;
   model_mapping: string | null;
   owner_id: string | null;
@@ -101,6 +102,9 @@ export interface AccountRow {
   account_email: string | null;
   subscription_type: string | null;
   last_used_at: string | null;
+  last_profile_at: string | null;
+  last_refresh_at: string | null;
+  last_inference_at: string | null;
   /** direct = platform/node sends Messages requests; ccr = cloud session orchestration (docs/ccr-supply.md). */
   executor: Executor;
   /** Subscription window state (CCR only, written by the console poller). 0..1, NULL = never probed. */
@@ -334,6 +338,8 @@ export type FailureKind =
   | { kind: "window_rejected"; window: string; resetAt: string }
   /** 429 scoped to one model family (Fable 7d_oi window or credits_required): cool only that scope (sub2api SetModelRateLimit). */
   | { kind: "model_window_rejected"; scope: string; resetAt: string; reason: string }
+  /** A model-scoped 429 without a rejected global window: other models on this account remain schedulable. */
+  | { kind: "model_rate_limited"; model: string; retryAfterSec?: number; reason: string }
   /** 403 "model X is suspended for this organization until T": only that model, only until T. */
   | { kind: "model_suspended"; model: string; until: string };
 
@@ -434,6 +440,12 @@ export function markFailure(id: string, f: FailureKind): void {
     case "model_window_rejected":
       writeModelCooldown(id, f.scope, { until: f.resetAt, reason: `${f.reason} until ${f.resetAt}` }, now);
       return;
+    case "model_rate_limited": {
+      const sec = Math.min(Math.max(f.retryAfterSec ?? 60, 1), 7200);
+      const until = isoIn(sec * 1000);
+      writeModelCooldown(id, `model:${f.model}`, { until, reason: `${f.reason} until ${until}` }, now);
+      return;
+    }
   }
 }
 

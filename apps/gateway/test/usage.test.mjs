@@ -2,7 +2,7 @@
 // text at chars/4, base64 media at a flat per-block cost, never by byte length.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { estimateRequestTokens, estimateTokens } from "../dist/usage.js";
+import { estimateRequestTokens, estimateTokens, UsageAccumulator } from "../dist/usage.js";
 
 test("estimateRequestTokens: media blocks cost a flat amount, not their base64 length", () => {
   const big = "A".repeat(8_000_000); // ~8 MB image payload
@@ -19,4 +19,17 @@ test("estimateRequestTokens: media blocks cost a flat amount, not their base64 l
   const plain = { model: "m", messages: [{ role: "user", content: "hello world" }] };
   assert.ok(estimateRequestTokens(plain) >= estimateTokens("hello world"));
   assert.ok(estimateRequestTokens(plain) <= estimateTokens(JSON.stringify(plain)));
+});
+
+test("usage observation keeps actual model and counts tools without duplicate stream deltas", () => {
+  const acc = new UsageAccumulator();
+  acc.observeRequest({ messages: [{ role: "user", content: [{ type: "tool_result", tool_use_id: "one", content: "result" }] }] });
+  acc.observeModel("claude-sonnet-5-20260101");
+  acc.addAnthropicContent([{ type: "text", text: "x" }, { type: "tool_use", id: "one", name: "weather" }]);
+  acc.addOpenAIToolCalls([{ index: 0, id: "call-one" }, { index: 0, function: { arguments: "{}" } }]);
+  acc.addResponsesItem({ type: "function_call", id: "item-one" });
+  acc.addResponsesItem({ type: "function_call", id: "item-one" });
+  assert.equal(acc.actualModel, "claude-sonnet-5-20260101");
+  assert.equal(acc.toolResults, 1);
+  assert.equal(acc.toolCalls, 3);
 });

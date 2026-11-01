@@ -50,3 +50,10 @@ test("older lines and non-Claude ids pass through untouched; input body is not m
   assert.deepEqual(src.thinking, { type: "disabled" });
   assert.equal(normalizeThinking({ model: "x", messages: [] }, "claude-fable-5").thinking, undefined);
 });
+
+test("normalization removes only rejected budget fields and preserves the remaining thinking contract", () => {
+  const adaptive = normalizeThinking(body({ type: "enabled", budget_tokens: 8000, display: "omitted", custom: "keep" }), "claude-opus-5-5");
+  assert.deepEqual(adaptive.thinking, { type: "adaptive", display: "omitted", custom: "keep" });
+  const between = normalizeThinking(body({ type: "disabled", display: "updates" }), "claude-sonnet-5-5");
+  assert.deepEqual(between.thinking, { type: "between_tools", display: "updates" });
+});

@@ -7,7 +7,7 @@
 import { setTimeout as wait } from "node:timers/promises";
 import { readCredential, writeCredential, type AccountRow, type Credential } from "./accounts.js";
 import { one, run } from "./db.js";
-import { CC_AUX_ACCEPT, CC_AUX_UA } from "./fingerprint.js";
+import { oauthTokenHeaders } from "./control-plane.js";
 import { OAUTH_ENDPOINTS } from "./platforms.js";
 import { isoIn, nowIso } from "./time.js";
 
@@ -177,15 +177,12 @@ async function refreshOAuthCredentialLocked(
   const platform = account.platform === "openai" ? "openai" : "anthropic";
   const ep = OAUTH_ENDPOINTS[platform];
   try {
-    // 对齐 CC 真实刷新（bundle：axios POST，body 带 scope 回放，默认 Accept；docs/claude-code-compat.md §8）
-    // Headers exactly as the real client sends them (captured 2026-10-29 16:34Z, docs/claude-code-compat.md §8):
-    // axios defaults — `axios/<ver>` UA, the axios Accept, accept-encoding — and nothing else. The audit had put
-    // `claude-code/<ver>` here (that is the UA of the api.anthropic.com helper calls, not of the token endpoint)
-    // and every refresh answered 429 for eight hours. OAUTH_REFRESH_UA overrides for diagnosis ("" = send none).
+    // 2.1.312 token calls are Axios-shaped, not api.anthropic.com profile calls.
+    // OAUTH_REFRESH_UA overrides for diagnosis ("" = send none); the default is the captured build's Axios version.
     const refreshUa = process.env.OAUTH_REFRESH_UA ?? REFRESH_UA;
     const headers: Record<string, string> =
       platform === "anthropic"
-        ? { accept: CC_AUX_ACCEPT, "content-type": "application/json", ...(refreshUa ? { "user-agent": refreshUa } : {}), "accept-encoding": "gzip, compress, deflate, br" }
+        ? oauthTokenHeaders(refreshUa)
         : { "content-type": "application/x-www-form-urlencoded" };
     const body =
       platform === "anthropic"
@@ -229,7 +226,7 @@ async function refreshOAuthCredentialLocked(
     // Once the provider has rotated the grant, persist the returned credential
     // even if the client disconnected while the response was being decoded.
     writeCredential(account.id, next);
-    try { run("UPDATE accounts SET refresh_cooldown_until = NULL WHERE id = ? AND refresh_cooldown_until IS NOT NULL", account.id); } catch { /* pre-migration dev DB */ }
+    try { run("UPDATE accounts SET last_refresh_at = ?, refresh_cooldown_until = NULL WHERE id = ?", nowIso(), account.id); } catch { /* pre-migration dev DB */ }
     signal?.throwIfAborted();
     console.log(`[oauth] refreshed access token for account ${account.id}`);
     return next;

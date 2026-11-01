@@ -102,10 +102,15 @@ export interface UsageRow {
   keyName: string | null;
   model: string;
   upstreamModel: string | null;
+  actualModel?: string | null;
   endpoint: string;
   stream: boolean;
   statusCode: number;
   errorCode: string | null;
+  errorScope?: "request" | "account_model" | "account" | "node_proxy" | "transport" | null;
+  retryable?: boolean | null;
+  credentialVersion?: number | null;
+  executionSequence?: number | null;
   inputTokens: number;
   outputTokens: number;
   cacheReadTokens: number;
@@ -115,6 +120,10 @@ export interface UsageRow {
   actualCost: number;
   durationMs: number | null;
   firstTokenMs: number | null;
+  selectionMs?: number | null;
+  streamTruncated?: boolean;
+  toolCalls?: number;
+  toolResults?: number;
   /** Caller's IP as seen by the gateway (behind nginx: X-Forwarded-For). */
   clientIp: string | null;
   ccShape: "genuine" | "suspect" | null;
@@ -454,6 +463,11 @@ export interface AdminAccount extends ProviderAccount {
   boundProxyId: string | null;
   modelMapping: Record<string, string>;
   groups: Array<{ groupId: string; name: string; priority: number }>;
+  credentialVersion?: number;
+  readiness?: "logged_in" | "refreshed" | "profile_valid" | "inference_valid" | "rate_limited" | "reauth_required";
+  lastProfileAt?: string | null;
+  lastRefreshAt?: string | null;
+  lastInferenceAt?: string | null;
   rateLimitedUntil: string | null;
   overloadUntil: string | null;
   /** Admin view: scheduler verdict + first failing gate (apps/console/src/pool-state.ts). */
@@ -753,6 +767,7 @@ export interface RedeemCode {
 }
 
 export interface Settings {
+  _revision?: number;
   default_group_id: string;
   provider_default_payout_rate: string;
   announcement: string;

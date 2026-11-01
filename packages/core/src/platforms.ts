@@ -84,6 +84,7 @@ export const CCR = {
   sessionsPath: "/v1/code/sessions",
   usagePath: "/api/oauth/usage",
   profilePath: "/api/oauth/profile",
+  rolesPath: "/api/oauth/claude_cli/roles",
   validatePath: "/api/oauth/validate",
   /**
    * Onboarding OAuth authorize step (docs/onboarding.md §2, method=auth_url).

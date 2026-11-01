@@ -13,6 +13,12 @@ export class UsageAccumulator {
   cacheWrite = 0;
   seen = false;
   text = ""; // generated text, for estimation when upstream reports nothing
+  actualModel: string | null = null;
+  toolCalls = 0;
+  toolResults = 0;
+  private requestObserved = false;
+  private readonly openAIToolIndexes = new Set<unknown>();
+  private readonly responseToolItems = new Set<string>();
 
   invalid = false;
 
@@ -59,6 +65,47 @@ export class UsageAccumulator {
 
   addText(t: unknown): void {
     if (typeof t === "string" && this.text.length < 2_000_000) this.text += t.slice(0, 2_000_000 - this.text.length);
+  }
+
+  observeModel(value: unknown): void {
+    if (typeof value === "string" && value) this.actualModel = value;
+  }
+
+  observeRequest(body: unknown): void {
+    if (this.requestObserved) return;
+    this.requestObserved = true;
+    if (!body || typeof body !== "object") return;
+    const b = body as Json;
+    const messages = Array.isArray(b.messages) ? b.messages : Array.isArray(b.input) ? b.input : [];
+    for (const m of messages) {
+      if (!m || typeof m !== "object") continue;
+      if (m.role === "tool" || m.type === "function_call_output") this.toolResults++;
+      if (Array.isArray(m.content)) for (const block of m.content) if (block?.type === "tool_result") this.toolResults++;
+    }
+  }
+
+  addAnthropicContent(content: unknown): void {
+    if (!Array.isArray(content)) return;
+    for (const block of content) if (block?.type === "tool_use") this.toolCalls++;
+  }
+
+  addOpenAIToolCalls(calls: unknown): void {
+    if (!Array.isArray(calls)) return;
+    for (const call of calls) {
+      const key = call && typeof call === "object" ? call.index ?? call.id : call;
+      if (this.openAIToolIndexes.has(key)) continue;
+      this.openAIToolIndexes.add(key);
+      this.toolCalls++;
+    }
+  }
+
+  addResponsesItem(item: unknown): void {
+    if (!item || typeof item !== "object" || (item as Json).type !== "function_call") return;
+    const value = item as Json;
+    const key = String(value.id ?? value.call_id ?? JSON.stringify(value));
+    if (this.responseToolItems.has(key)) return;
+    this.responseToolItems.add(key);
+    this.toolCalls++;
   }
 
   /** Final usage; estimates (chars / 4) when upstream never reported usage. */

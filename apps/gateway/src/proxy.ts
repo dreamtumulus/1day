@@ -56,6 +56,10 @@ import {
   saveStickyBinding,
   sweepAffinityBindings,
   refreshCooldownUntil,
+  classifyDirectRateLimit,
+  classifyTransportFailure,
+  upstreamMessage,
+  type UpstreamFailure,
 } from "@1dayapi/core";
 import { authenticate, type CallerContext } from "./auth.js";
 import { PROBE_WINDOW_MS, detectProbe, poolHealth, probeReply, type ProbeVerdict } from "./probe.js";
@@ -90,6 +94,7 @@ import {
 } from "./upstream.js";
 import { wait, responseBytes } from "./lifecycle.js";
 import { UsageAccumulator, collectText, estimateRequestTokens } from "./usage.js";
+import { orderByMerklePrefix, rememberMerklePrefix } from "./merkle-affinity.js";
 
 type Json = Record<string, any>;
 
@@ -373,10 +378,14 @@ interface Ctx {
   stream: boolean;
   requestId: string;
   startedAt: number;
+  selectionMs: number | null;
+  executionSequence: number;
+  credentialVersion: number | null;
+  streamTruncated: boolean;
   /** Claude Code shape verdict (docs/gateway.md §2a); null = not a CC-UA request. */
   ccShape: "genuine" | "suspect" | null;
   /** Observability trace for the usage row: last path tried, its node, what upstream answered. */
-  trace: { mode: Mode | null; nodeId: string | null; upstreamStatus: number | null; upstreamMessage: string | null };
+  trace: { mode: Mode | null; nodeId: string | null; upstreamStatus: number | null; upstreamMessage: string | null; failure: UpstreamFailure | null };
   /**
    * sub2api ForceCacheBilling: the request had a live sticky binding but had to
    * run on a different account (cooldown / failover / proxy down), so its prompt
@@ -737,8 +746,12 @@ async function proxyRequest(req: FastifyRequest, reply: FastifyReply, format: Cl
     stream: body.stream === true,
     requestId: lifecycles.get(req)?.requestId ?? crypto.randomUUID(),
     startedAt: Date.now(),
+    selectionMs: null,
+    executionSequence: 0,
+    credentialVersion: null,
+    streamTruncated: false,
     ccShape: null,
-    trace: { mode: null, nodeId: null, upstreamStatus: null, upstreamMessage: null },
+    trace: { mode: null, nodeId: null, upstreamStatus: null, upstreamMessage: null, failure: null },
     forceCacheBilling: false,
     clientGone: false,
     abort: lifecycles.get(req)?.abort ?? new AbortController(),
@@ -894,7 +907,13 @@ async function proxyRequest(req: FastifyRequest, reply: FastifyReply, format: Cl
   // cooldown stay last, even when the sticky session points at one of them.
   const rawDeviceKey = deviceKey(caller, scope?.originalBody ?? body);
   const dKey = namespace && rawDeviceKey ? `${namespace}:${rawDeviceKey}` : rawDeviceKey;
-  let ordered = [...orderByAffinity(usable.filter((a) => !a.cooling), sKey, dKey), ...usable.filter((a) => a.cooling)];
+  const merkleNamespace = scope && !scope.reliable ? sKey : null;
+  let ordered = orderByMerklePrefix(
+    [...orderByAffinity(usable.filter((a) => !a.cooling), sKey, dKey), ...usable.filter((a) => a.cooling)],
+    merkleNamespace,
+    scope?.originalBody ?? body,
+    format,
+  );
   let attempts = 0;
   let lastStatus = 0;
   /** The node refused the request itself (spec_too_large …): answered once, no further candidates. */
@@ -931,6 +950,7 @@ async function proxyRequest(req: FastifyRequest, reply: FastifyReply, format: Cl
     const lease = gates.acquireLease(account.id, account.concurrency, account.rpm_limit, () => ctx.abort.abort(new Error("account scheduling lease lost")));
     if (!lease) { busy.push(account); continue; }
     ctx.accountLease = lease;
+    if (ctx.selectionMs === null) ctx.selectionMs = Date.now() - ctx.startedAt;
     if (account.cooling) {
       console.warn(`[proxy] ${ctx.requestId} account ${account.name} is 429-cooling until ${account.rate_limited_until}; no other candidate, trying anyway`);
     }
@@ -949,12 +969,14 @@ async function proxyRequest(req: FastifyRequest, reply: FastifyReply, format: Cl
       ctx.trace.nodeId = account.node_id;
       ctx.trace.upstreamStatus = null;
       ctx.trace.upstreamMessage = null;
+      ctx.trace.failure = null;
       // Raw passthrough relay on a same-protocol request (§4a): the client's model spelling travels as-is
       // (no canonical id, no account model mapping), upstream errors come back verbatim, no cooldown.
       const raw = account.raw_passthrough === 1 && mode.startsWith("passthrough-");
       const upstreamModel = raw ? model : upstreamModelFor(account, upstreamBaseModel);
       let refreshed = false;
       for (;;) {
+        ctx.executionSequence++;
         assertRequestLeases(ctx);
         if (ctx.clientGone) {
           logFailure(ctx, account, 499, "client_closed", "Client closed the connection before an upstream answer");
@@ -966,6 +988,7 @@ async function proxyRequest(req: FastifyRequest, reply: FastifyReply, format: Cl
         let cred;
         try {
           cred = await freshCredential(account, refreshed, isolation, ctx.abort.signal);
+          ctx.credentialVersion = one<{ credential_version: number }>("SELECT credential_version FROM accounts WHERE id = ?", account.id)?.credential_version ?? account.credential_version;
         } catch (err) {
           if (ctx.abort.signal.aborted) { logFailure(ctx, account, 499, "client_closed", "Client closed during credential refresh"); return; }
           markFailure(account.id, { kind: "auth", message: `credential unreadable: ${(err as Error).message}` });
@@ -1032,6 +1055,7 @@ async function proxyRequest(req: FastifyRequest, reply: FastifyReply, format: Cl
             // Not this account's fault and no other account can take it either.
             requestError = err;
             ctx.trace.upstreamMessage = `node: ${err.nodeCode}`;
+            ctx.trace.failure = { ...classifyTransportFailure(err.message, err.nodeCode.includes("proxy")), credentialVersion: ctx.credentialVersion ?? undefined, executionSequence: ctx.executionSequence };
             break;
           }
           attempts++;
@@ -1039,6 +1063,7 @@ async function proxyRequest(req: FastifyRequest, reply: FastifyReply, format: Cl
           lastMessage = (err as Error).message;
           ctx.trace.upstreamStatus = null;
           ctx.trace.upstreamMessage = `network: ${lastMessage}`.slice(0, 500);
+          ctx.trace.failure = { ...classifyTransportFailure(lastMessage), credentialVersion: ctx.credentialVersion ?? undefined, executionSequence: ctx.executionSequence };
           console.warn(`[proxy] ${ctx.requestId} account ${account.name}: network error ${lastMessage}`);
           if (raw) {
             // Raw passthrough: no cooldown, no failover — answer once.
@@ -1064,6 +1089,7 @@ async function proxyRequest(req: FastifyRequest, reply: FastifyReply, format: Cl
             console.log(`[proxy] ${ctx.requestId} sticky session moved off its account to ${account.name}: billing input at cache-read price (sub2api ForceCacheBilling)`);
           }
           rememberSticky(sKey, account.id);
+          rememberMerklePrefix(merkleNamespace, scope?.originalBody ?? body, format, account.id, Date.now() + stickyTtlMs());
           rememberDevice(dKey, account.id);
           sampleWindow(account, res.headers);
           console.log(`[proxy] ${ctx.requestId} ${endpoint} ${model} -> ${account.name} (${account.route}/${mode}) headers +${((Date.now() - ctx.startedAt) / 1000).toFixed(1)}s`);
@@ -1081,6 +1107,15 @@ async function proxyRequest(req: FastifyRequest, reply: FastifyReply, format: Cl
         // Body excerpt makes shape-caused 4xx diagnosable (e.g. an OAuth account answers 429
         // to a Claude Code UA request that lacks the billing system block, docs/claude-code-compat.md §5).
         console.warn(`[proxy] ${ctx.requestId} account ${account.name} -> HTTP ${status} ${text.replace(/\s+/g, " ").slice(0, 240)}`);
+        ctx.trace.failure = {
+          scope: status === 401 || status === 402 || status === 403 ? "account" : status >= 500 ? "transport" : "request",
+          code: status === 429 ? "upstream_rate_limited" : `upstream_http_${status}`,
+          message: upstreamMessage(text) || `Upstream returned HTTP ${status}`,
+          retryable: status === 429 || status >= 500,
+          status,
+          credentialVersion: ctx.credentialVersion ?? undefined,
+          executionSequence: ctx.executionSequence,
+        };
 
         if (raw) {
           // Raw passthrough (§4a): every upstream status and body goes back verbatim — 429 and 5xx included —
@@ -1105,9 +1140,8 @@ async function proxyRequest(req: FastifyRequest, reply: FastifyReply, format: Cl
           return;
         }
         if (isCcrMode(mode) && isCcModelUnavailable(text)) {
-          // Claude Code reports a retired / unlicensed model as an is_error result,
-          // which the worker tunnel surfaces as a 502 body. The consumer's request is
-          // the problem, not the account: 404 now, no failover, no cooldown (gateway.md §3).
+          ctx.trace.failure = { scope: "account_model", code: "model_not_found", message: upstreamMessage(text), retryable: true, status: 404, credentialVersion: ctx.credentialVersion ?? undefined, executionSequence: ctx.executionSequence };
+          // A retired or unlicensed model is scoped to this account/model pair, not a dead credential.
           console.warn(`[proxy] ${ctx.requestId} model ${upstreamModel} unavailable on Claude Code (${account.name}): 404 to client, no failover/cooldown`);
           fail(ctx, account, 404, "model_not_found", `Model '${model}' is not available on the subscription path (Claude Code: model may not exist or the account has no access).`, "not_found_error");
           return;
@@ -1131,6 +1165,7 @@ async function proxyRequest(req: FastifyRequest, reply: FastifyReply, format: Cl
         // worker path the text is parsed whatever the status.
         const suspended = status === 403 || isCcrMode(mode) ? parseModelSuspension(text) : null;
         if (suspended) {
+          ctx.trace.failure = { scope: "account_model", code: "upstream_model_suspended", message: upstreamMessage(text), retryable: true, status: 403, credentialVersion: ctx.credentialVersion ?? undefined, executionSequence: ctx.executionSequence, resetAt: suspended.until };
           markFailure(account.id, { kind: "model_suspended", model: suspended.model, until: suspended.until });
           console.warn(`[proxy] ${ctx.requestId} account ${account.name}: model ${suspended.model} suspended for its organization until ${suspended.until} → model cooldown, trying next account`);
           break;
@@ -1159,17 +1194,23 @@ async function proxyRequest(req: FastifyRequest, reply: FastifyReply, format: Cl
         } else if (status === 429) {
           const now429 = nowIso();
           const snap429 = sampleWindow(account, res.headers);
-          // Fable-only 7d window (7d_oi) or "credits_required": limits just the Fable
-          // family — cool that scope, the account keeps serving other models.
           const fab = fableRejectedWindow(snap429, now429);
           const credits = isCreditsRequired(text);
-          // Anthropic names the exhausted 5h/7d window: cool until it resets instead of Retry-After's seconds.
           const rej = rejectedWindow(snap429, now429);
+          const classified = classifyDirectRateLimit(text, !!rej);
+          ctx.trace.failure = { ...classified, credentialVersion: ctx.credentialVersion ?? undefined, executionSequence: ctx.executionSequence, resetAt: rej?.resetAt };
+          if (classified.scope === "request") {
+            fail(ctx, account, 429, classified.code, classified.message, "rate_limit_error");
+            return;
+          }
           if ((fab || credits) && modelScope(upstreamModel) === "fable") {
             const resetAt = fab?.resetAt ?? snap429?.resetAt ?? new Date(Date.now() + 86_400_000).toISOString().slice(0, 19) + "Z";
             markFailure(account.id, { kind: "model_window_rejected", scope: "fable", resetAt, reason: credits ? "credits_required (429)" : "7d_oi rejected (429)" });
           } else if (rej) {
             markFailure(account.id, { kind: "window_rejected", window: rej.window, resetAt: rej.resetAt });
+          } else if (classified.scope === "account_model") {
+            const ra = Number(res.headers.get("retry-after"));
+            markFailure(account.id, { kind: "model_rate_limited", model: upstreamModel, retryAfterSec: Number.isFinite(ra) && ra > 0 ? ra : undefined, reason: classified.code });
           } else {
             const ra = Number(res.headers.get("retry-after"));
             markFailure(account.id, { kind: "rate_limited", retryAfterSec: Number.isFinite(ra) && ra > 0 ? ra : undefined });
@@ -1314,9 +1355,15 @@ function logFailure(ctx: Ctx, account: AccountRow | null, status: number, code: 
       stream: ctx.stream,
       statusCode: status,
       errorCode: code,
+      errorScope: ctx.trace.failure?.scope ?? (status >= 500 ? "transport" : "request"),
+      retryable: ctx.trace.failure?.retryable ?? (status === 429 || status >= 500),
+      credentialVersion: ctx.credentialVersion,
+      executionSequence: ctx.executionSequence,
       usage: { input_tokens: 0, output_tokens: 0 },
       usageEstimated: false,
       durationMs: Date.now() - ctx.startedAt,
+      selectionMs: ctx.selectionMs,
+      streamTruncated: ctx.streamTruncated,
       clientIp: clientIp(ctx.req),
       ccShape: ctx.ccShape,
       errorMessage,
@@ -1441,6 +1488,7 @@ function settleSuccess(
   _ccrExecuted = false,
 ): void {
   try {
+    acc.observeRequest(ctx.body);
     const { usage, estimated } = acc.finalize(ctx.body);
     if (ctx.forceCacheBilling && usage.input_tokens > 0) {
       usage.cache_read_tokens = (usage.cache_read_tokens ?? 0) + usage.input_tokens;
@@ -1457,13 +1505,20 @@ function settleSuccess(
       payoutRate: account.owner_id ? account.payout_rate : 0,
       model: ctx.model,
       upstreamModel,
+      actualModel: acc.actualModel ?? upstreamModel,
       endpoint: ctx.endpoint,
       stream: ctx.stream,
       statusCode: 200,
+      credentialVersion: ctx.credentialVersion,
+      executionSequence: ctx.executionSequence,
       usage,
       usageEstimated: estimated,
       durationMs: Date.now() - ctx.startedAt,
       firstTokenMs,
+      selectionMs: ctx.selectionMs,
+      streamTruncated: ctx.streamTruncated,
+      toolCalls: acc.toolCalls,
+      toolResults: acc.toolResults,
       clientIp: clientIp(ctx.req),
       ccShape: ctx.ccShape,
       mode: ctx.trace.mode,
@@ -1547,9 +1602,17 @@ async function deliver(
   try {
     const json = JSON.parse(raw.toString("utf8")) as Json;
     const wire = upstreamWire(mode);
-    if (wire === "anthropic") acc.addAnthropic(json.usage);
-    else if (wire === "chat") acc.addOpenaiChat(json.usage);
-    else acc.addResponses(json.usage);
+    acc.observeModel(json.model);
+    if (wire === "anthropic") {
+      acc.addAnthropic(json.usage);
+      acc.addAnthropicContent(json.content);
+    } else if (wire === "chat") {
+      acc.addOpenaiChat(json.usage);
+      for (const choice of Array.isArray(json.choices) ? json.choices : []) acc.addOpenAIToolCalls(choice?.message?.tool_calls);
+    } else {
+      acc.addResponses(json.usage);
+      for (const item of Array.isArray(json.output) ? json.output : []) acc.addResponsesItem(item);
+    }
     acc.addText(collectText(json));
     let transformed: Json = json;
     if (mode === "chat-via-anthropic") transformed = anthropicMessageToOpenai(json, ctx.model);
@@ -1703,8 +1766,11 @@ async function deliverStream(
       case "passthrough-anthropic":
       case "chat-via-anthropic": {
         if (j) {
-          if (j.type === "message_start") acc.addAnthropic(j.message?.usage);
-          else if (j.type === "message_delta") acc.addAnthropic(j.usage);
+          if (j.type === "message_start") {
+            acc.observeModel(j.message?.model);
+            acc.addAnthropic(j.message?.usage);
+          } else if (j.type === "message_delta") acc.addAnthropic(j.usage);
+          else if (j.type === "content_block_start") acc.addAnthropicContent([j.content_block]);
           else if (j.type === "content_block_delta") acc.addText(j.delta?.text ?? j.delta?.partial_json);
           else if (j.type === "message_stop") completed = true;
           else if (j.type === "error" || ev.event === "error") streamError = String(j.error?.message ?? j.message ?? "upstream error");
@@ -1721,8 +1787,12 @@ async function deliverStream(
       case "passthrough-openai":
       case "anthropic-via-chat": {
         if (j) {
+          acc.observeModel(j.model);
           if (j.usage) acc.addOpenaiChat(j.usage);
-          acc.addText(j.choices?.[0]?.delta?.content);
+          for (const choice of Array.isArray(j.choices) ? j.choices : []) {
+            acc.addText(choice?.delta?.content);
+            acc.addOpenAIToolCalls(choice?.delta?.tool_calls ?? choice?.message?.tool_calls);
+          }
           if (j.error && !(Array.isArray(j.choices) && j.choices.length)) streamError = String(j.error?.message ?? j.error ?? "upstream error");
           else if (j.choices?.[0]?.finish_reason) completed = true;
         }
@@ -1738,8 +1808,11 @@ async function deliverStream(
       }
       case "passthrough-responses": {
         if (j) {
+          acc.observeModel(j.response?.model);
+          if (j.type === "response.output_item.done") acc.addResponsesItem(j.item);
           if ((j.type === "response.completed" || j.type === "response.done") && j.response) {
             acc.addResponses(j.response.usage);
+            for (const item of Array.isArray(j.response.output) ? j.response.output : []) acc.addResponsesItem(item);
             completed = !j.response.status || j.response.status === "completed";
             if (!completed) streamError = `upstream response ended with status ${j.response.status}`;
           }
@@ -1820,6 +1893,16 @@ async function deliverStream(
       // the client Claude Code's own sentence (the auto-compact trigger) as an invalid_request_error.
       // `mode` here is the wire mode (passthrough-anthropic for a worker stream too): the CCR flag is ccrExecuted.
       const reqErr = ccrExecuted || isCcrMode(mode) ? classifyCcRequestError(message) : null;
+      ctx.streamTruncated = true;
+      ctx.trace.failure = {
+        scope: reqErr ? "request" : "transport",
+        code: schedulingLost ? "scheduling_lease_lost" : reqErr?.code ?? "upstream_stream_error",
+        message,
+        retryable: !reqErr,
+        status: schedulingLost ? 503 : reqErr ? 400 : 502,
+        credentialVersion: ctx.credentialVersion ?? undefined,
+        executionSequence: ctx.executionSequence,
+      };
       if (schedulingLost) logFailure(ctx, account, 503, "scheduling_lease_lost", message);
       else if (reqErr) logFailure(ctx, account, 400, reqErr.code, reqErr.message);
       else logFailure(ctx, account, 502, "upstream_stream_error", `Stream failed before its terminator: ${message.slice(0, 300)}`);

@@ -37,3 +37,11 @@ test("Claude Code client with its own betas: passed through, oauth appended only
   const r2 = buildUpstreamRequest(oauthAccount, { accessToken: "tok" }, "passthrough-anthropic", body, "claude-sonnet-5-5", noOauth);
   assert.equal(r2.headers["anthropic-beta"], "claude-code-20250219,interleaved-thinking-2025-05-14,oauth-2025-04-20");
 });
+
+test("dynamic betas and Anthropic server tools survive direct passthrough", () => {
+  const cc = { "user-agent": "claude-cli/2.1.312 (external, cli)", "anthropic-beta": "claude-code-20250219,oauth-2025-04-20,web-search-2025-03-05,per-turn-control-2026-07-01" };
+  const withServerTool = { ...body, tools: [{ type: "web_search_20250305", name: "web_search", max_uses: 2 }] };
+  const r = buildUpstreamRequest(oauthAccount, { accessToken: "tok" }, "passthrough-anthropic", withServerTool, "claude-sonnet-5-5", cc);
+  assert.equal(r.headers["anthropic-beta"], cc["anthropic-beta"]);
+  assert.deepEqual(JSON.parse(r.body).tools, withServerTool.tools);
+});

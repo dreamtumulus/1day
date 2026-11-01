@@ -317,6 +317,7 @@ const MIGRATIONS: Array<{ version: number; up: (d: DatabaseSync, log: Log) => vo
   { version: 29, up: migration29 },
   { version: 30, up: migration30 },
   { version: 31, up: migration31 },
+  { version: 32, up: migration32 },
 ];
 
 // 上号员令牌（独立鉴权的上号站点 /onboard）：admin 签发，绑定目标节点；
@@ -903,4 +904,34 @@ function migration30(d: DatabaseSync, log: Log): void {
 function migration31(d: DatabaseSync, log: Log): void {
   addColumns(d, log, "accounts", [["refresh_cooldown_until", "TEXT"]]);
   log("migration 31: accounts.refresh_cooldown_until");
+}
+
+// Structured failure provenance, control-plane/inference readiness and request observability (2026-11-01).
+// Every credential rewrite, including direct SQL in onboarding, advances credential_version.
+function migration32(d: DatabaseSync, log: Log): void {
+  addColumns(d, log, "accounts", [
+    ["credential_version", "INTEGER NOT NULL DEFAULT 1"],
+    ["last_profile_at", "TEXT"],
+    ["last_refresh_at", "TEXT"],
+    ["last_inference_at", "TEXT"],
+  ]);
+  addColumns(d, log, "usage_logs", [
+    ["actual_model", "TEXT"],
+    ["selection_ms", "INTEGER"],
+    ["stream_truncated", "INTEGER NOT NULL DEFAULT 0"],
+    ["tool_calls", "INTEGER NOT NULL DEFAULT 0"],
+    ["tool_results", "INTEGER NOT NULL DEFAULT 0"],
+    ["error_scope", "TEXT"],
+    ["retryable", "INTEGER"],
+    ["credential_version", "INTEGER"],
+    ["execution_sequence", "INTEGER"],
+  ]);
+  d.exec(`CREATE TRIGGER IF NOT EXISTS accounts_credential_version_update
+    AFTER UPDATE OF credential_enc ON accounts
+    FOR EACH ROW WHEN OLD.credential_enc <> NEW.credential_enc
+    BEGIN
+      UPDATE accounts SET credential_version = credential_version + 1,
+        last_profile_at = NULL, last_inference_at = NULL, last_refresh_at = NULL WHERE id = NEW.id;
+    END`);
+  log("migration 32: credential versions, readiness and structured request observations");
 }

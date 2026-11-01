@@ -139,8 +139,11 @@ const mp = await admin.call("PUT", "/api/admin/models/my-custom-model", { platfo
 check("custom model", mp.data.source === "custom", mp);
 const pub = await fetch(C + "/api/models/pricing").then((x) => x.json());
 check("custom model public", pub.data.some((p) => p.id === "my-custom-model"));
-const st = await admin.call("PUT", "/api/admin/settings", { announcement: "hello", provider_default_payout_rate: 0.7 });
-check("settings", st.data.announcement === "hello" && st.data.provider_default_payout_rate === "0.7", st);
-check("bad setting", (await admin.call("PUT", "/api/admin/settings", { provider_default_payout_rate: 3 })).status === 400);
+const beforeSettings = (await admin.call("GET", "/api/admin/settings")).data;
+check("settings require revision", (await admin.call("PUT", "/api/admin/settings", { announcement: "missing revision" })).status === 428);
+const st = await admin.call("PUT", "/api/admin/settings", { announcement: "hello", provider_default_payout_rate: 0.7, _revision: beforeSettings._revision });
+check("settings", st.data.announcement === "hello" && st.data.provider_default_payout_rate === "0.7" && st.data._revision === beforeSettings._revision + 1, st);
+check("stale settings revision conflict", (await admin.call("PUT", "/api/admin/settings", { announcement: "stale", _revision: beforeSettings._revision })).status === 409);
+check("bad setting", (await admin.call("PUT", "/api/admin/settings", { provider_default_payout_rate: 3, _revision: st.data._revision })).status === 400);
 console.log(fails ? `${fails} FAILED` : "ALL PASS");
 process.exit(fails ? 1 : 0);

@@ -123,7 +123,8 @@ async function runEgress(sessionId, line) {
     // The OAuth identity endpoint is an upstream test double; the console still
     // reserves a measured proxy and verifies this response through the real tunnel.
     const identity = target.pathname === "/api/oauth/validate" ? { organization_uuid: orgUuid, account_uuid: accountUuid }
-      : target.pathname === "/api/oauth/profile" ? { account: { uuid: accountUuid, email: `${accountUuid}@fixture.invalid` }, organization: { uuid: orgUuid, name: "E2E team", organization_type: "claude_team" } } : null;
+      : target.pathname === "/api/oauth/profile" ? { account: { uuid: accountUuid, email: `${accountUuid}@fixture.invalid` }, organization: { uuid: orgUuid, name: "E2E team", organization_type: "claude_team" } }
+      : target.pathname === "/api/oauth/claude_cli/roles" ? { organization_role: "member", workspace_role: "developer", organization_name: "E2E team" } : null;
     const res = identity ? Response.json(identity) : await fetch(target, { method: spec.method ?? (body ? "POST" : "GET"), headers: spec.headers ?? {}, body, redirect: "manual", signal: s.abort.signal });
     const headers = {};
     res.headers.forEach((v, k) => { if (!["content-encoding", "content-length", "transfer-encoding"].includes(k)) headers[k] = v; });

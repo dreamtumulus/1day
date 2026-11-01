@@ -27,7 +27,9 @@
 | 404 | `model_not_found` | not_found_error | 模型不在注册表或已下架 |
 | 404 | `not_found` | not_found_error | 未知路由 |
 | 429 | `quota_exhausted` | billing_error | Key 额度用尽 |
-| 429 | `upstream_rate_limited` | rate_limit_error | 尝试过的账户最后都是 429 |
+| 429 | `upstream_rate_limited` | rate_limit_error | 尝试过的账户最后都是账号/窗口限流 |
+| 429 | `upstream_request_rejected` | rate_limit_error | 直连上游把请求本身拒绝（客户端版本、请求权益/形态等）：不换账号、不冷却，客户端修正后再试；用量行 `error_scope=request`、`retryable=false` |
+| 429（用量行） | `upstream_model_rate_limited` | — | 模型额度/权益限制：只冷却该账号的 `model:<id>`，其他模型仍可调度，换账号重试；用量行 `error_scope=account_model` |
 | 透传 | 上游原样 / `upstream_client_error` | invalid_request_error | 上游 400/404/413/422 直接透传；跨协议时包装成客户端方言 |
 | 500 | `internal_error` | api_error | 未处理异常 |
 | 501 | `not_implemented` | invalid_request_error | 图片 / 视频生成 |
@@ -36,6 +38,8 @@
 | 503 | `no_available_account` | upstream_error | 无候选账户，或候选都因并发满 / 节点离线未能尝试。2026-10-19 起请求本身的问题不再落到这里，收到它就是真的没有可用供给，客户端应退避重试 |
 | 503 | `team_capacity_exhausted` | upstream_error | **工具轮**（最后一条消息是 `tool_result` / `tool` / `function_call_output`）所在组织暂无可调度账号，或其账号全部尝试失败（2026-11-01 起）。工具轮不再切换组织、不重置代次：先等待至多 `ACCOUNT_BUSY_WAIT_MS`（默认 15 s）看组织是否恢复，仍不可用则返回本码并带 `Retry-After: 30`；对话上下文保留，客户端**原样重试同一请求**即可。此前（2026-10-30/31）同一情形切换组织后返回 409 `tool_continuation_after_reset`，两天 771 次 |
 | 409 | `tool_continuation_after_reset` | invalid_request_error | 工具轮的 `tool_use` 不是本平台当前代次发出的：历史策略 `reset` 下带着外部历史的工具轮（`history_unknown` 的工具轮形态），或代次重置后残留的旧工具轮。2026-11-01 起组织容量耗尽不再触发此码（见 503 `team_capacity_exhausted`） |
+
+迁移 32 起失败行还带统一错误对象：`error_scope`（`request` / `account_model` / `account` / `node_proxy` / `transport`）、`retryable`、`credential_version`、`execution_sequence`。节点代理失败与上游传输失败分开；凭据每次变更版本加 1，强制刷新后的重试使用新版本；同一客户请求的首次执行为 1，故障转移/刷新重试递增。
 
 失败请求同样写入 `usage_logs`（`status_code`、`error_code`，费用 0）。v2 的 `key_revoked`、`upstream_not_configured`、
 `upstream_unreachable` 已不再产生。
@@ -64,6 +68,8 @@
 | 404 | `not_found` | 未知路由 |
 | 409 | `group_exists` | 分组重名 |
 | 409 | `node_bound_elsewhere` | nodeId 已绑定到其他号商 |
+| 409 | `settings_revision_conflict` | 设置已被其他管理员/进程改成新 revision；重新读取并复核，不用旧文档覆盖 |
+| 428 | `settings_revision_required` | 设置写入缺 `_revision` 或 `If-Match`；先 GET 当前版本 |
 | 429 | `too_many_attempts` | 同 IP 10 分钟内登录失败 ≥ 20 次 |
 | 503 | `no_online_node` | 隧道 open 时号商无可用节点 |
 | 500 | `internal_error` | 未处理异常 |

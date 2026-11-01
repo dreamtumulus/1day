@@ -159,7 +159,7 @@ console 日志里 2600 条 400）。最常见的触发是 `messagesToPrompt` 渲
 （文件读内容、目录读列表），会话被撑大 1.7–3.8 倍而报 "Prompt is too long … this conversation is only ~385k tokens — the rest is … attachment content"，
 也让客户文本能读到节点文件。节点 worker 进程现在带 `CLAUDE_CODE_DISABLE_FILE_MENTIONS=1`（bundle d7db36dd），`@/etc/hostname` 之类不再被读取。
 **模型族冷却**（2026-10-16，仿 sub2api `SetModelRateLimit`）：`accounts.model_cooldowns` JSON `{scope: {until, reason, used, resetAt}}`（迁移 9）。
-目前只有 `fable` 一个 scope（模型名含 fable）。Fable 专属 7 天窗口（响应头 `anthropic-ratelimit-unified-7d_oi-*`、usage 体
+scope 包括 `fable`（模型族）和 `model:<id>`（单模型限流/组织停用）。Fable 专属 7 天窗口（响应头 `anthropic-ratelimit-unified-7d_oi-*`、usage 体
 `seven_day_fable` / `seven_day_overage_included`）耗尽或 429 `credits_required` 时只冷却该 scope：Fable 请求跳过该账户，其他模型照常调度。
 `listCandidates(groupId, model)` 按请求模型的 scope 过滤。usage 体里的 `seven_day_sonnet` / `seven_day_opus` 等模型族窗口**不再**并入账号级绑定窗口
 （此前会因某一族 7d 用尽而暂停整个账号）。
@@ -176,6 +176,8 @@ console 日志里 2600 条 400）。最常见的触发是 `messagesToPrompt` 渲
 去数字 UA + system + 全部消息文本` 的 sha256。进程内 Map 作热缓存、写穿到 `affinity_bindings` 表（见下「跨发布保持」），TTL 取 settings `sticky_session_ttl_sec`（默认 1800）；
 命中且仍在候选中的账户排到最前。**键里带模型**（2026-10-20）：提示缓存按账号 × 模型隔离，Claude Code 同一会话里 Sonnet/Haiku
 的副任务若因并发满被挪到别的账号，不能把 Opus 主会话的绑定一起带走（安安 06:56 一次 94 万 token 重写），所以会话键是 `s:<key>:<session>:<model>`。
+
+**无显式 session ID 的 Merkle 前缀亲和（2026-11-01，`merkle-affinity.ts`）**：对未提供可靠会话标识但有实际对话轮次的请求，将 system/user/assistant/tool 轮次规范化（忽略 `cache_control`）并计算滚动 SHA-256 前缀。候选排序时从长到短找历史绑定，下一轮能命中上一轮的完整前缀，分叉能命中共同祖先；只有成功响应才写绑定。命名空间仍包含**真实组织、对话代次、分支和模型**，绝不跨组织复用；最多探测 64 个前缀，每次成功最多写 32 个，TTL 与 sticky 相同并复用 `affinity_bindings` 持久化，蓝绿切换不丢。
 
 **503 的原因**：候选为空时先查 `modelSuspensionSummary(group, model)`，若有账号正处于组织级模型停用，返回
 `upstream_model_suspended`（503，文案写明是 Anthropic 对组织的临时限制、最早解除时间），否则才是 `no_available_account`。
@@ -266,7 +268,7 @@ ChatGPT OAuth 账户（`type=oauth, platform=openai`）只接 `/v1/responses`，
 | 400 / 404 / 413 / 422 | 不标记 | **直接透传**：同方言原样转发状态码与正文；跨协议时把上游 message 包进客户端方言，code `upstream_client_error` |
 | 401 / 403 | OAuth 且有 refreshToken：强制刷新后对同一账户重试一次；否则 `status=error` | 换下一个 |
 | 402 | `temp_unschedulable_until = now+60min` | 换下一个 |
-| 429 | **先看模型族**：请求模型含 fable 且（`7d_oi` 头 rejected / utilization ≥ 1 且 reset ≤ 8d，或 body `error.details.error_code = credits_required`）→ 只写 `model_cooldowns.fable.until = reset`（缺 reset 则 +24h），账号级不动；否则响应带 `anthropic-ratelimit-unified-{5h,7d}-status: rejected`（或 utilization ≥ 1，或 `-surpassed-threshold: true`）且 reset 合理 → `rate_limited_until = 该窗口 reset`（5h 上限 6h、7d 上限 8d），`window_reason` 记录（硬排除）；否则 `now + Retry-After`（缺省 60s，1s–7200s，软冷却：仅降序，见 §3） | 换下一个 |
+| 429 | **先分作用域**（core `classifyDirectRateLimit`）：请求权益/客户端版本/计费头等请求问题 → `upstream_request_rejected`，**不换号、不冷却**；模型额度（如 `credits_required`）→ `model:<id>` 冷却，其他模型照常；账号窗口/普通限流 → 原有窗口或 Retry-After 冷却。Fable 仍优先按 `7d_oi` / `credits_required` 只冷却 `fable` scope；带 rejected 窗口的账号级 429 冷却到 reset（5h 上限 6h、7d 上限 8d），普通账号 429 用 `now + Retry-After`（缺省 60s，软冷却）。未知 429 保守按账号限流，不猜测为请求问题 | 请求级只答一次；其余换下一个 |
 | 529 / 503 | `overload_until = now+60s` | 换下一个 |
 | 其他 5xx、网络错误 | `temp_unschedulable_until = now+30s` | 换下一个 |
 | 节点 / 平台在开会话时拒绝该请求（`spec_too_large`、`bad_spec`、console 400/413/422，`empty_prompt`） | 不标记 | **只答一次**：413 `request_too_large` 或 400 `invalid_request`，不再换账号（2026-10-18/19，§3） |
@@ -317,7 +319,7 @@ Anthropic 订阅账户的每个上游响应（2xx 与 429）都读取 `anthropic
 - CCR 路径（executor=ccr / ccr_worker）的 usage 由翻译层产出：input/output 为上游口径，缓存 = 上游缓存 − 身份上下文基线
   （settings `ccr_cache_baseline_worker` / `ccr_cache_baseline_cloud`，ccr-supply.md §7.1），之后与直连走同一条结算管道。
 - 客户端中途断开：停止读取上游，用已收到的数据结算。
-- 首 token 时间记入 `first_token_ms`，总耗时 `duration_ms`。
+- 首 token 时间记入 `first_token_ms`，总耗时 `duration_ms`；首次取得账号租约耗时记 `selection_ms`。`upstream_model` 是请求映射后的模型，`actual_model` 是上游响应实际返回的模型；流未到终止符记 `stream_truncated=1`。`tool_calls` / `tool_results` 分别统计响应工具调用与请求工具结果，OpenAI delta 与 Responses output item 去重（迁移 32）。
 
 ## 6a. 慢请求保活（`src/heartbeat.ts`，2026-10-22）
 
@@ -353,7 +355,7 @@ Claude Code 一类客户端自己还有约 120 s 的首字节超时。网关在�
 Anthropic `POST https://platform.claude.com/v1/oauth/token`（JSON），OpenAI `POST https://auth.openai.com/oauth/token`（form）。
 同一账户并发刷新合并为一次；成功则加密回写凭证，失败沿用旧令牌。
 
-**刷新不带 UA**（2026-10-29）：审计曾按 compat.md §8 给刷新加 `claude-code/<版本>` UA，09:08Z 发布后全平台刷新一律 429、8 小时 0 次成功；16:27Z 去掉 UA 后下一轮保活即刷新成功。
+**刷新必须带 Axios UA，不能带辅助查询 UA**（2026-10-29）：审计曾按 compat.md §8 给刷新加 `claude-code/<版本>` UA，发布后令牌端点持续 429；改成实抓的 `axios/1.15.2` 后恢复。它不是“不带 UA”，也不是 profile/roles 的 `claude-code/<版本>`。
 刷新请求头与实抓的真实客户端一致：`accept: application/json, text/plain, */*`、`content-type: application/json`、**`user-agent: axios/1.15.2`**（`REFRESH_UA`）、`accept-encoding: gzip, compress, deflate, br`（2026-10-29 晚对齐，compat.md §8）；`OAUTH_REFRESH_UA` 可覆盖（空串 = 不发）。
 另注：真实客户端只在令牌过期时懒刷新，没有后台保活；平台的 console 保活（到期前 15 分钟主动刷新、空闲号也刷）是为号池服务的偏离，属已知未对齐项。
 
