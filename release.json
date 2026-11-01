@@ -1,17 +1,19 @@
 {
-  "releaseId": "20261028T024559Z-audit-fixes",
+  "releaseId": "20261101T094444Z-audit-followups-and-hardening",
   "sourceTreeSha256": "c5f60dbd0fd7e6f23ad7adad5057b33ea0c89966a1ff503b98549e3284fee71e",
-  "bundleSha256": "35c3cf68bb2c33d628c90eb9b16a7a36c9713834ebc6b294908a78a2cadddc60",
-  "bundleBytes": 1526460,
-  "schemaVersion": 22,
-  "sourceCommit": "bf19bb7700c7de7931aac06fe5ab569343630626",
-  "installedAtUtc": "2026-10-28T03:10:33Z",
+  "bundleSha256": "c21ab178e98c0b358b992b35c26a54c60733b642ca8ff6a202e92b722687d589",
+  "bundleBytes": 1468347,
+  "schemaVersion": 32,
+  "sourceCommit": "45457bf30e9a51a491dd9ee8b4536940c388afb5",
+  "installedAtUtc": "2026-11-01T09:44:44Z",
   "status": "deployed",
   "tests": {
-    "core": 74,
-    "gateway": 141,
-    "console": 45,
+    "core": 96,
+    "gateway": 176,
+    "console": 84,
     "providerSuites": 6,
     "e2eSuites": 7
-  }
+  },
+  "bundleNote": "node bundle unchanged by this release (worker-01 copy, 2026-10-31 18:00 CEST); no bundle-cache entry",
+  "notes": "2026-11-01: 8ac143e tool-round 503 + hardening (perms, backup retention 168/360, services run as 1dayapi) + audit-2 follow-ups 6c0f2fd/7b8aa10/45457bf; see docs/deployment/2026-11-01-*.md (local only)"
 }
