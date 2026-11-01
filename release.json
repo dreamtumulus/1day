@@ -1,19 +1,19 @@
 {
-  "releaseId": "20261101T094444Z-audit-followups-and-hardening",
+  "releaseId": "20261101T100608Z-proxy-down-rule-and-reaudit",
   "sourceTreeSha256": "c5f60dbd0fd7e6f23ad7adad5057b33ea0c89966a1ff503b98549e3284fee71e",
-  "bundleSha256": "c21ab178e98c0b358b992b35c26a54c60733b642ca8ff6a202e92b722687d589",
-  "bundleBytes": 1468347,
-  "schemaVersion": 32,
-  "sourceCommit": "45457bf30e9a51a491dd9ee8b4536940c388afb5",
-  "installedAtUtc": "2026-11-01T09:44:44Z",
+  "bundleSha256": "8a0f026734e999dc1951d8ad35f71460845818dac37922585917de8d1f9b97ce",
+  "bundleBytes": 1539057,
+  "schemaVersion": 33,
+  "sourceCommit": "c4fa4ba29f9c49431492bcab5ccd8c5a572ef09d",
+  "installedAtUtc": "2026-11-01T10:06:08Z",
   "status": "deployed",
   "tests": {
-    "core": 96,
-    "gateway": 176,
-    "console": 84,
+    "core": 97,
+    "gateway": 177,
+    "console": 85,
     "providerSuites": 6,
     "e2eSuites": 7
   },
-  "bundleNote": "node bundle unchanged by this release (worker-01 copy, 2026-10-31 18:00 CEST); no bundle-cache entry",
-  "notes": "2026-11-01: 8ac143e tool-round 503 + hardening (perms, backup retention 168/360, services run as 1dayapi) + audit-2 follow-ups 6c0f2fd/7b8aa10/45457bf; see docs/deployment/2026-11-01-*.md (local only)"
+  "bundleNote": "node-bundle-rule1-20261101T100131Z.js; rolled to worker-01 (file in place, service restart pending), worker-02 and mirasim pending",
+  "notes": "2026-11-01 round 2: proxy_down freeze rule (migration 33), boundary anchor by content, extend-only cooldowns, probe repeat detection opt-in; see docs/deployment/2026-11-01-*.md §9"
 }
