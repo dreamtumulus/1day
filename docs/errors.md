@@ -13,7 +13,7 @@
 | 400 | `ccr_unsupported_content` / `ccr_unsupported_tool_choice` | invalid_request_error | 候选只剩云端会话（CCR）账户，而请求含图片 / 文件块，或 `tool_choice` 为 `any` / `tool`（`ccr-supply.md` §6） |
 | 400 | `bad_request` | invalid_request_error | 请求体解析失败等 Fastify 4xx |
 | 400 | `invalid_request` | invalid_request_error | 请求在发往上游前就被节点 / 平台拒绝（2026-10-19 起）：worker 路径消息里没有任何文本（`empty_prompt`，message 说明）、console 开会话校验失败（`console_*`）、节点拒绝 spec（`bad_spec` / `bad_url` / `target_not_allowed`）。只答一次，不换账号。此前这些情况会表现为 503 `no_available_account` |
-| 409 | `history_import_unsupported` | invalid_request_error | canonical worker（spec WP2，Key 生效 `workerMode=canonical` 且 `worker_canonical` 开）：请求带着没有活会话持有的历史——外部多轮历史、或没有活进程的工具轮——canonical 不折叠、不导入（G3 导入器是 WP3），客户端应新开对话或换上游 |
+| 409 | `history_import_unsupported` | invalid_request_error | canonical worker（spec WP2/WP3）：请求带着没有活会话持有的历史——外部多轮历史（`canonical_history_import=0` 时）、或没有活进程 / 无法 resume 的工具轮——canonical 不折叠；客户端应新开对话或换上游 |
 | 400 | `canonical_requires_persistent_session` | invalid_request_error | canonical worker 带客户工具时需要持久会话池（`ccr_worker_persistent=1`）来跨请求停泊工具轮 |
 | 400 | `cc_profile_mismatch` | invalid_request_error | 直连 profile 严格模式（settings `direct_profile_strict`，gateway.md §2a）：归一化后的出站请求不再是入站同一 Claude Code profile 的 genuine 请求（message 列出缺失项），**未发往上游**；只答一次，不换账号。计 `cc_profile_mismatch_total` |
 | 400 | `prompt_too_long` | invalid_request_error | worker 路径：会话超出模型上下文窗口，message 为 Claude Code 原句（"Prompt is too long · the request is ~N tokens (limit 1000000) …"），Claude Code 客户端据此自动 compact。不换账号、不冷却（2026-10-19 起；此前记为 502 `upstream_stream_error`） |

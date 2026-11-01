@@ -17,6 +17,7 @@ import { SessionMemory, blockHash, blockTail, blockTails, diffContext, firstDiff
 import { SessionTranslator, callerSystemText, contentText, isSuggestionRequest, messagesToBlocks, messagesToBlocksWithRoles, messagesToPrompt, toolChoiceInstruction, workerSystemPrompt } from "./translate.js";
 import { bump } from "../metrics.js";
 import { randomUUID } from "node:crypto";
+import { buildNativeTranscript, countStrippedThinking } from "./native-session.js";
 import type { EventPayload } from "./types.js";
 
 type Json = Record<string, any>;
@@ -27,22 +28,27 @@ type Json = Record<string, any>;
  * external multi-turn history, or a tool round without a live session) — lane B imports nothing in R2 (G3 importer is
  * WP3). The caller's system text is appended; the turn is the client's last user message, raw.
  */
-export function canonicalTurn(body: Json, planMode: "fresh" | "continue" | "tool_result", hasLiveSession: boolean): { appendSystemPrompt: string; content: Json[] | null; error: { code: string; message: string } | null } {
+export function canonicalTurn(body: Json, planMode: "fresh" | "continue" | "tool_result", hasLiveSession: boolean, allowHistoryImport = false): { appendSystemPrompt: string; content: Json[] | null; importHistory: Json[] | null; error: { code: string; message: string } | null } {
   const msgs: Json[] = Array.isArray(body.messages) ? body.messages : [];
   const appendSystemPrompt = callerSystemText(body);
   const last = msgs[msgs.length - 1];
   const raw: Json[] = typeof last?.content === "string" ? [{ type: "text", text: last.content }] : Array.isArray(last?.content) ? last.content.filter((b: Json) => b && typeof b === "object" && b.type !== "tool_result") : [];
   const hasToolResult = Array.isArray(last?.content) && last.content.some((b: Json) => b?.type === "tool_result");
+  // G3 import (settings canonical_history_import): everything before the live turn becomes a native transcript; the
+  // live turn must be a plain user message (a tool round nobody holds cannot be resumed into a generation).
+  if (planMode === "fresh" && msgs.length > 1 && allowHistoryImport && last?.role === "user" && !hasToolResult && raw.length > 0) {
+    return { appendSystemPrompt, content: raw, importHistory: msgs.slice(0, -1), error: null };
+  }
   if (planMode === "fresh" && msgs.length > 1) {
-    return { appendSystemPrompt, content: null, error: { code: "history_import_unsupported", message: "This key runs on the canonical Claude Code worker, which carries only conversations it started: the request brings earlier turns no live session holds (a history from another upstream, or a resumed conversation). Start a new conversation here (one user message) and keep the same conversation going; external history import is not available yet." } };
+    return { appendSystemPrompt, content: null, importHistory: null, error: { code: "history_import_unsupported", message: "This key runs on the canonical Claude Code worker, which carries only conversations it started: the request brings earlier turns no live session holds (a history from another upstream, or a resumed conversation). Start a new conversation here (one user message) and keep the same conversation going; external history import is not available yet." } };
   }
   if (planMode === "fresh" && hasToolResult) {
-    return { appendSystemPrompt, content: null, error: { code: "history_import_unsupported", message: "This tool round belongs to a conversation no live canonical session holds; its tool_use cannot be continued here. Start the task again with a new independent question." } };
+    return { appendSystemPrompt, content: null, importHistory: null, error: { code: "history_import_unsupported", message: "This tool round belongs to a conversation no live canonical session holds; its tool_use cannot be continued here. Start the task again with a new independent question." } };
   }
   if (planMode === "tool_result" && !hasLiveSession) {
-    return { appendSystemPrompt, content: null, error: { code: "history_import_unsupported", message: "The canonical session holding this tool round is gone; start the task again." } };
+    return { appendSystemPrompt, content: null, importHistory: null, error: { code: "history_import_unsupported", message: "The canonical session holding this tool round is gone; start the task again." } };
   }
-  return { appendSystemPrompt, content: planMode === "tool_result" ? null : raw, error: null };
+  return { appendSystemPrompt, content: planMode === "tool_result" ? null : raw, importHistory: null, error: null };
 }
 
 export interface CcrWorkerInput {
@@ -60,6 +66,8 @@ export interface CcrWorkerInput {
   signal?: AbortSignal;
   /** Canonical worker (spec WP2): key workerMode=canonical and settings worker_canonical on for this key/account. */
   canonical?: boolean;
+  /** The key's group (three-state switches resolved per key group). */
+  groupId?: string | null;
 }
 
 /** Gateway-side memory of live node sessions (docs/worker-sessions.md §1), written through to core worker_turn_memory. */
@@ -226,8 +234,18 @@ export async function runCcrWorker(input: CcrWorkerInput): Promise<Response | nu
   const content = reuseKey ? (plan.mode === "continue" ? (ephemeral ? fullBlocks.slice(echoAt + 1) : plan.content) : fullBlocks) : blocks;
   // Canonical (I3): never the folded transcript — the raw last user turn (or nothing for a parked tool round);
   // anything the live process does not hold is refused up front, not re-folded.
-  const canon = canonical ? canonicalTurn(body, plan.mode, !!mem && !!reuseKey) : null;
+  const canon = canonical ? canonicalTurn(body, plan.mode, !!mem && !!reuseKey, featureFor("canonical_history_import", { groupId: input.groupId, accountId: account.id })) : null;
   if (canon?.error) throw new TunnelRequestError(canon.error.code, canon.error.message);
+  // Native session (spec §6.3 / WP3): fresh = new id; continue / tool_result = the remembered session, resumed by the
+  // node if its live process is gone; import = transcript built here, written and resumed on the node.
+  const nativeSessionId = canonical ? (plan.mode !== "fresh" && mem?.native?.sessionId ? mem.native.sessionId : randomUUID()) : null;
+  const historyImport = canon?.importHistory ? buildNativeTranscript(canon.importHistory, nativeSessionId!, { model: input.upstreamModel }) : null;
+  if (historyImport) {
+    const stripped = countStrippedThinking(canon!.importHistory!);
+    bump("native_history_import_total", { lines: historyImport.length > 50 ? "50+" : String(historyImport.length) });
+    console.log(`[ccr-worker] ${input.requestId} canonical import: ${historyImport.length} transcript line(s) into ${nativeSessionId!.slice(0, 8)}${stripped ? ` (${stripped} thinking block(s) stripped)` : ""}`);
+  }
+  const nativeSession = canonical ? { id: nativeSessionId!, action: (plan.mode !== "fresh" && mem?.native) || historyImport ? ("resume" as const) : ("start" as const), revision: mem?.native?.revision ?? 0 } : null;
   const turnContent = canon ? canon.content : content;
   // The tool_choice instruction rides on this turn only: it is not part of the hashes the next request must echo.
   const sendContent = turnContent ? (toolChoice ? [...turnContent, { type: "text", text: toolChoice }] : turnContent) : null;
@@ -244,11 +262,18 @@ export async function runCcrWorker(input: CcrWorkerInput): Promise<Response | nu
       console.log(`[ccr-worker] ${input.requestId} node restarted ${reuseKey.slice(0, 8)} from full history (plan was ${plan.mode})`);
     }
     const awaiting = translator.awaitingTools;
+    // Canonical (spec §6.3): a node restart on a continue = a native --resume happened (G4); its outcome is the turn's.
+    const resumed = canonical && plan.mode !== "fresh" && translator.freshProcess;
+    if (resumed) bump("native_resume_total", { result: translator.error ? "failed" : "ok" });
     // cutShort: the turn is cancelled mid-generation (max_tokens / stop_sequence) and the node retires the process.
     if (translator.error || translator.cutShort || (!translator.finished && !awaiting)) {
+      if (canonical && translator.error) console.warn(`[ccr-worker] ${input.requestId} native session ${nativeSessionId?.slice(0, 8)} ${resumed ? "LOST after resume" : "DIRTY"}: ${translator.error.slice(0, 160)}`);
       sessionMemory.forget(reuseKey);
       return;
     }
+    const native = canonical
+      ? { sessionId: translator.nativeSessionId ?? nativeSessionId!, profileId: `cc-${CC_VERSION}-restricted`, revision: (mem?.native?.revision ?? 0) + (awaiting ? 0 : 1), state: awaiting ? ("AWAITING_CALLER" as const) : ("COMMITTED" as const), resumes: (mem?.native?.resumes ?? 0) + (resumed ? 1 : 0), ...(historyImport || mem?.native?.imported ? { imported: true } : {}) }
+      : undefined;
     const fold = `[assistant]\n${contentText(translator.message().content, nativeTools ? "plain" : "fence")}`;
     if (awaiting) {
       // Turn parked on the node: same turn counter; what this response already billed is added to the
@@ -260,10 +285,11 @@ export async function runCcrWorker(input: CcrWorkerInput): Promise<Response | nu
         usage: addUsage(prevUsage, translator.rawUsage),
         pendingCalls: awaiting,
         tails: blockTails(persistentBlocks),
+        ...(native ? { native } : {}),
       });
       return;
     }
-    sessionMemory.remember(reuseKey, { hashes: plan.hashes, assistantFold: fold, turn: plan.mode === "fresh" ? 1 : (plan.expectedTurn ?? 0) + 1, usage: translator.cumulativeUsage, tails: blockTails(persistentBlocks) });
+    sessionMemory.remember(reuseKey, { hashes: plan.hashes, assistantFold: fold, turn: plan.mode === "fresh" ? 1 : (plan.expectedTurn ?? 0) + 1, usage: translator.cumulativeUsage, tails: blockTails(persistentBlocks), ...(native ? { native } : {}) });
   };
   const translator = new SessionTranslator({
     model: input.clientModel,
@@ -289,7 +315,7 @@ export async function runCcrWorker(input: CcrWorkerInput): Promise<Response | nu
     isolation: input.isolation,
     prompt: sendPrompt,
     systemPrompt,
-    ...(canonical ? { mode: "canonical" as const, profileId: `cc-${CC_VERSION}-restricted`, appendSystemPrompt: canon!.appendSystemPrompt, nativeSessionId: randomUUID(), builtInToolProfile: "restricted-default" as const } : {}),
+    ...(canonical ? { mode: "canonical" as const, profileId: `cc-${CC_VERSION}-restricted`, appendSystemPrompt: canon!.appendSystemPrompt, nativeSessionId: nativeSessionId!, nativeSession: nativeSession!, ...(historyImport ? { historyImport } : {}), builtInToolProfile: "restricted-default" as const } : {}),
     ...(thinkingBudget > 0 ? { thinkingBudget } : {}),
     ...(effort ? { effort } : {}),
     ...(maxTokens > 0 ? { maxTokens } : {}),

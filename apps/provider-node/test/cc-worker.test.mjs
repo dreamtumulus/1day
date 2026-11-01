@@ -168,7 +168,6 @@ const stdoutOf = (frames, sid) =>
 assert.equal(defaultMaxConcurrency(4096 * 1_048_576), 11); // floor((4096-512)/320)
 assert.equal(defaultMaxConcurrency(600 * 1_048_576), 1, "floor 1");
 
-console.log("cc-worker: ALL PASSED");
 
 // ---- image request: content blocks -> --input-format stream-json, one user message on stdin ----
 {
@@ -445,3 +444,49 @@ console.log("cc-worker: ALL PASSED");
   await waitFor(() => framesFor(frames, "s-legacy").some((f) => f.type === "cc_worker.close"));
   assert.ok(JSON.parse(stdoutOf(frames, "s-legacy").split("\n").find((l) => l.includes('"subtype":"init"'))).argv.includes("--no-session-persistence"));
 }
+
+// ---- WP3: native session resume and history import ----
+{
+  const { manager, frames, dataDir } = setup({ canonical: true });
+  const NS = "22222222-3333-4444-8555-666666666666";
+  // explicit resume of a known native session
+  manager.handleOpen(openMsg("s-resume", { mode: "canonical", nativeSession: { id: NS, action: "resume", revision: 2 }, content: [{ type: "text", text: "next turn" }] }));
+  await waitFor(() => framesFor(frames, "s-resume").some((f) => f.type === "cc_worker.close"));
+  const init = JSON.parse(stdoutOf(frames, "s-resume").split("\n").find((l) => l.includes('"subtype":"init"')));
+  assert.ok(init.argv.includes("--resume"), `resume passes --resume: ${init.argv.join(" ")}`);
+  assert.ok(!init.argv.includes("--session-id"), "not both");
+  // history import: transcript written under the account config dir, then --resume
+  const NS2 = "33333333-4444-4555-8666-777777777777";
+  const lines = [{ type: "user", message: { role: "user", content: "imported question" }, uuid: "u1", parentUuid: null }, { type: "assistant", message: { role: "assistant", content: [{ type: "text", text: "imported answer" }] }, uuid: "u2", parentUuid: "u1" }];
+  manager.handleOpen(openMsg("s-import", { mode: "canonical", nativeSession: { id: NS2, action: "resume", revision: 0 }, historyImport: lines, content: [{ type: "text", text: "live turn" }] }));
+  await waitFor(() => framesFor(frames, "s-import").some((f) => f.type === "cc_worker.close"));
+  const init2 = JSON.parse(stdoutOf(frames, "s-import").split("\n").find((l) => l.includes('"subtype":"init"')));
+  assert.ok(init2.argv.includes("--resume"));
+  const found = [];
+  const walk = (d) => { for (const e of fs.readdirSync(d, { withFileTypes: true })) { const p = path.join(d, e.name); if (e.isDirectory()) walk(p); else if (e.name === `${NS2}.jsonl`) found.push(p); } };
+  walk(dataDir);
+  assert.equal(found.length, 1, `transcript written once under the account config dir: ${found.join(",")}`);
+  assert.ok(found[0].includes(`${path.sep}projects${path.sep}`), found[0]);
+  const written = fs.readFileSync(found[0], "utf8").trim().split("\n").map((l) => JSON.parse(l));
+  assert.equal(written.length, 2);
+  assert.ok(written.every((l) => l.sessionId === NS2 && typeof l.cwd === "string" && l.cwd.length > 0), "node stamps sessionId and its real cwd on every line");
+  assert.equal(written[1].message.content[0].text, "imported answer");
+  // malformed nativeSession / import without a session are refused
+  manager.handleOpen(openMsg("s-bad-ns", { mode: "canonical", nativeSession: { id: "nope", action: "resume" } }));
+  await waitFor(() => framesFor(frames, "s-bad-ns").some((f) => f.type === "cc_worker.open_response"));
+  assert.equal(framesFor(frames, "s-bad-ns").find((f) => f.type === "cc_worker.open_response").reasonCode, "bad_native_session_id");
+  manager.handleOpen(openMsg("s-bad-imp", { mode: "canonical", historyImport: lines }));
+  await waitFor(() => framesFor(frames, "s-bad-imp").some((f) => f.type === "cc_worker.open_response"));
+  assert.equal(framesFor(frames, "s-bad-imp").find((f) => f.type === "cc_worker.open_response").reasonCode, "bad_history_import");
+  // canonical continue with no live process and nothing to resume → session_lost (never a fresh process over a tail)
+  manager.handleOpen(openMsg("s-lost", { mode: "canonical", persist: true, reuseKey: "rk-canon-lost", turnMode: "continue", expectedTurn: 3, content: [{ type: "text", text: "tail" }] }));
+  await waitFor(() => framesFor(frames, "s-lost").some((f) => f.type === "cc_worker.error" || f.type === "cc_worker.close"));
+  assert.ok(framesFor(frames, "s-lost").some((f) => (f.type === "cc_worker.error" && f.errorCode === "session_lost") || (f.type === "cc_worker.close" && f.reasonCode === "session_lost")), JSON.stringify(framesFor(frames, "s-lost").map((f) => [f.type, f.errorCode ?? f.reasonCode])));
+  // …but with a resumable native session the miss becomes --resume fed with the new turn only
+  manager.handleOpen(openMsg("s-miss-resume", { mode: "canonical", persist: true, reuseKey: "rk-canon-miss", turnMode: "continue", expectedTurn: 1, nativeSession: { id: NS, action: "resume", revision: 1 }, content: [{ type: "text", text: "tail" }] }));
+  await waitFor(() => framesFor(frames, "s-miss-resume").some((f) => f.type === "cc_worker.close"));
+  const init3 = JSON.parse(stdoutOf(frames, "s-miss-resume").split("\n").find((l) => l.includes('"subtype":"init"')));
+  assert.ok(init3.argv.includes("--resume"), `continue miss → --resume: ${init3.argv.join(" ")}`);
+  manager.closeAll("test");
+}
+console.log("cc-worker: ALL PASSED");

@@ -1103,6 +1103,7 @@ async function proxyRequest(req: FastifyRequest, reply: FastifyReply, format: Cl
                 // Canonical worker (spec WP2): the key's effective workerMode (override ?? judge ?? legacy) AND the
                 // three-state master switch for this key group / account (铁律 2).
                 canonical: canonicalWorker,
+                groupId: caller.groupId,
               });
               if (!res) break; // no worker-capable node accepted: infra state, try next account without counting
             } else {

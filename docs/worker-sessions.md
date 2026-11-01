@@ -273,3 +273,16 @@ Claude Code 2.1.300 已具备做持久会话所需的全部开关（worker-01 �
 | 心跳 | — | `ccWorker.canonical = { enabled, profiles: ["cc-<ver>-restricted"] }` |
 
 计数：`canonical_worker_open_total{profile,result}`（`/health.counters`）。控制台只把 canonical open 派给声明 `canonical_v1` 的节点，旧 bundle 永不把它当 legacy 跑（I9）。
+
+## 9. 原生会话、恢复与外部历史（2026-11-01，spec WP3 / §6.3）
+
+- **记忆**：`TurnMemory.native = { sessionId, profileId, revision, state, resumes, imported }`（`worker_turn_memory` 写穿）。`sessionId` 以 CC `system/init.session_id` 为权威；
+  `revision` 每提交一轮 +1；`state`：COMMITTED / AWAITING_CALLER（工具轮停泊）；翻译器报错 → 记忆删除（LOST / DIRTY，日志标明），下一请求按新对话处理。
+- **continue 失配 → `--resume`**：open 带 `nativeSession:{id, action:"resume", revision}`；节点活进程能接就 stdin 续轮，不能接（exited / busy / turn 不符）就以 `--resume <id>` 起新进程、只喂新一轮
+  （G4 实证：正常 resume 不丢不重）。没有可 resume 的会话 → `session_lost`，**绝不**从折叠转录重启（I3/I9）。计 `native_resume_total{result}`。
+- **外部历史导入（G3）**：开关 `canonical_history_import`（三态，默认 `0` = 409 `history_import_unsupported`）。开 → 网关 `buildNativeTranscript` 把最后一轮之前的 messages 写成
+  CC 自己的 jsonl 形态（`parentUuid` 链、`entrypoint:"sdk-cli"`、`version`；**thinking / redacted_thinking 一律剥掉**——G3 证明二进制对签名零校验、真上游会 400），
+  节点写到账号 config dir 的 `projects/<cwd-hash>/<id>.jsonl` 后 `--resume`，再喂最后一轮。工具轮做尾巴的历史不导入（没有生成可接续）。计 `native_history_import_total`。
+- **已知窗口**（Pi 探针 T1）：请求在途被杀且 transcript 未落盘 → `--resume` 报 "No conversation found" → 翻译器报错 → 记忆删除（LOST）；有 user 无 assistant 的 transcript resume 会出现
+  `assistant:"No response requested."`。两者都只影响被杀那一轮，下一轮在网关侧表现为"会话丢失，重新开始"。
+- **未验证项**：`--resume` 与 `--input-format stream-json` 同用是否被真二进制接受（Pi 的探针用的是位置参数提示词）——灰度前先用探针 gate 跑一次。

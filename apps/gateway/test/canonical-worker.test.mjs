@@ -73,3 +73,45 @@ test("translator internalTools: a --restricted tool round (tool_use stop without
   assert.equal(content.filter((b) => b.type === "text").map((b) => b.text).join(""), "Let me check. Done.");
   assert.equal(t.usageOut().output_tokens, 16, "both API calls' output is billed");
 });
+
+// ---- WP3: native sessions ----
+import { buildNativeTranscript, transcriptBlocks, countStrippedThinking } from "../dist/ccr/native-session.js";
+
+test("buildNativeTranscript: Claude Code jsonl shape, parentUuid chain, tool pairs kept, thinking stripped (G3), empty turns skipped", () => {
+  const SID = "11111111-2222-4333-8444-555555555555";
+  const messages = [
+    { role: "user", content: "hello" },
+    { role: "assistant", content: [{ type: "thinking", thinking: "secret", signature: "sig" }, { type: "text", text: "hi" }] },
+    { role: "user", content: [{ type: "text", text: "look it up" }, { type: "image", source: { type: "base64", media_type: "image/png", data: "AA" } }] },
+    { role: "assistant", content: [{ type: "tool_use", id: "toolu_1", name: "lookup", input: { q: "x" } }] },
+    { role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_1", content: "42", is_error: false }] },
+    { role: "assistant", content: [{ type: "redacted_thinking", data: "zzz" }] }, // nothing importable → skipped
+    { role: "system", content: "ignored role" },
+  ];
+  const lines = buildNativeTranscript(messages, SID, { model: "claude-opus-5-5", now: () => "2026-11-01T00:00:00.000Z" });
+  assert.equal(lines.length, 5);
+  assert.deepEqual(lines.map((l) => l.type), ["user", "assistant", "user", "assistant", "user"]);
+  assert.equal(lines[0].parentUuid, null);
+  for (let i = 1; i < lines.length; i++) assert.equal(lines[i].parentUuid, lines[i - 1].uuid, `line ${i} chains to its parent`);
+  for (const l of lines) { assert.equal(l.sessionId, SID); assert.equal(l.version, "2.1.312"); assert.equal(l.entrypoint, "sdk-cli"); assert.equal(l.userType, "external"); assert.equal(l.cwd, ""); }
+  assert.equal(lines[0].message.content, "hello"); assert.ok(lines[0].promptId);
+  assert.deepEqual(lines[1].message.content, [{ type: "text", text: "hi" }], "thinking block stripped");
+  assert.equal(lines[1].message.stop_reason, "end_turn"); assert.equal(lines[1].message.model, "claude-opus-5-5");
+  assert.deepEqual(lines[2].message.content.map((b) => b.type), ["text", "image"]);
+  assert.equal(lines[3].message.stop_reason, "tool_use"); assert.deepEqual(lines[3].message.content, [{ type: "tool_use", id: "toolu_1", name: "lookup", input: { q: "x" } }]);
+  assert.deepEqual(lines[4].message.content, [{ type: "tool_result", tool_use_id: "toolu_1", content: "42" }]);
+  assert.ok(!JSON.stringify(lines).includes("secret") && !JSON.stringify(lines).includes("sig\""), "no thinking text or signature travels");
+  assert.equal(countStrippedThinking(messages), 2);
+  assert.deepEqual(transcriptBlocks([{ type: "thinking", thinking: "x" }]), []);
+});
+
+test("canonicalTurn with history import on: history → importHistory, live turn raw; import never applies to a tool-round tail", () => {
+  const body = { messages: [{ role: "user", content: "a" }, { role: "assistant", content: "b" }, { role: "user", content: "c" }] };
+  const off = canonicalTurn(body, "fresh", false, false);
+  assert.equal(off.error.code, "history_import_unsupported"); assert.equal(off.importHistory, null);
+  const on = canonicalTurn(body, "fresh", false, true);
+  assert.equal(on.error, null); assert.deepEqual(on.content, [{ type: "text", text: "c" }]); assert.equal(on.importHistory.length, 2);
+  const toolTail = { messages: [{ role: "user", content: "a" }, { role: "assistant", content: [{ type: "tool_use", id: "t", name: "f", input: {} }] }, { role: "user", content: [{ type: "tool_result", tool_use_id: "t", content: "r" }] }] };
+  assert.equal(canonicalTurn(toolTail, "fresh", false, true).error.code, "history_import_unsupported", "a tool round cannot be resumed into a generation");
+  assert.equal(canonicalTurn({ messages: [{ role: "user", content: "only" }] }, "fresh", false, true).importHistory, null, "single turn: nothing to import");
+});
