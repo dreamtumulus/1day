@@ -1,0 +1,799 @@
+{
+ "gate": "history-import-append",
+ "task": "T11",
+ "sampledAt": "2026-11-01T16:43:41.921Z",
+ "importer": "apps/gateway/dist/ccr/native-session.js#buildNativeTranscript",
+ "customerMessages": 8,
+ "markers": {
+  "caller": "CALLER-SYSTEM-MARKER-7f3a",
+  "snapshot": "SNAPSHOT-SYSTEM-MARKER-c4d1",
+  "second": "CALLER-SYSTEM-MARKER-9d2e"
+ },
+ "cases": {
+  "import-only": {
+   "note": "8-line gateway import, resume turn carries --append-system-prompt-file (no snapshot in transcript)",
+   "gate": "resume-streamjson-append",
+   "file": "resume-streamjson-append-t11a.json",
+   "transcript": {
+    "lines": 8,
+    "hasSnapshot": false,
+    "snapshotSystemBlocks": 0,
+    "snapshotMarkerInTranscript": 0,
+    "parentChainOk": true,
+    "digest": "74560bb4"
+   },
+   "resumed": {
+    "exitCode": 0,
+    "requests": 1,
+    "initSessionId": "4c3d585f-521f-4e46-9093-012f249de6c7",
+    "sessionIdMatches": true,
+    "args": [
+     "-p",
+     "--model",
+     "claude-sonnet-5-5",
+     "--output-format",
+     "stream-json",
+     "--verbose",
+     "--resume",
+     "4c3d585f-521f-4e46-9093-012f249de6c7",
+     "--append-system-prompt-file",
+     "<tmp-path>",
+     "--input-format",
+     "stream-json"
+    ],
+    "transcriptSnapshotsAfterResume": [
+     {
+      "systemBlocks": 10,
+      "systemLens": [
+       1229,
+       94,
+       357,
+       520,
+       163,
+       2086,
+       579,
+       280,
+       277,
+       54
+      ],
+      "systemMarkerCounts": [
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       1
+      ],
+      "tools": 0,
+      "keys": [
+       "type",
+       "systemPrompt",
+       "contextRendering"
+      ]
+     },
+     {
+      "systemBlocks": 10,
+      "systemLens": [
+       1229,
+       94,
+       357,
+       520,
+       163,
+       2086,
+       579,
+       280,
+       277,
+       54
+      ],
+      "systemMarkerCounts": [
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       1
+      ],
+      "tools": 11,
+      "keys": [
+       "type",
+       "systemPrompt",
+       "tools",
+       "cliPrefix",
+       "systemTurns",
+       "keptReminders",
+       "contextRendering"
+      ]
+     }
+    ],
+    "stderrTail": []
+   },
+   "view": {
+    "system": {
+     "blocks": 3,
+     "lens": [
+      74,
+      94,
+      5657
+     ],
+     "callerMarkerByBlock": [
+      0,
+      0,
+      1
+     ],
+     "snapshotMarkerByBlock": [
+      0,
+      0,
+      0
+     ],
+     "callerMarkerTotal": 1,
+     "snapshotMarkerTotal": 0,
+     "billingLine": true,
+     "identitySentence": "You are Claude Code, Anthropic's official CLI for Claude, running within the Claude Agent SDK.",
+     "digest": "621884f9",
+     "mainPromptLen": 5657,
+     "probeCounts": {}
+    },
+    "roles": [
+     "user:string",
+     "system:",
+     "assistant:text+tool_use",
+     "user:tool_result",
+     "assistant:text",
+     "user:text+image",
+     "assistant:text+tool_use",
+     "user:tool_result",
+     "assistant:text",
+     "user:text+text",
+     "system:text"
+    ],
+    "history": {
+     "headsPresent": [
+      "CUST-USER-1",
+      "CUST-ASSISTANT-1",
+      "CUST-TOOL-RESULT-1",
+      "CUST-ASSISTANT-2",
+      "CUST-USER-2",
+      "CUST-ASSISTANT-3",
+      "CUST-TOOL-RESULT-2",
+      "CUST-ASSISTANT-4"
+     ],
+     "headsMissing": [],
+     "noDuplicate": true,
+     "toolIdOrder": [
+      "use:toolu_cust_01",
+      "result:toolu_cust_01",
+      "use:toolu_cust_02",
+      "result:toolu_cust_02"
+     ],
+     "noThinking": true,
+     "liveTurnPresent": true,
+     "syntheticNoResponse": false
+    }
+   },
+   "digest": "2feb3dbdd43bda53"
+  },
+  "import+minimal-snapshot": {
+   "note": "same import + one handwritten prompt_snapshot line (marker text only) before the first line; same append flag",
+   "gate": "resume-streamjson-append",
+   "file": "resume-streamjson-append-t11b.json",
+   "transcript": {
+    "lines": 9,
+    "hasSnapshot": true,
+    "snapshotSystemBlocks": 1,
+    "snapshotMarkerInTranscript": 1,
+    "parentChainOk": true,
+    "digest": "7b47061e"
+   },
+   "resumed": {
+    "exitCode": 0,
+    "requests": 1,
+    "initSessionId": "e462516b-bf6d-425c-bfe5-e9d37257905d",
+    "sessionIdMatches": true,
+    "args": [
+     "-p",
+     "--model",
+     "claude-sonnet-5-5",
+     "--output-format",
+     "stream-json",
+     "--verbose",
+     "--resume",
+     "e462516b-bf6d-425c-bfe5-e9d37257905d",
+     "--append-system-prompt-file",
+     "<tmp-path>",
+     "--input-format",
+     "stream-json"
+    ],
+    "transcriptSnapshotsAfterResume": [
+     {
+      "systemBlocks": 1,
+      "systemLens": [
+       74
+      ],
+      "systemMarkerCounts": [
+       1
+      ],
+      "tools": 0,
+      "keys": [
+       "type",
+       "systemPrompt",
+       "contextRendering"
+      ]
+     },
+     {
+      "systemBlocks": 1,
+      "systemLens": [
+       74
+      ],
+      "systemMarkerCounts": [
+       1
+      ],
+      "tools": 11,
+      "keys": [
+       "type",
+       "systemPrompt",
+       "tools",
+       "cliPrefix",
+       "systemTurns",
+       "keptReminders",
+       "contextRendering"
+      ]
+     }
+    ],
+    "stderrTail": []
+   },
+   "view": {
+    "system": {
+     "blocks": 3,
+     "lens": [
+      74,
+      94,
+      74
+     ],
+     "callerMarkerByBlock": [
+      0,
+      0,
+      0
+     ],
+     "snapshotMarkerByBlock": [
+      0,
+      0,
+      1
+     ],
+     "callerMarkerTotal": 0,
+     "snapshotMarkerTotal": 1,
+     "billingLine": true,
+     "identitySentence": "You are Claude Code, Anthropic's official CLI for Claude, running within the Claude Agent SDK.",
+     "digest": "74998f78",
+     "mainPromptLen": 74,
+     "probeCounts": {}
+    },
+    "roles": [
+     "user:string",
+     "system:",
+     "assistant:text+tool_use",
+     "user:tool_result",
+     "assistant:text",
+     "user:text+image",
+     "assistant:text+tool_use",
+     "user:tool_result",
+     "assistant:text",
+     "user:text+text",
+     "system:text"
+    ],
+    "history": {
+     "headsPresent": [
+      "CUST-USER-1",
+      "CUST-ASSISTANT-1",
+      "CUST-TOOL-RESULT-1",
+      "CUST-ASSISTANT-2",
+      "CUST-USER-2",
+      "CUST-ASSISTANT-3",
+      "CUST-TOOL-RESULT-2",
+      "CUST-ASSISTANT-4"
+     ],
+     "headsMissing": [],
+     "noDuplicate": true,
+     "toolIdOrder": [
+      "use:toolu_cust_01",
+      "result:toolu_cust_01",
+      "use:toolu_cust_02",
+      "result:toolu_cust_02"
+     ],
+     "noThinking": true,
+     "liveTurnPresent": true,
+     "syntheticNoResponse": false
+    }
+   },
+   "digest": "ccb7c5dee315f8e5"
+  },
+  "snapshot-no-append": {
+   "note": "control: same snapshot, resume WITHOUT the append flag",
+   "gate": "resume-streamjson",
+   "file": "resume-streamjson-t11c.json",
+   "transcript": {
+    "lines": 9,
+    "hasSnapshot": true,
+    "snapshotSystemBlocks": 1,
+    "snapshotMarkerInTranscript": 1,
+    "parentChainOk": true,
+    "digest": "7b47061e"
+   },
+   "resumed": {
+    "exitCode": 0,
+    "requests": 1,
+    "initSessionId": "cdcdb697-4d3f-4400-9768-0f6803d60ea3",
+    "sessionIdMatches": true,
+    "args": [
+     "-p",
+     "--model",
+     "claude-sonnet-5-5",
+     "--output-format",
+     "stream-json",
+     "--verbose",
+     "--resume",
+     "cdcdb697-4d3f-4400-9768-0f6803d60ea3",
+     "--input-format",
+     "stream-json"
+    ],
+    "transcriptSnapshotsAfterResume": [
+     {
+      "systemBlocks": 1,
+      "systemLens": [
+       74
+      ],
+      "systemMarkerCounts": [
+       1
+      ],
+      "tools": 0,
+      "keys": [
+       "type",
+       "systemPrompt",
+       "contextRendering"
+      ]
+     },
+     {
+      "systemBlocks": 1,
+      "systemLens": [
+       74
+      ],
+      "systemMarkerCounts": [
+       1
+      ],
+      "tools": 11,
+      "keys": [
+       "type",
+       "systemPrompt",
+       "tools",
+       "cliPrefix",
+       "systemTurns",
+       "keptReminders",
+       "contextRendering"
+      ]
+     }
+    ],
+    "stderrTail": []
+   },
+   "view": {
+    "system": {
+     "blocks": 3,
+     "lens": [
+      74,
+      62,
+      74
+     ],
+     "callerMarkerByBlock": [
+      0,
+      0,
+      0
+     ],
+     "snapshotMarkerByBlock": [
+      0,
+      0,
+      1
+     ],
+     "callerMarkerTotal": 0,
+     "snapshotMarkerTotal": 1,
+     "billingLine": true,
+     "identitySentence": "You are a Claude agent, built on Anthropic's Claude Agent SDK.",
+     "digest": "53453079",
+     "mainPromptLen": 74,
+     "probeCounts": {}
+    },
+    "roles": [
+     "user:string",
+     "system:",
+     "assistant:text+tool_use",
+     "user:tool_result",
+     "assistant:text",
+     "user:text+image",
+     "assistant:text+tool_use",
+     "user:tool_result",
+     "assistant:text",
+     "user:text+text",
+     "system:text"
+    ],
+    "history": {
+     "headsPresent": [
+      "CUST-USER-1",
+      "CUST-ASSISTANT-1",
+      "CUST-TOOL-RESULT-1",
+      "CUST-ASSISTANT-2",
+      "CUST-USER-2",
+      "CUST-ASSISTANT-3",
+      "CUST-TOOL-RESULT-2",
+      "CUST-ASSISTANT-4"
+     ],
+     "headsMissing": [],
+     "noDuplicate": true,
+     "toolIdOrder": [
+      "use:toolu_cust_01",
+      "result:toolu_cust_01",
+      "use:toolu_cust_02",
+      "result:toolu_cust_02"
+     ],
+     "noThinking": true,
+     "liveTurnPresent": true,
+     "syntheticNoResponse": false
+    }
+   },
+   "digest": "afba4d2009915c0a"
+  },
+  "import-second-resume": {
+   "note": "second resume of case A with a DIFFERENT append text: did resume #1 pin a snapshot that now wins?",
+   "gate": "resume-streamjson-append",
+   "file": "resume-streamjson-append-t11d.json",
+   "transcript": {
+    "lines": 8,
+    "hasSnapshot": false,
+    "snapshotSystemBlocks": 0,
+    "snapshotMarkerInTranscript": 0,
+    "parentChainOk": true,
+    "digest": "74560bb4",
+    "reusedFrom": "import-only",
+    "note": "state as written before resume #1 (resume #1 then appended its own snapshot)"
+   },
+   "resumed": {
+    "exitCode": 0,
+    "requests": 1,
+    "initSessionId": "4c3d585f-521f-4e46-9093-012f249de6c7",
+    "sessionIdMatches": true,
+    "args": [
+     "-p",
+     "--model",
+     "claude-sonnet-5-5",
+     "--output-format",
+     "stream-json",
+     "--verbose",
+     "--resume",
+     "4c3d585f-521f-4e46-9093-012f249de6c7",
+     "--append-system-prompt-file",
+     "<tmp-path>",
+     "--input-format",
+     "stream-json"
+    ],
+    "transcriptSnapshotsAfterResume": [
+     {
+      "systemBlocks": 10,
+      "systemLens": [
+       1229,
+       94,
+       357,
+       520,
+       163,
+       2086,
+       579,
+       280,
+       277,
+       54
+      ],
+      "systemMarkerCounts": [
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       1
+      ],
+      "tools": 0,
+      "keys": [
+       "type",
+       "systemPrompt",
+       "contextRendering"
+      ]
+     },
+     {
+      "systemBlocks": 10,
+      "systemLens": [
+       1229,
+       94,
+       357,
+       520,
+       163,
+       2086,
+       579,
+       280,
+       277,
+       54
+      ],
+      "systemMarkerCounts": [
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       0,
+       1
+      ],
+      "tools": 11,
+      "keys": [
+       "type",
+       "systemPrompt",
+       "tools",
+       "cliPrefix",
+       "systemTurns",
+       "keptReminders",
+       "contextRendering"
+      ]
+     }
+    ],
+    "stderrTail": []
+   },
+   "view": {
+    "system": {
+     "blocks": 3,
+     "lens": [
+      74,
+      94,
+      5657
+     ],
+     "callerMarkerByBlock": [
+      0,
+      0,
+      1
+     ],
+     "snapshotMarkerByBlock": [
+      0,
+      0,
+      0
+     ],
+     "callerMarkerTotal": 1,
+     "snapshotMarkerTotal": 0,
+     "billingLine": true,
+     "identitySentence": "You are Claude Code, Anthropic's official CLI for Claude, running within the Claude Agent SDK.",
+     "digest": "621884f9",
+     "mainPromptLen": 5657,
+     "probeCounts": {
+      "CALLER-SYSTEM-MARKER-9d2e": 0
+     }
+    },
+    "roles": [
+     "user:string",
+     "system:",
+     "assistant:text+tool_use",
+     "user:tool_result",
+     "assistant:text",
+     "user:text+image",
+     "assistant:text+tool_use",
+     "user:tool_result",
+     "assistant:text",
+     "user:text+text",
+     "system:string",
+     "assistant:text",
+     "user:text"
+    ],
+    "history": {
+     "headsPresent": [
+      "CUST-USER-1",
+      "CUST-ASSISTANT-1",
+      "CUST-TOOL-RESULT-1",
+      "CUST-ASSISTANT-2",
+      "CUST-USER-2",
+      "CUST-ASSISTANT-3",
+      "CUST-TOOL-RESULT-2",
+      "CUST-ASSISTANT-4"
+     ],
+     "headsMissing": [],
+     "noDuplicate": true,
+     "toolIdOrder": [
+      "use:toolu_cust_01",
+      "result:toolu_cust_01",
+      "use:toolu_cust_02",
+      "result:toolu_cust_02"
+     ],
+     "noThinking": true,
+     "liveTurnPresent": true,
+     "syntheticNoResponse": false
+    }
+   },
+   "digest": "9fea63a687dfaa93"
+  }
+ },
+ "checks": {
+  "appendWorksOnImport": true,
+  "appendNotDuplicatedOnImport": true,
+  "snapshotReplayed": true,
+  "snapshotReplayedAlone": true,
+  "appendWorksWithSnapshot": false,
+  "secondAppendIgnored": true,
+  "firstAppendPinnedByResume": true,
+  "secondResumeLinear": true,
+  "historyIntact": true,
+  "toolsIntact": true,
+  "noThinkingUpstream": true,
+  "noSyntheticNoResponse": true,
+  "liveTurnPresent": true,
+  "sessionIdMatches": true,
+  "requestSent": true,
+  "pass": true
+ },
+ "systemShapes": {
+  "import-only": {
+   "blocks": 3,
+   "lens": [
+    74,
+    94,
+    5657
+   ],
+   "callerMarkerByBlock": [
+    0,
+    0,
+    1
+   ],
+   "snapshotMarkerByBlock": [
+    0,
+    0,
+    0
+   ],
+   "probeCounts": {},
+   "mainPromptLen": 5657,
+   "billingLine": true,
+   "identity": "You are Claude Code, Anthropic's official CLI for Claude, running within the Claude Agent SDK.",
+   "roles": [
+    "user:string",
+    "system:",
+    "assistant:text+tool_use",
+    "user:tool_result",
+    "assistant:text",
+    "user:text+image",
+    "assistant:text+tool_use",
+    "user:tool_result",
+    "assistant:text",
+    "user:text+text",
+    "system:text"
+   ]
+  },
+  "import+minimal-snapshot": {
+   "blocks": 3,
+   "lens": [
+    74,
+    94,
+    74
+   ],
+   "callerMarkerByBlock": [
+    0,
+    0,
+    0
+   ],
+   "snapshotMarkerByBlock": [
+    0,
+    0,
+    1
+   ],
+   "probeCounts": {},
+   "mainPromptLen": 74,
+   "billingLine": true,
+   "identity": "You are Claude Code, Anthropic's official CLI for Claude, running within the Claude Agent SDK.",
+   "roles": [
+    "user:string",
+    "system:",
+    "assistant:text+tool_use",
+    "user:tool_result",
+    "assistant:text",
+    "user:text+image",
+    "assistant:text+tool_use",
+    "user:tool_result",
+    "assistant:text",
+    "user:text+text",
+    "system:text"
+   ]
+  },
+  "snapshot-no-append": {
+   "blocks": 3,
+   "lens": [
+    74,
+    62,
+    74
+   ],
+   "callerMarkerByBlock": [
+    0,
+    0,
+    0
+   ],
+   "snapshotMarkerByBlock": [
+    0,
+    0,
+    1
+   ],
+   "probeCounts": {},
+   "mainPromptLen": 74,
+   "billingLine": true,
+   "identity": "You are a Claude agent, built on Anthropic's Claude Agent SDK.",
+   "roles": [
+    "user:string",
+    "system:",
+    "assistant:text+tool_use",
+    "user:tool_result",
+    "assistant:text",
+    "user:text+image",
+    "assistant:text+tool_use",
+    "user:tool_result",
+    "assistant:text",
+    "user:text+text",
+    "system:text"
+   ]
+  },
+  "import-second-resume": {
+   "blocks": 3,
+   "lens": [
+    74,
+    94,
+    5657
+   ],
+   "callerMarkerByBlock": [
+    0,
+    0,
+    1
+   ],
+   "snapshotMarkerByBlock": [
+    0,
+    0,
+    0
+   ],
+   "probeCounts": {
+    "CALLER-SYSTEM-MARKER-9d2e": 0
+   },
+   "mainPromptLen": 5657,
+   "billingLine": true,
+   "identity": "You are Claude Code, Anthropic's official CLI for Claude, running within the Claude Agent SDK.",
+   "roles": [
+    "user:string",
+    "system:",
+    "assistant:text+tool_use",
+    "user:tool_result",
+    "assistant:text",
+    "user:text+image",
+    "assistant:text+tool_use",
+    "user:tool_result",
+    "assistant:text",
+    "user:text+text",
+    "system:string",
+    "assistant:text",
+    "user:text"
+   ]
+  }
+ },
+ "recommendation": {
+  "canAppendOnImportedResume": true,
+  "firstResumePinsSnapshot": true,
+  "canDeliverSystemViaHandwrittenSnapshot": true,
+  "appendStillAppliesWhenSnapshotPresent": false,
+  "rule": "导入会话没有 prompt_snapshot 时，resume 当轮的 --append-system-prompt-file **生效且只追加一次**（主提示词 5599→5657）；但这一次 resume 结束后二进制把自己那份快照（system 10 块 + tools，含刚追加的 marker）写进 transcript，**之后的 resume 就回放快照、静默忽略新的 append** → 客户 system 只能在『第一次 resume』用 append 定终身，续轮改指令必须重建会话。",
+  "caveat": "prompt_snapshot 的 systemPrompt 是**整块替换**不是追加：只放 marker 时主提示词只剩 74B（默认 5599B 全丢），工具表仍是默认 12 个。线上若要写快照，必须把『完整客户 system + 需要保留的内置块』一次写全。"
+ },
+ "digest": "ccb7c5dee315f8e5"
+}

@@ -1,0 +1,980 @@
+{
+ "gate": "resume-env-update",
+ "task": "T12",
+ "sampledAt": "2026-11-01T16:52:39.386Z",
+ "importer": "apps/gateway/dist/ccr/native-session.js#buildNativeTranscript",
+ "question": "does --resume append a `# Environment update … (was …)` role=system block, and does transcript-cwd rewriting / DISABLE_ATTACHMENTS remove it?",
+ "cases": {
+  "stdin-same-cwd-att-off": {
+   "input": {
+    "gate": "resume-streamjson",
+    "transcriptCwdMode": "same",
+    "transcriptCwdIsRunCwd": true,
+    "attachments": "off (CLAUDE_CODE_DISABLE_ATTACHMENTS=1)",
+    "newTurn": "stdin stream-json"
+   },
+   "file": "resume-streamjson-t12a.json",
+   "resumed": {
+    "exitCode": 0,
+    "requests": 1,
+    "initCwdIsWork": true,
+    "sessionIdMatches": true,
+    "envHasDisableAttachments": true,
+    "stderrTail": []
+   },
+   "view": {
+    "systemBlocksInSystem": 3,
+    "systemLens": [
+     74,
+     62,
+     5595
+    ],
+    "messageCount": 5,
+    "tail": [
+     {
+      "index": 3,
+      "role": "user",
+      "blocks": [
+       "text(583)",
+       "text(19)"
+      ],
+      "isEnvUpdate": false,
+      "hasWasClause": false,
+      "isEnvironment": false,
+      "head": "T12-LIVE: continue."
+     },
+     {
+      "index": 4,
+      "role": "system",
+      "blocks": [
+       "text(2511)"
+      ],
+      "isEnvUpdate": false,
+      "hasWasClause": false,
+      "isEnvironment": false,
+      "head": "Available agent types for the Agent tool:\n- claude: Catch-all for any task that doesn't fit a more specific agent. Fleet"
+     }
+    ],
+    "envUpdateCount": 0,
+    "envUpdate": [],
+    "envBlockCount": 0,
+    "roles": [
+     "user:string",
+     "system:",
+     "assistant:text",
+     "user:text+text",
+     "system:text"
+    ],
+    "historyTurnsPresent": true
+   },
+   "digest": "c211e747221397c7"
+  },
+  "stdin-diff-cwd-att-off": {
+   "input": {
+    "gate": "resume-streamjson",
+    "transcriptCwdMode": "diff",
+    "transcriptCwdIsRunCwd": false,
+    "attachments": "off (CLAUDE_CODE_DISABLE_ATTACHMENTS=1)",
+    "newTurn": "stdin stream-json"
+   },
+   "file": "resume-streamjson-t12b.json",
+   "resumed": {
+    "exitCode": 0,
+    "requests": 1,
+    "initCwdIsWork": true,
+    "sessionIdMatches": true,
+    "envHasDisableAttachments": true,
+    "stderrTail": []
+   },
+   "view": {
+    "systemBlocksInSystem": 3,
+    "systemLens": [
+     74,
+     62,
+     5595
+    ],
+    "messageCount": 5,
+    "tail": [
+     {
+      "index": 3,
+      "role": "user",
+      "blocks": [
+       "text(583)",
+       "text(19)"
+      ],
+      "isEnvUpdate": false,
+      "hasWasClause": false,
+      "isEnvironment": false,
+      "head": "T12-LIVE: continue."
+     },
+     {
+      "index": 4,
+      "role": "system",
+      "blocks": [
+       "text(2511)"
+      ],
+      "isEnvUpdate": false,
+      "hasWasClause": false,
+      "isEnvironment": false,
+      "head": "Available agent types for the Agent tool:\n- claude: Catch-all for any task that doesn't fit a more specific agent. Fleet"
+     }
+    ],
+    "envUpdateCount": 0,
+    "envUpdate": [],
+    "envBlockCount": 0,
+    "roles": [
+     "user:string",
+     "system:",
+     "assistant:text",
+     "user:text+text",
+     "system:text"
+    ],
+    "historyTurnsPresent": true
+   },
+   "digest": "91e4142c159a18e2"
+  },
+  "stdin-same-cwd-att-on": {
+   "input": {
+    "gate": "resume-streamjson",
+    "transcriptCwdMode": "same",
+    "transcriptCwdIsRunCwd": true,
+    "attachments": "on",
+    "newTurn": "stdin stream-json"
+   },
+   "file": "resume-streamjson-t12c.json",
+   "resumed": {
+    "exitCode": 0,
+    "requests": 1,
+    "initCwdIsWork": true,
+    "sessionIdMatches": true,
+    "envHasDisableAttachments": false,
+    "stderrTail": []
+   },
+   "view": {
+    "systemBlocksInSystem": 3,
+    "systemLens": [
+     74,
+     62,
+     5646
+    ],
+    "messageCount": 5,
+    "tail": [
+     {
+      "index": 3,
+      "role": "user",
+      "blocks": [
+       "text(583)",
+       "text(19)"
+      ],
+      "isEnvUpdate": false,
+      "hasWasClause": false,
+      "isEnvironment": false,
+      "head": "T12-LIVE: continue."
+     },
+     {
+      "index": 4,
+      "role": "system",
+      "blocks": [
+       "text(9507)"
+      ],
+      "isEnvUpdate": false,
+      "hasWasClause": false,
+      "isEnvironment": true,
+      "head": "# Environment\nYou have been invoked in the following environment: \n - Primary working directory: <tmp-path>"
+     }
+    ],
+    "envUpdateCount": 0,
+    "envUpdate": [],
+    "envBlockCount": 1,
+    "roles": [
+     "user:string",
+     "system:",
+     "assistant:text",
+     "user:text+text",
+     "system:text"
+    ],
+    "historyTurnsPresent": true
+   },
+   "digest": "93578b12764b2384"
+  },
+  "stdin-diff-cwd-att-on": {
+   "input": {
+    "gate": "resume-streamjson",
+    "transcriptCwdMode": "diff",
+    "transcriptCwdIsRunCwd": false,
+    "attachments": "on",
+    "newTurn": "stdin stream-json"
+   },
+   "file": "resume-streamjson-t12d.json",
+   "resumed": {
+    "exitCode": 0,
+    "requests": 1,
+    "initCwdIsWork": true,
+    "sessionIdMatches": true,
+    "envHasDisableAttachments": false,
+    "stderrTail": []
+   },
+   "view": {
+    "systemBlocksInSystem": 3,
+    "systemLens": [
+     74,
+     62,
+     5646
+    ],
+    "messageCount": 5,
+    "tail": [
+     {
+      "index": 3,
+      "role": "user",
+      "blocks": [
+       "text(583)",
+       "text(19)"
+      ],
+      "isEnvUpdate": false,
+      "hasWasClause": false,
+      "isEnvironment": false,
+      "head": "T12-LIVE: continue."
+     },
+     {
+      "index": 4,
+      "role": "system",
+      "blocks": [
+       "text(9507)"
+      ],
+      "isEnvUpdate": false,
+      "hasWasClause": false,
+      "isEnvironment": true,
+      "head": "# Environment\nYou have been invoked in the following environment: \n - Primary working directory: <tmp-path>"
+     }
+    ],
+    "envUpdateCount": 0,
+    "envUpdate": [],
+    "envBlockCount": 1,
+    "roles": [
+     "user:string",
+     "system:",
+     "assistant:text",
+     "user:text+text",
+     "system:text"
+    ],
+    "historyTurnsPresent": true
+   },
+   "digest": "0ed06ff6ac650343"
+  },
+  "positional-same-cwd-att-off": {
+   "input": {
+    "gate": "resume",
+    "transcriptCwdMode": "same",
+    "transcriptCwdIsRunCwd": true,
+    "attachments": "off (CLAUDE_CODE_DISABLE_ATTACHMENTS=1)",
+    "newTurn": "positional prompt"
+   },
+   "file": "resume-t12e.json",
+   "resumed": {
+    "exitCode": 0,
+    "requests": 1,
+    "initCwdIsWork": true,
+    "sessionIdMatches": true,
+    "envHasDisableAttachments": true,
+    "stderrTail": []
+   },
+   "view": {
+    "systemBlocksInSystem": 3,
+    "systemLens": [
+     74,
+     62,
+     5595
+    ],
+    "messageCount": 5,
+    "tail": [
+     {
+      "index": 3,
+      "role": "user",
+      "blocks": [
+       "text(583)",
+       "text(30)"
+      ],
+      "isEnvUpdate": false,
+      "hasWasClause": false,
+      "isEnvironment": false,
+      "head": "Reply with the single word OK."
+     },
+     {
+      "index": 4,
+      "role": "system",
+      "blocks": [
+       "text(2511)"
+      ],
+      "isEnvUpdate": false,
+      "hasWasClause": false,
+      "isEnvironment": false,
+      "head": "Available agent types for the Agent tool:\n- claude: Catch-all for any task that doesn't fit a more specific agent. Fleet"
+     }
+    ],
+    "envUpdateCount": 0,
+    "envUpdate": [],
+    "envBlockCount": 0,
+    "roles": [
+     "user:string",
+     "system:",
+     "assistant:text",
+     "user:text+text",
+     "system:text"
+    ],
+    "historyTurnsPresent": true
+   },
+   "digest": "e2de0c7e87528233"
+  },
+  "positional-diff-cwd-att-off": {
+   "input": {
+    "gate": "resume",
+    "transcriptCwdMode": "diff",
+    "transcriptCwdIsRunCwd": false,
+    "attachments": "off (CLAUDE_CODE_DISABLE_ATTACHMENTS=1)",
+    "newTurn": "positional prompt"
+   },
+   "file": "resume-t12f.json",
+   "resumed": {
+    "exitCode": 0,
+    "requests": 1,
+    "initCwdIsWork": true,
+    "sessionIdMatches": true,
+    "envHasDisableAttachments": true,
+    "stderrTail": []
+   },
+   "view": {
+    "systemBlocksInSystem": 3,
+    "systemLens": [
+     74,
+     62,
+     5595
+    ],
+    "messageCount": 5,
+    "tail": [
+     {
+      "index": 3,
+      "role": "user",
+      "blocks": [
+       "text(583)",
+       "text(30)"
+      ],
+      "isEnvUpdate": false,
+      "hasWasClause": false,
+      "isEnvironment": false,
+      "head": "Reply with the single word OK."
+     },
+     {
+      "index": 4,
+      "role": "system",
+      "blocks": [
+       "text(2511)"
+      ],
+      "isEnvUpdate": false,
+      "hasWasClause": false,
+      "isEnvironment": false,
+      "head": "Available agent types for the Agent tool:\n- claude: Catch-all for any task that doesn't fit a more specific agent. Fleet"
+     }
+    ],
+    "envUpdateCount": 0,
+    "envUpdate": [],
+    "envBlockCount": 0,
+    "roles": [
+     "user:string",
+     "system:",
+     "assistant:text",
+     "user:text+text",
+     "system:text"
+    ],
+    "historyTurnsPresent": true
+   },
+   "digest": "245abd0abf6ec5a4"
+  }
+ },
+ "native": {
+  "phase": "native transcript written by CC 2.1.312 itself (includes its own `environment` attachment)",
+  "cases": {
+   "stdin-as-is": {
+    "edit": "none",
+    "file": "resume-streamjson-t12n1.json",
+    "transcriptBefore": {
+     "lines": 21,
+     "envAttachments": 1,
+     "envAttachmentMatchesRunCwd": [
+      true
+     ]
+    },
+    "resumed": {
+     "exitCode": 0,
+     "requests": 1,
+     "stdoutTypes": [
+      "system/init",
+      "assistant",
+      "rate_limit_event",
+      "result/success"
+     ],
+     "stderrTail": []
+    },
+    "view": {
+     "systemBlocksInSystem": 3,
+     "systemLens": [
+      74,
+      62,
+      5609
+     ],
+     "messageCount": 4,
+     "tail": [
+      {
+       "index": 2,
+       "role": "assistant",
+       "blocks": [
+        "text(2)"
+       ],
+       "isEnvUpdate": false,
+       "hasWasClause": false,
+       "isEnvironment": false,
+       "head": "OK"
+      },
+      {
+       "index": 3,
+       "role": "user",
+       "blocks": [
+        "text(19)"
+       ],
+       "isEnvUpdate": false,
+       "hasWasClause": false,
+       "isEnvironment": false,
+       "head": "T12-LIVE: continue."
+      }
+     ],
+     "envUpdateCount": 0,
+     "envUpdate": [],
+     "envBlockCount": 0,
+     "roles": [
+      "user:text+text",
+      "system:string",
+      "assistant:text",
+      "user:text"
+     ],
+     "historyTurnsPresent": false
+    },
+    "digest": "5f3065a7b0858c93"
+   },
+   "positional-as-is": {
+    "edit": "none",
+    "file": "resume-t12n2.json",
+    "transcriptBefore": {
+     "lines": 29,
+     "envAttachments": 1,
+     "envAttachmentMatchesRunCwd": [
+      true
+     ]
+    },
+    "resumed": {
+     "exitCode": 0,
+     "requests": 1,
+     "stdoutTypes": [
+      "system/init",
+      "assistant",
+      "rate_limit_event",
+      "result/success"
+     ],
+     "stderrTail": []
+    },
+    "view": {
+     "systemBlocksInSystem": 3,
+     "systemLens": [
+      74,
+      62,
+      5609
+     ],
+     "messageCount": 6,
+     "tail": [
+      {
+       "index": 4,
+       "role": "assistant",
+       "blocks": [
+        "text(2)"
+       ],
+       "isEnvUpdate": false,
+       "hasWasClause": false,
+       "isEnvironment": false,
+       "head": "OK"
+      },
+      {
+       "index": 5,
+       "role": "user",
+       "blocks": [
+        "text(27)"
+       ],
+       "isEnvUpdate": false,
+       "hasWasClause": false,
+       "isEnvironment": false,
+       "head": "ENV-NATIVE-t12n2: continue."
+      }
+     ],
+     "envUpdateCount": 0,
+     "envUpdate": [],
+     "envBlockCount": 0,
+     "roles": [
+      "user:text+text",
+      "system:string",
+      "assistant:text",
+      "user:text",
+      "assistant:text",
+      "user:text"
+     ],
+     "historyTurnsPresent": false
+    },
+    "digest": "4846f231424204bc"
+   },
+   "positional-no-env-attachment": {
+    "edit": "drop",
+    "file": "resume-t12n3.json",
+    "transcriptBefore": {
+     "lines": 36,
+     "envAttachments": 1,
+     "envAttachmentMatchesRunCwd": [
+      true
+     ]
+    },
+    "resumed": {
+     "exitCode": 0,
+     "requests": 1,
+     "stdoutTypes": [
+      "system/init",
+      "assistant",
+      "rate_limit_event",
+      "result/success"
+     ],
+     "stderrTail": []
+    },
+    "view": {
+     "systemBlocksInSystem": 3,
+     "systemLens": [
+      74,
+      62,
+      5609
+     ],
+     "messageCount": 9,
+     "tail": [
+      {
+       "index": 7,
+       "role": "user",
+       "blocks": [
+        "string(27)"
+       ],
+       "isEnvUpdate": false,
+       "hasWasClause": false,
+       "isEnvironment": false,
+       "head": "ENV-NATIVE-t12n3: continue."
+      },
+      {
+       "index": 8,
+       "role": "system",
+       "blocks": [
+        "text(721)"
+       ],
+       "isEnvUpdate": false,
+       "hasWasClause": false,
+       "isEnvironment": true,
+       "head": "# Environment\nYou have been invoked in the following environment: \n - Primary working directory: <tmp-path>"
+      }
+     ],
+     "envUpdateCount": 0,
+     "envUpdate": [],
+     "envBlockCount": 1,
+     "roles": [
+      "user:text+text",
+      "system:string",
+      "assistant:text",
+      "user:text",
+      "assistant:text",
+      "user:string",
+      "assistant:text",
+      "user:string",
+      "system:text"
+     ],
+     "historyTurnsPresent": false
+    },
+    "digest": "31211c9b5b54eac8"
+   },
+   "positional-stale-env-attachment": {
+    "edit": "stale",
+    "file": "resume-t12n4.json",
+    "transcriptBefore": {
+     "lines": 47,
+     "envAttachments": 1,
+     "envAttachmentMatchesRunCwd": [
+      true
+     ]
+    },
+    "resumed": {
+     "exitCode": 0,
+     "requests": 1,
+     "stdoutTypes": [
+      "system/init",
+      "assistant",
+      "rate_limit_event",
+      "result/success"
+     ],
+     "stderrTail": []
+    },
+    "view": {
+     "systemBlocksInSystem": 3,
+     "systemLens": [
+      74,
+      62,
+      5609
+     ],
+     "messageCount": 11,
+     "tail": [
+      {
+       "index": 9,
+       "role": "user",
+       "blocks": [
+        "string(27)"
+       ],
+       "isEnvUpdate": false,
+       "hasWasClause": false,
+       "isEnvironment": false,
+       "head": "ENV-NATIVE-t12n4: continue."
+      },
+      {
+       "index": 10,
+       "role": "system",
+       "blocks": [
+        "text(721)"
+       ],
+       "isEnvUpdate": false,
+       "hasWasClause": false,
+       "isEnvironment": true,
+       "head": "# Environment\nYou have been invoked in the following environment: \n - Primary working directory: <tmp-path>"
+      }
+     ],
+     "envUpdateCount": 0,
+     "envUpdate": [],
+     "envBlockCount": 1,
+     "roles": [
+      "user:text+text",
+      "system:string",
+      "assistant:text",
+      "user:text",
+      "assistant:text",
+      "user:string",
+      "assistant:text",
+      "user:string",
+      "assistant:text",
+      "user:string",
+      "system:text"
+     ],
+     "historyTurnsPresent": false
+    },
+    "digest": "2ef023920be38be1"
+   }
+  },
+  "firstTurn": {
+   "file": "session-t12n0.json",
+   "sessionIdMatches": true,
+   "requests": 1,
+   "transcript": {
+    "lines": 21,
+    "envAttachments": 1,
+    "envAttachmentMatchesRunCwd": true
+   }
+  }
+ },
+ "reproT1": {
+  "sequence": "run-gate session (default prompt) → run-gate resume (positional, T1-TURN2) → run-gate resume (positional, T1-TURN3)",
+  "attempts": [
+   {
+    "attempt": 1,
+    "file": "session-t12r1s.json",
+    "firstTurn": {
+     "requests": 1,
+     "cwdIsWork": true
+    },
+    "resumes": [
+     {
+      "turn": "T1-TURN2: what did I ask first?",
+      "tag": "t12r1a",
+      "file": "resume-t12r1a.json",
+      "resume": {
+       "exitCode": 0,
+       "requests": 1
+      },
+      "view": {
+       "systemBlocksInSystem": 3,
+       "systemLens": [
+        74,
+        62,
+        5609
+       ],
+       "messageCount": 4,
+       "tail": [
+        {
+         "index": 2,
+         "role": "assistant",
+         "blocks": [
+          "text(2)"
+         ],
+         "isEnvUpdate": false,
+         "hasWasClause": false,
+         "isEnvironment": false,
+         "head": "OK"
+        },
+        {
+         "index": 3,
+         "role": "user",
+         "blocks": [
+          "text(31)"
+         ],
+         "isEnvUpdate": false,
+         "hasWasClause": false,
+         "isEnvironment": false,
+         "head": "T1-TURN2: what did I ask first?"
+        }
+       ],
+       "envUpdateCount": 0,
+       "envUpdate": [],
+       "envBlockCount": 0,
+       "roles": [
+        "user:text+text",
+        "system:string",
+        "assistant:text",
+        "user:text"
+       ],
+       "historyTurnsPresent": false
+      }
+     },
+     {
+      "turn": "T1-TURN3: and now?",
+      "tag": "t12r1b",
+      "file": "resume-t12r1b.json",
+      "resume": {
+       "exitCode": 0,
+       "requests": 1
+      },
+      "view": {
+       "systemBlocksInSystem": 3,
+       "systemLens": [
+        74,
+        62,
+        5609
+       ],
+       "messageCount": 6,
+       "tail": [
+        {
+         "index": 4,
+         "role": "assistant",
+         "blocks": [
+          "text(2)"
+         ],
+         "isEnvUpdate": false,
+         "hasWasClause": false,
+         "isEnvironment": false,
+         "head": "OK"
+        },
+        {
+         "index": 5,
+         "role": "user",
+         "blocks": [
+          "text(18)"
+         ],
+         "isEnvUpdate": false,
+         "hasWasClause": false,
+         "isEnvironment": false,
+         "head": "T1-TURN3: and now?"
+        }
+       ],
+       "envUpdateCount": 0,
+       "envUpdate": [],
+       "envBlockCount": 0,
+       "roles": [
+        "user:text+text",
+        "system:string",
+        "assistant:text",
+        "user:string",
+        "assistant:text",
+        "user:text"
+       ],
+       "historyTurnsPresent": false
+      }
+     }
+    ],
+    "envUpdateCounts": [
+     0,
+     0
+    ]
+   },
+   {
+    "attempt": 2,
+    "file": "session-t12r2s.json",
+    "firstTurn": {
+     "requests": 1,
+     "cwdIsWork": true
+    },
+    "resumes": [
+     {
+      "turn": "T1-TURN2: what did I ask first?",
+      "tag": "t12r2a",
+      "file": "resume-t12r2a.json",
+      "resume": {
+       "exitCode": 0,
+       "requests": 1
+      },
+      "view": {
+       "systemBlocksInSystem": 3,
+       "systemLens": [
+        74,
+        62,
+        5609
+       ],
+       "messageCount": 4,
+       "tail": [
+        {
+         "index": 2,
+         "role": "assistant",
+         "blocks": [
+          "text(2)"
+         ],
+         "isEnvUpdate": false,
+         "hasWasClause": false,
+         "isEnvironment": false,
+         "head": "OK"
+        },
+        {
+         "index": 3,
+         "role": "user",
+         "blocks": [
+          "text(31)"
+         ],
+         "isEnvUpdate": false,
+         "hasWasClause": false,
+         "isEnvironment": false,
+         "head": "T1-TURN2: what did I ask first?"
+        }
+       ],
+       "envUpdateCount": 0,
+       "envUpdate": [],
+       "envBlockCount": 0,
+       "roles": [
+        "user:text+text",
+        "system:string",
+        "assistant:text",
+        "user:text"
+       ],
+       "historyTurnsPresent": false
+      }
+     },
+     {
+      "turn": "T1-TURN3: and now?",
+      "tag": "t12r2b",
+      "file": "resume-t12r2b.json",
+      "resume": {
+       "exitCode": 0,
+       "requests": 1
+      },
+      "view": {
+       "systemBlocksInSystem": 3,
+       "systemLens": [
+        74,
+        62,
+        5609
+       ],
+       "messageCount": 6,
+       "tail": [
+        {
+         "index": 4,
+         "role": "assistant",
+         "blocks": [
+          "text(2)"
+         ],
+         "isEnvUpdate": false,
+         "hasWasClause": false,
+         "isEnvironment": false,
+         "head": "OK"
+        },
+        {
+         "index": 5,
+         "role": "user",
+         "blocks": [
+          "text(18)"
+         ],
+         "isEnvUpdate": false,
+         "hasWasClause": false,
+         "isEnvironment": false,
+         "head": "T1-TURN3: and now?"
+        }
+       ],
+       "envUpdateCount": 0,
+       "envUpdate": [],
+       "envBlockCount": 0,
+       "roles": [
+        "user:text+text",
+        "system:string",
+        "assistant:text",
+        "user:string",
+        "assistant:text",
+        "user:text"
+       ],
+       "historyTurnsPresent": false
+      }
+     }
+    ],
+    "envUpdateCounts": [
+     0,
+     0
+    ]
+   }
+  ]
+ },
+ "staticCheck": {
+  "method": "local read of the shipped 2.1.312 bundle only (grep for the two literal headers and their renderer); no execution",
+  "observed": {
+   "fullHeaderLiteral": "# Environment",
+   "updateHeaderLiteral": "# Environment update",
+   "preambleLiteral": "You have been invoked in the following environment: ",
+   "diffFields": [
+    "workingDirectory",
+    "isWorktree",
+    "isGitRepo",
+    "additionalWorkingDirectories",
+    "scratchpadDirectory",
+    "githubCli",
+    "agentProxy"
+   ],
+   "updateCondition": "workingDirectory (or another diffed field) differs between the stored environment attachment and the current one; the \"(was …)\" suffix is the stored value"
+  },
+  "implication": "该块是 environment 的『diff 渲染』，不是 resume 的固定行为；因此 cwd 一致时不应出现，且 attachments 开关不控制它。"
+ },
+ "checks": {
+  "requestSent": true,
+  "importedNeverGetsUpdate": true,
+  "importedAttachmentsFlagIrrelevant": true,
+  "nativeStdinNoUpdate": true,
+  "nativePositionalNoUpdateToday": true,
+  "nativeDroppingEnvAttachmentStillNoUpdate": true,
+  "nativeStaleEnvAttachmentStillNoUpdate": true,
+  "t1SequenceNotReproduced": true,
+  "historyPreserved": true,
+  "sessionIdMatches": true,
+  "pass": true
+ },
+ "conclusion": {
+  "importedTranscript": "导入的 transcript（`buildNativeTranscript`，无 `environment` attachment）在**任何**组合下都不产生 `# Environment update`：cwd 相同/不同、attachments 开/关、stdin/positional 全为 0 次。→ 节点场景本来就不会多这一块。",
+  "trigger": "二进制里该块是 environment 的**diff 渲染**（stored environment attachment vs 本次环境）：只有 diffed 字段（workingDirectory 等）不同才会输出，`(was …)` 是存储值（见 staticCheck）。因此『cwd 是否相同』是必要条件、attachments 开关不是。",
+  "t1BlockReproduced": false,
+  "t1NonReproduction": "T1 的 99B 块今天 **0 次复现 / 4 次精确复刻**（另加 3 次 native positional 变体与 1 次 native stdin 续轮，同样 0 命中）；说明它不是 resume 的固定行为，而是当时那份 transcript 的 environment attachment 与本次环境产生了真实 diff（存储值已不可考，T1 的 home 已删除）。",
+  "disableAttachmentsRemovesBlock": false,
+  "matchingTranscriptCwdRemovesBlock": true,
+  "attachmentsNote": "`CLAUDE_CODE_DISABLE_ATTACHMENTS=1` 不管 `# Environment update`；它只控制整块 `# Environment` 是否渲染进 messages：attachments ON 时尾部多一条 9507B 的 role=system 块（含工作目录/平台/OS/版本），OFF 时默认不出现；但若 transcript 里**没有** environment attachment 而本轮又需要渲染环境，OFF 下会冒出一条 721B 的短 `# Environment` 块（见 native positional-no-env-attachment）。",
+  "advice": "节点已把导入/resume 的 transcript cwd 改写成本次 workDir：对『带 environment attachment 的 transcript』这是对的方向（diff 为空即不输出），对当前的导入 transcript（无该 attachment）则只是无害的防御，真正的护栏是**续轮形态**（stdin stream-json）与**不要写入陈旧的 environment attachment**；若将来导入器或 resume 路径会写入 environment attachment，cwd 改写就变成必需项，建议保留。",
+  "t12Answer": {
+   "disableAttachmentsRemovesBlock": false,
+   "matchingTranscriptCwdRemovesBlock": true,
+   "cwdRewriteIsSufficientInPrinciple": true,
+   "cwdRewriteNeededForTodaysNode": false
+  }
+ },
+ "digest": "91e4142c159a18e2"
+}

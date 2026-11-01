@@ -2,7 +2,9 @@
 // return the evidence file contents plus the temp HOME / session id `run-gate` printed when it keeps the home.
 // Local only: no credentials, no real upstream (run-gate always points at the capturing 127.0.0.1 fake upstream).
 import { spawn } from "node:child_process";
-import { readFileSync, existsSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { readFileSync, writeFileSync, existsSync, mkdirSync, mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
 export const OUT = resolve("docs/evidence/cc-2.1.312");
@@ -38,6 +40,22 @@ export function runGate(gate, env = {}) {
       r({ code, out, err, home, session, evidence, evidenceFile: file, stale });
     });
   });
+}
+
+/**
+ * A throw-away probe HOME in the exact layout `run-gate.mjs` expects (cfg/.credentials.json + .claude.json +
+ * settings.json, work/ as cwd) so a driver can pre-seed a transcript and then reuse it through CC_PROBE_HOME.
+ * Fake OAuth only (§0.2): no real token, no email, no real account directory.
+ */
+export function makeProbeHome(prefix = "cc-probe-") {
+  const home = mkdtempSync(join(tmpdir(), prefix));
+  const cfg = join(home, "cfg"), work = join(home, "work");
+  mkdirSync(cfg, { mode: 0o700 }); mkdirSync(work, { mode: 0o700 });
+  writeFileSync(join(cfg, ".credentials.json"), JSON.stringify({ claudeAiOauth: { accessToken: "sk-ant-oat01-probe-fake-token", refreshToken: "sk-ant-ort01-probe-fake", expiresAt: Date.now() + 8 * 3600e3, scopes: ["user:inference", "user:profile"], subscriptionType: "max" } }), { mode: 0o600 });
+  const deviceId = createHash("sha256").update("cc-probe-device").digest("hex");
+  writeFileSync(join(cfg, ".claude.json"), JSON.stringify({ userID: deviceId, hasCompletedOnboarding: true, oauthAccount: { accountUuid: "9d2d1c5e-1111-4a7b-8c3d-aaaaaaaaaaaa", emailAddress: "", organizationUuid: "11111111-2222-4333-8444-555555555555", displayName: "", fullName: "", profileFetchedAt: Date.now() } }), { mode: 0o600 });
+  writeFileSync(join(cfg, "settings.json"), JSON.stringify({ hasCompletedOnboarding: true }), { mode: 0o600 });
+  return { home, cfg, work, projectDir: join(cfg, "projects", work.replace(/[^a-zA-Z0-9]/g, "-")) };
 }
 
 /** Structural view of one captured /v1/messages request (already redacted by run-gate/shape). */

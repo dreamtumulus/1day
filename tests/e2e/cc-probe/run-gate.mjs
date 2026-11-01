@@ -4,8 +4,11 @@
 //   gate ∈ baseline | append | restricted | schema | streamjson | attachments | session | resume
 //        | session-kill | tool-interrupt | tool-interrupt-builtin | restricted-* | unrestricted-* | history-first
 //        | resume-streamjson (T7) | session-append / resume-append / resume-append-inline (T8) | attachments-mcp (T10)
+//        | resume-streamjson-append (T11: stream-json resume + --append-system-prompt-file)
 // env knobs (all optional): CC_PROBE_TAG (evidence filename suffix), CC_PROBE_PROMPT, CC_PROBE_MODEL,
-//   CC_PROBE_HOME / CC_PROBE_SESSION (reuse an earlier probe home), CC_PROBE_KEEP=1, CC_PROBE_OUT.
+//   CC_PROBE_HOME / CC_PROBE_SESSION (reuse an earlier probe home), CC_PROBE_KEEP=1, CC_PROBE_OUT,
+//   CC_PROBE_STDIN_TEXT (stream-json resume turn), CC_PROBE_ATTACHMENTS=1 (keep attachments ON for a non-`attachments*` gate),
+//   CC_PROBE_APPEND_TEXT (T11: text written into the --append-system-prompt-file).
 import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from "node:fs";
@@ -72,6 +75,10 @@ switch (gate) {
     // T7: the whole next turn arrives on stdin (node canonical continuation shape), not as a positional prompt
     JSON.stringify({ type: "user", message: { role: "user", content: [{ type: "text", text: process.env.CC_PROBE_STDIN_TEXT ?? "T7-TURN2: what did I ask before?" }] } }),
   ]; break; // G4/WP3 step 2: resume + stream-json stdin
+  case "resume-streamjson-append": appendFile = join(home, "caller-system.txt"); writeFileSync(appendFile, process.env.CC_PROBE_APPEND_TEXT ?? "CALLER-SYSTEM-MARKER-7f3a: always answer in uppercase."); args = [...common, "--resume", SESSION, "--append-system-prompt-file", appendFile, "--input-format", "stream-json"]; stdinLines = [
+    // T11: imported (snapshot-less) transcript resumed with a turn-time append — does the append reach the main prompt?
+    JSON.stringify({ type: "user", message: { role: "user", content: [{ type: "text", text: process.env.CC_PROBE_STDIN_TEXT ?? "T11-LIVE: continue after the imported history." }] } }),
+  ]; break;
   case "resume-append": appendFile = join(home, "caller-system.txt"); writeFileSync(appendFile, "CALLER-SYSTEM-MARKER-7f3a: always answer in uppercase."); args = [...common, "--resume", SESSION, "--append-system-prompt-file", appendFile, PROMPT]; break; // T8 step 2: resume WITH the append file again
   case "resume-append-inline": args = [...common, "--resume", SESSION, "--append-system-prompt", "INLINE-SYSTEM-MARKER-9b21: always answer in lowercase.", PROMPT]; break; // T8 control: inline append on resume (different flag/content)
   case "session-kill": args = [...common, "--session-id", SESSION, PROMPT]; break; // G4 step 1b: SIGKILL right after first assistant event
@@ -100,7 +107,7 @@ const env = {
   ANTHROPIC_BASE_URL: cap.baseUrl, HTTPS_PROXY: cap.proxyUrl, HTTP_PROXY: cap.proxyUrl, NO_PROXY: "127.0.0.1,localhost", no_proxy: "127.0.0.1,localhost",
   DISABLE_AUTOUPDATER: "1", DISABLE_ERROR_REPORTING: "1", CLAUDE_CODE_NO_MODEL_FALLBACK: "1",
   ...(process.env.CC_PROBE_SSLKEYLOGFILE ? { SSLKEYLOGFILE: process.env.CC_PROBE_SSLKEYLOGFILE } : {}),
-  ...(gate.startsWith("attachments") ? {} : { CLAUDE_CODE_DISABLE_ATTACHMENTS: "1" }),
+  ...(gate.startsWith("attachments") || process.env.CC_PROBE_ATTACHMENTS === "1" ? {} : { CLAUDE_CODE_DISABLE_ATTACHMENTS: "1" }),
   ...(gate === "attachments-apikey-email" ? { ANTHROPIC_AUTH_TOKEN: "sk-1day-probe-fake-platform-key" } : {}),
 };
 const started = Date.now();
@@ -151,8 +158,8 @@ const describe = (r) => {
     betaList: String(r.headers?.["anthropic-beta"] ?? "").split(",").map((s) => s.trim()).filter(Boolean),
     authScheme: auth.startsWith("Bearer ") ? "bearer" : r.headers?.["x-api-key"] ? "x-api-key" : "none",
     topLevelKeys: Object.keys(b),
-    system: sys.map((s) => ({ len: textOf(s).length, head: textOf(s).slice(0, 160), cache_control: s?.cache_control ?? null, hasMarker: textOf(s).includes("CALLER-SYSTEM-MARKER"), markerCount: (textOf(s).match(/(?:CALLER|INLINE)-SYSTEM-MARKER/g) ?? []).length, tailDigest: sha(textOf(s).slice(-160)) })),
-    markerTotal: (sysTexts.join("\u0000").match(/(?:CALLER|INLINE)-SYSTEM-MARKER/g) ?? []).length,
+    system: sys.map((s) => ({ len: textOf(s).length, head: textOf(s).slice(0, 160), cache_control: s?.cache_control ?? null, hasMarker: textOf(s).includes("CALLER-SYSTEM-MARKER"), markerCount: (textOf(s).match(/(?:CALLER|INLINE|SNAPSHOT)-SYSTEM-MARKER/g) ?? []).length, tailDigest: sha(textOf(s).slice(-160)) })),
+    markerTotal: (sysTexts.join("\u0000").match(/(?:CALLER|INLINE|SNAPSHOT)-SYSTEM-MARKER/g) ?? []).length,
     systemDigest: sha(sysTexts.join("\u0000")),
     systemBlockDigests: sysTexts.map(sha),
     identitySentence: (sysTexts.join("\n").match(IDENTITY) ?? [null])[0],
@@ -190,7 +197,7 @@ const evidence = {
   gate, tag: tag || null, binaryVersion: "2.1.312", model: MODEL, promptLen: PROMPT.length, sampledAt: new Date().toISOString(), durationMs: Date.now() - started, exitCode: code,
   killed, killedAfterMs: killedAt ? killedAt - started : null, killReason,
   args: args.map((a) => (a.startsWith("/") ? "<tmp-path>" : a)),
-  env: Object.keys(env).filter((k) => !/PATH|HOME|TMPDIR|CONFIG/),
+  env: Object.keys(env).filter((k) => !/PATH|HOME|TMPDIR|CONFIG/.test(k)),
   init: initInfo,
   requests: cap.requests.map(describe),
   otherEndpoints: cap.requests.filter((r) => !r.url.startsWith("/v1/messages")).map((r) => `${r.method} ${r.url}`),
@@ -217,7 +224,7 @@ evidence.transcript = {
   promptSnapshots: snapshots.map((s) => ({
     systemBlocks: (s.systemPrompt ?? []).length,
     systemLens: (s.systemPrompt ?? []).map((b) => blockText(b).length),
-    systemMarkerCounts: (s.systemPrompt ?? []).map((b) => (blockText(b).match(/(?:CALLER|INLINE)-SYSTEM-MARKER/g) ?? []).length),
+    systemMarkerCounts: (s.systemPrompt ?? []).map((b) => (blockText(b).match(/(?:CALLER|INLINE|SNAPSHOT)-SYSTEM-MARKER/g) ?? []).length),
     tools: (s.tools ?? []).length, keys: Object.keys(s),
   })),
 };

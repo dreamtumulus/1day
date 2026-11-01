@@ -106,7 +106,7 @@ const DISPOSITION = {
   "G1 append": ["改用 caller-instructions / mid-conversation system", "未触发（追加位可用，客户 system 不进 argv）"],
   "G2 stream-json": ["不假设 assistant 注入；历史走 G3", "未触发（assistant 注入被接受并原样入下一轮）"],
   "G3 history import": ["`history_import_unsupported` / historyPolicy=reset", "未触发（可导），但必须新增 thinking 剥离策略"],
-  "G4 resume": ["不启用 native 灰度", g4app?.resumeTimeAppendIgnored ? "未触发（可启用）；但 resume 时 `--append-system-prompt-file` 被 prompt_snapshot 静默忽略 → 客户指令必须在建会话时固定" : "未触发（可启用），需自建 DIRTY/LOST 状态机覆盖无 transcript 的崩溃窗口"],
+  "G4 resume": ["不启用 native 灰度", g4app?.resumeTimeAppendIgnored ? "未触发（可启用）；resume 期 append 只在 transcript **没有** prompt_snapshot 时生效（T11：导入会话首次 resume 生效、之后被固化快照覆盖）" : "未触发（可启用），需自建 DIRTY/LOST 状态机覆盖无 transcript 的崩溃窗口"],
   "G5 tool interrupt": ["409 `tool_continuation_lost`", "未触发（原生补 is_error tool_result、不重跑），caller 工具仍建议保留 409 兜底"],
   "G6 restricted": ["只用 tools-disabled-canonical", "未触发"],
   "G7 Bash": ["本期不开放", "未触发（restricted 无 Bash 工具）"],
@@ -151,6 +151,15 @@ md.push(`- **T7 stream-json 续轮** \`${g4sj?.checks?.pass ? "通过" : "失败
 md.push(`- **T8 append × resume** \`${g4app?.pass ? "通过" : "失败"}\`：resume 时再带 \`--append-system-prompt-file\` **不重复追加**——transcript 里持久化了 \`prompt_snapshot\`（system 10 块 + tools），resume 回放快照、**静默忽略**当次 append（file 与 inline 都忽略，主提示词仍是 5599 而非 5655）；首轮带 append 的会话 resume 后仍为 5655 且 marker 恰好 1 次 → 客户 system 必须在建会话时固定。`);
 md.push(`- **T9 gateway 导入器真机验证** \`${g3gateway?.checks?.pass ? "通过" : "失败"}\`：\`buildNativeTranscript\`（\`apps/gateway/dist/ccr/native-session.js\`）生成 8 行 transcript，resume 后 tool_use/tool_result 两对按序保真、thinking/redacted_thinking（${g3gateway?.strippedThinking ?? "—"} 块）全部剥离、image 块保留、无重复。`);
 md.push(`- **T10 beta 触发条件** \`${profiles?.betaPolicy?.trigger ?? "未做"}\`：\`mid-conversation-tool-changes-2026-07-01\` 只在 attachments 上下文开启时出现（4/4），关闭 attachments 时 0/3，与入口（cli/sdk-cli）和 MCP 工具集无关；G9 的 36 次采样都设了 \`CLAUDE_CODE_DISABLE_ATTACHMENTS=1\`，所以未见该 beta。`);
+md.push("");
+md.push("## 第三批（T11–T12）");
+md.push("");
+const t11 = doc("history-import-append.json");
+const t12 = doc("resume-env-update.json");
+const t11s = t11?.systemShapes ?? {};
+const baseMainPromptLen = mainReq(doc("baseline.json"))?.system?.at(-1)?.len ?? null;
+md.push(`- **T11 导入 transcript × append** \`${t11?.checks?.pass ? "通过" : "未做/失败"}\`：快照-less 的导入会话里，resume 当轮的 \`--append-system-prompt-file\` **生效且只追加一次**（主提示词 ${baseMainPromptLen ?? "5599"}→${t11s["import-only"]?.mainPromptLen ?? "5657"}，marker 1 次，计费头/身份句保留）；但这次 resume 结束会把二进制自己的快照（10 块 + tools）写回 transcript，**之后的 resume 换 marker 0 命中**（${t11s["import-second-resume"]?.probeCounts ? "第二次 marker " + Object.values(t11s["import-second-resume"].probeCounts)[0] + " 次" : "见证据"}）→ 客户 system 只能"首次 resume 定终身"。手写最小 \`prompt_snapshot\` 会被回放但**整块替换**主提示词（${t11s["import+minimal-snapshot"]?.mainPromptLen ?? "74"}B，默认 5599B 全丢、工具仍默认 12），且此时 append 被忽略。`);
+md.push(`- **T12 resume 后的 \`# Environment update\`** \`${t12?.checks?.pass ? "通过" : "未做/失败"}\`：导入的 transcript（无 \`environment\` attachment）在 cwd 同/异 × attachments 开/关 × stdin/positional 六种组合下 **0 次**出现该块；T1 的 99B 块 **0/4 精确复刻**（另 3 次 native positional、1 次 stdin 也 0）→ 不是 resume 的固定行为。二进制侧（只读）确认它是 environment 的 **diff 渲染**（\`workingDirectory\` 等字段与存储值不同才输出，\`(was …)\` 取存储值），\`CLAUDE_CODE_DISABLE_ATTACHMENTS\` 不控制它（只控制整块 \`# Environment\`，ON 时 9507B）→ 续轮走 stdin stream-json + 不写陈旧 environment attachment 才是护栏，cwd 改写保留作防御。`);
 md.push("");
 md.push("## 证据文件索引", "");
 md.push("| 文件 | gate | sampledAt | digest |");

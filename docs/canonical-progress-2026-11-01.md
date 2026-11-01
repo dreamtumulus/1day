@@ -34,7 +34,7 @@
 - R5（legacy 关闭、观察两周后删代码）：依赖线上观察，今天做不了。
 - WP4 余项：`response_format` / `text.format json_schema` → `--json-schema`（G8 已通过，映射未做，目前 strict 下 400）；refusal 语义文档化；三协议 golden 用真实 Key 跑（需灰度 Key）。
 
-- WP3 余项：`--resume` + stream-json 输入的真二进制探针；fork 分支；AWAITING_CALLER 回收后的 resume（G5 证明不重跑，但模型只得到"结果未知"）→ 仍走 409 `tool_continuation_after_reset` 兜底。
+- WP3 余项：fork 分支；AWAITING_CALLER 回收后的 resume（G5 证明不重跑，但模型只得到"结果未知"）→ 仍走 409 `tool_continuation_after_reset` 兜底。
 - WP6 余项：节点心跳 `telemetryEvidence` 元数据、账号页/组织页前端展示（目前只有管理 API）；G10-B 真实受理需专用测试账号 + 受控 CA 出口后录入 `source=real`。
 - WP5 余项：`raw_passthrough_header_mutation_total` 需节点上报（现只有节点日志）。
 - WP2 余项：合成 cwd（mount namespace bind → attachments 可开）、遥测 `CLAUDE_CODE_DISABLE_ATTACHMENTS` 按 G9 决定、节点 bundle 发到 worker。WP3 原生会话（G4 的"无 transcript 崩溃窗口"与 G3 的 thinking 剥离已有证据）、WP4 strict 参数契约 / Responses 第一档、WP5 raw-v1 节点能力、WP6 `telemetry_evidence` 表、WP7 组织预算与组织级熔断。

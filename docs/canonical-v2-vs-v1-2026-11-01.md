@@ -74,4 +74,4 @@
 
 ## 8. 两者都还没做的
 
-R5 legacy 关闭与删代码（需两周观察）；合成 cwd（attachments 开启的前提）；节点心跳遥测元数据；判断器缺外来历史 / ignored-params / 探针形态三项观测；`response_format → --json-schema`；2.1.316/2.1.314 profile 采样；导入 transcript 的 append 是否生效（Pi 第三批 T11 进行中）。
+R5 legacy 关闭与删代码（需两周观察）；合成 cwd（attachments 开启的前提）；节点心跳遥测元数据；判断器缺外来历史 / ignored-params / 探针形态三项观测；`response_format → --json-schema`；2.1.316/2.1.314 profile 采样；（导入会话的 append：T11 已证首次 resume 生效、之后定终身。）

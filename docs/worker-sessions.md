@@ -288,4 +288,7 @@ Claude Code 2.1.300 已具备做持久会话所需的全部开关（worker-01 �
 - **已验证（Pi 第二批，2026-11-01）**：T7 `--resume` + `--input-format stream-json` 只喂一条 stdin user → 历史 + 新一轮，无重复、无伪造（`resume-streamjson.json`）；
   T9 `buildNativeTranscript` 生成的 transcript 被 `--resume` 读入，工具对成对按序、thinking 全部未上行、image 保留（`history-import-gateway.json`）。
 - **T8 限制**：resume 回放 transcript 里持久化的 `prompt_snapshot`，当次 `--append-system-prompt-file` / `--append-system-prompt` **被静默忽略**（`append-resume.json`）——
-  客户 system 在会话首轮定死。网关的 reuseKey 含客户 system 文本，system 变了即新会话，行为一致；**导入的 transcript 没有 snapshot，append 是否生效待探针确认**（列入第三批）。
+  客户 system 在会话首轮定死。网关的 reuseKey 含客户 system 文本，system 变了即新会话，行为一致。
+- **T11（第三批）**：导入的 transcript（无 snapshot）**首次** resume 时 `--append-system-prompt-file` 生效（主提示词 5599→5657，marker 1 次，计费头/身份句保留，8 轮历史与工具对保真），
+  且二进制随后把含 marker 的快照写回 transcript → 之后再 resume 同样忽略当次 append（"首次 resume 定终身"）。与网关设计一致：客户 system 随会话固定、变更即新会话。手写最小 `prompt_snapshot` 会**整块替换** system（丢掉内置主提示词），不可用。
+- **T12（第三批）**：`# Environment update … (was …)` 是 environment attachment 的 **diff 渲染**（仅当 workingDirectory 等与存储值不同才输出），导入 transcript（无 environment attachment）六种组合 0 次；节点把 transcript `cwd` 改写成本次 workDir 的做法保留；真正护栏是 stdin stream-json 续轮 + 不写陈旧 environment attachment。

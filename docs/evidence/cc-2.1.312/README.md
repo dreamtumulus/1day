@@ -3,8 +3,8 @@
 由 `node tests/e2e/cc-probe/evidence.mjs` 生成；逐项过程记录见 [PROGRESS.md](./PROGRESS.md)，
 G3 见 [G3-matrix.md](./G3-matrix.md)，G10-B 见 [G10-B-mitm.md](./G10-B-mitm.md)。
 
-- 证据文件：102 个 JSON（`docs/evidence/cc-2.1.312/`）
-- 生成时间：2026-11-01T15:17:24.401Z
+- 证据文件：125 个 JSON（`docs/evidence/cc-2.1.312/`）
+- 生成时间：2026-11-01T16:53:57.503Z
 - 脱敏校验（`sk-ant-` / `@` / `/tmp/` / `/home/`）：通过（0 处命中）
 - 所有 gate 的 CONNECT 目标：api.anthropic.com:443, raw.githubusercontent.com:443, downloads.claude.ai:443, github.com:443
 
@@ -13,7 +13,7 @@ G3 见 [G3-matrix.md](./G3-matrix.md)，G10-B 见 [G10-B-mitm.md](./G10-B-mitm.m
 | G1 append | 通过 | `append.json`<br>`baseline.json` | 2026-11-01T12:52:05.691Z | d9abf4cfc19ff263 | 改用 caller-instructions / mid-conversation system | 未触发（追加位可用，客户 system 不进 argv） |
 | G2 stream-json | 部分 | `streamjson.json`<br>`history-first.json` | 2026-11-01T12:52:21.942Z | bc8b20e17261811f | 不假设 assistant 注入；历史走 G3 | 未触发（assistant 注入被接受并原样入下一轮） |
 | G3 history import | 通过（thinking 需剥离；gateway 导入器真机验证通过） | `history-import-user.json`<br>`history-import-assistant-text.json`<br>`history-import-tool-use.json`<br>`history-import-thinking-last.json`<br>`history-import-thinking-earlier.json`<br>`history-import-thinking-nosig.json`<br>`history-import-thinking-badsig.json`<br>`history-import-combined.json`<br>`history-import-gateway.json` | — | — | `history_import_unsupported` / historyPolicy=reset | 未触发（可导），但必须新增 thinking 剥离策略 |
-| G4 resume | 部分（有会话丢失窗口） | `session.json`<br>`resume.json`<br>`resume-2.json`<br>`session-kill.json`<br>`resume-kill.json`<br>`session-kill-midflight.json`<br>`resume-midflight-early.json`<br>`session-kill-midflight-nofile.json`<br>`resume-midflight-nofile.json`<br>`resume-streamjson.json`<br>`resume-streamjson-t7.json`<br>`append-resume.json` | 2026-11-01T15:09:59.558Z | 7774f419927ebd8c | 不启用 native 灰度 | 未触发（可启用）；但 resume 时 `--append-system-prompt-file` 被 prompt_snapshot 静默忽略 → 客户指令必须在建会话时固定 |
+| G4 resume | 部分（有会话丢失窗口） | `session.json`<br>`resume.json`<br>`resume-2.json`<br>`session-kill.json`<br>`resume-kill.json`<br>`session-kill-midflight.json`<br>`resume-midflight-early.json`<br>`session-kill-midflight-nofile.json`<br>`resume-midflight-nofile.json`<br>`resume-streamjson.json`<br>`resume-streamjson-t7.json`<br>`append-resume.json` | 2026-11-01T15:09:59.558Z | 7774f419927ebd8c | 不启用 native 灰度 | 未触发（可启用）；resume 期 append 只在 transcript **没有** prompt_snapshot 时生效（T11：导入会话首次 resume 生效、之后被固化快照覆盖） |
 | G5 tool interrupt | 通过 | `tool-interrupt.json`<br>`resume-mcp.json`<br>`tool-interrupt-builtin.json`<br>`resume-builtin.json` | 2026-11-01T13:36:02.262Z | 1b0ca9d56d4087fc | 409 `tool_continuation_lost` | 未触发（原生补 is_error tool_result、不重跑），caller 工具仍建议保留 409 兜底 |
 | G6 restricted | 通过 | `restricted.json`<br>`restricted-read-creds.json`<br>`restricted-read-hostname.json`<br>`unrestricted-read-creds.json` | 2026-11-01T12:58:03.468Z | 765398c2f2eb6b92 | 只用 tools-disabled-canonical | 未触发 |
 | G7 Bash | 通过 | `restricted-bash.json` | 2026-11-01T12:58:08.153Z | 70937ed772f9043c | 本期不开放 | 未触发（restricted 无 Bash 工具） |
@@ -43,6 +43,11 @@ G3 见 [G3-matrix.md](./G3-matrix.md)，G10-B 见 [G10-B-mitm.md](./G10-B-mitm.m
 - **T9 gateway 导入器真机验证** `通过`：`buildNativeTranscript`（`apps/gateway/dist/ccr/native-session.js`）生成 8 行 transcript，resume 后 tool_use/tool_result 两对按序保真、thinking/redacted_thinking（2 块）全部剥离、image 块保留、无重复。
 - **T10 beta 触发条件** `attachments-context (CLAUDE_CODE_DISABLE_ATTACHMENTS unset)`：`mid-conversation-tool-changes-2026-07-01` 只在 attachments 上下文开启时出现（4/4），关闭 attachments 时 0/3，与入口（cli/sdk-cli）和 MCP 工具集无关；G9 的 36 次采样都设了 `CLAUDE_CODE_DISABLE_ATTACHMENTS=1`，所以未见该 beta。
 
+## 第三批（T11–T12）
+
+- **T11 导入 transcript × append** `通过`：快照-less 的导入会话里，resume 当轮的 `--append-system-prompt-file` **生效且只追加一次**（主提示词 5599→5657，marker 1 次，计费头/身份句保留）；但这次 resume 结束会把二进制自己的快照（10 块 + tools）写回 transcript，**之后的 resume 换 marker 0 命中**（第二次 marker 0 次）→ 客户 system 只能"首次 resume 定终身"。手写最小 `prompt_snapshot` 会被回放但**整块替换**主提示词（74B，默认 5599B 全丢、工具仍默认 12），且此时 append 被忽略。
+- **T12 resume 后的 `# Environment update`** `通过`：导入的 transcript（无 `environment` attachment）在 cwd 同/异 × attachments 开/关 × stdin/positional 六种组合下 **0 次**出现该块；T1 的 99B 块 **0/4 精确复刻**（另 3 次 native positional、1 次 stdin 也 0）→ 不是 resume 的固定行为。二进制侧（只读）确认它是 environment 的 **diff 渲染**（`workingDirectory` 等字段与存储值不同才输出，`(was …)` 取存储值），`CLAUDE_CODE_DISABLE_ATTACHMENTS` 不控制它（只控制整块 `# Environment`，ON 时 9507B）→ 续轮走 stdin stream-json + 不写陈旧 environment attachment 才是护栏，cwd 改写保留作防御。
+
 ## 证据文件索引
 
 | 文件 | gate | sampledAt | digest |
@@ -69,6 +74,7 @@ G3 见 [G3-matrix.md](./G3-matrix.md)，G10-B 见 [G10-B-mitm.md](./G10-B-mitm.m
 | `baseline.json` | baseline | 2026-11-01T12:51:36.551Z | abfc9681a66e170b |
 | `beta-midconv.json` | beta-midconv | 2026-11-01T15:14:21.786Z | 66957903e9a203a9 |
 | `history-first.json` | history-first | 2026-11-01T12:58:22.348Z | c56cb2cbea25075b |
+| `history-import-append.json` | history-import-append | 2026-11-01T16:43:41.921Z | ccb7c5dee315f8e5 |
 | `history-import-assistant-text.json` | assistant-text | — | — |
 | `history-import-combined.json` | combined | — | — |
 | `history-import-gateway.json` | history-import-gateway | 2026-11-01T15:09:46.463Z | 80a969175bacc0b8 |
@@ -116,6 +122,7 @@ G3 见 [G3-matrix.md](./G3-matrix.md)，G10-B 见 [G10-B-mitm.md](./G10-B-mitm.m
 | `resume-append-t8a.json` | resume-append | 2026-11-01T15:08:59.955Z | c8fcfa2f0c9847b2 |
 | `resume-append-t8b.json` | resume-append | 2026-11-01T15:09:03.271Z | 3ad1dee072af1000 |
 | `resume-builtin.json` | resume-builtin | 2026-11-01T13:36:21.277Z | 151d38e2564187d7 |
+| `resume-env-update.json` | resume-env-update | 2026-11-01T16:52:39.386Z | 91e4142c159a18e2 |
 | `resume-g3-assistant-text.json` | resume | 2026-11-01T13:37:32.115Z | 63f9fdf6ec82afac |
 | `resume-g3-combined.json` | resume | 2026-11-01T13:37:43.225Z | 494c012cff9912fb |
 | `resume-g3-thinking-badsig.json` | resume | 2026-11-01T13:37:41.424Z | 4ef5d921c2da4b18 |
@@ -131,9 +138,27 @@ G3 见 [G3-matrix.md](./G3-matrix.md)，G10-B 见 [G10-B-mitm.md](./G10-B-mitm.m
 | `resume-midflight-nofile.json` | resume | 2026-11-01T13:34:46.661Z | ef6028990470d033 |
 | `resume-midflight-slow.json` | resume | 2026-11-01T13:35:25.591Z | 61daca425ee37526 |
 | `resume-slow.json` | resume | 2026-11-01T13:32:31.296Z | 0eb060a268495b8d |
+| `resume-streamjson-append-t11a.json` | resume-streamjson-append | 2026-11-01T16:43:48.854Z | 2feb3dbdd43bda53 |
+| `resume-streamjson-append-t11b.json` | resume-streamjson-append | 2026-11-01T16:43:55.805Z | ccb7c5dee315f8e5 |
+| `resume-streamjson-append-t11d.json` | resume-streamjson-append | 2026-11-01T16:44:09.682Z | 9fea63a687dfaa93 |
+| `resume-streamjson-t11c.json` | resume-streamjson | 2026-11-01T16:44:02.742Z | afba4d2009915c0a |
+| `resume-streamjson-t12a.json` | resume-streamjson | 2026-11-01T16:52:46.315Z | c211e747221397c7 |
+| `resume-streamjson-t12b.json` | resume-streamjson | 2026-11-01T16:52:53.254Z | 91e4142c159a18e2 |
+| `resume-streamjson-t12c.json` | resume-streamjson | 2026-11-01T16:53:00.203Z | 93578b12764b2384 |
+| `resume-streamjson-t12d.json` | resume-streamjson | 2026-11-01T16:53:07.174Z | 0ed06ff6ac650343 |
+| `resume-streamjson-t12n1.json` | resume-streamjson | 2026-11-01T16:53:19.722Z | 5f3065a7b0858c93 |
 | `resume-streamjson-t7.json` | resume-streamjson | 2026-11-01T15:10:09.141Z | 7774f419927ebd8c |
 | `resume-streamjson-t9.json` | resume-streamjson | 2026-11-01T15:09:46.448Z | 80a969175bacc0b8 |
 | `resume-streamjson.json` | resume-streamjson | 2026-11-01T15:09:59.558Z | 7774f419927ebd8c |
+| `resume-t12e.json` | resume | 2026-11-01T16:53:09.141Z | e2de0c7e87528233 |
+| `resume-t12f.json` | resume | 2026-11-01T16:53:10.986Z | 245abd0abf6ec5a4 |
+| `resume-t12n2.json` | resume | 2026-11-01T16:53:21.010Z | 4846f231424204bc |
+| `resume-t12n3.json` | resume | 2026-11-01T16:53:22.290Z | 31211c9b5b54eac8 |
+| `resume-t12n4.json` | resume | 2026-11-01T16:53:23.602Z | 2ef023920be38be1 |
+| `resume-t12r1a.json` | resume | 2026-11-01T16:53:26.695Z | 7b7cfb9bd399979e |
+| `resume-t12r1b.json` | resume | 2026-11-01T16:53:28.013Z | 8d6fbb0e62ddff6a |
+| `resume-t12r2a.json` | resume | 2026-11-01T16:53:31.118Z | 4afc3948a61a9dbe |
+| `resume-t12r2b.json` | resume | 2026-11-01T16:53:32.391Z | e2593e0bfcfce488 |
 | `resume.json` | resume | 2026-11-01T13:32:43.460Z | 1dc146d715e00882 |
 | `schema.json` | schema | 2026-11-01T12:52:09.848Z | 783aebc3dba18912 |
 | `session-append-t8b.json` | session-append | 2026-11-01T15:09:01.759Z | 37eaade0e674f255 |
@@ -141,6 +166,9 @@ G3 见 [G3-matrix.md](./G3-matrix.md)，G10-B 见 [G10-B-mitm.md](./G10-B-mitm.m
 | `session-kill-midflight-slow.json` | session-kill-midflight | 2026-11-01T13:34:58.229Z | 53d2050b04561fad |
 | `session-kill-midflight.json` | session-kill-midflight | 2026-11-01T13:33:32.067Z | f061ea5226b73931 |
 | `session-kill.json` | session-kill | 2026-11-01T13:32:45.972Z | 98b5ec48c950ece1 |
+| `session-t12n0.json` | session | 2026-11-01T16:53:12.783Z | b29217447f45fc10 |
+| `session-t12r1s.json` | session | 2026-11-01T16:53:25.441Z | 49c73a1eb7c11c11 |
+| `session-t12r2s.json` | session | 2026-11-01T16:53:29.870Z | a9363b3d45877fb8 |
 | `session-t7.json` | session | 2026-11-01T15:10:01.419Z | 0703a2b56b748ba2 |
 | `session-t8a.json` | session | 2026-11-01T15:08:58.668Z | 8e67001a96852cb7 |
 | `session.json` | session | 2026-11-01T13:32:42.135Z | 94f79fa1c1a9856b |
