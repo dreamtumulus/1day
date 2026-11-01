@@ -1,0 +1,47 @@
+#!/usr/bin/env node
+// Claude Code-shaped request with the canary key (docs/iron-rules.md 铁律 2; spec WP1 observation).
+//   ops/bin/canary-cc-probe [--version 2.1.312] [--entrypoint cli] [--model claude-sonnet-5-5] [--no-stream]
+// Builds a genuine 2.1.312 shape with the real billing suffix (core ccBuildSuffix), full transport fingerprint and
+// stream:true — unlike the monitor's cc_dual_mode (fixed .6b4, no runtime/package version, non-stream), which the
+// gate downgrades as suspect. Prints status, x-1day-mode / request-id, the first bytes, and the gateway counters.
+// Key: CANARY_KEY or /root/monitor/canary-apikey.txt; API_BASE default https://api.1dayapi.com. Prints no key material.
+import { readFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+const core = await import(new URL("../../packages/core/dist/index.js", import.meta.url));
+const arg = (n, d) => { const i = process.argv.indexOf(`--${n}`); return i !== -1 && process.argv[i + 1] ? process.argv[i + 1] : d; };
+const API = process.env.API_BASE ?? "https://api.1dayapi.com";
+const KEY = process.env.CANARY_KEY ?? readFileSync(process.env.CANARY_KEY_FILE ?? "/root/monitor/canary-apikey.txt", "utf8").trim();
+const version = arg("version", core.CC_VERSION), entrypoint = arg("entrypoint", "cli"), model = arg("model", "claude-sonnet-5-5");
+const stream = !process.argv.includes("--no-stream");
+const sid = randomUUID();
+const prompt = `Reply with the single word OK. (${Math.random().toString(36).slice(2, 8)})`;
+const messages = [{ role: "user", content: [{ type: "text", text: prompt, cache_control: { type: "ephemeral" } }] }];
+const identity = entrypoint === "sdk-cli" ? "You are a Claude agent, built on Anthropic's Claude Agent SDK." : "You are Claude Code, Anthropic's official CLI for Claude.";
+const body = {
+  model, messages,
+  system: [
+    { type: "text", text: `x-anthropic-billing-header: cc_version=${version}.${core.ccBuildSuffix(messages, version)}; cc_entrypoint=${entrypoint};` },
+    { type: "text", text: identity, cache_control: { type: "ephemeral" } },
+    { type: "text", text: "x".repeat(4100), cache_control: { type: "ephemeral" } },
+  ],
+  tools: [{ name: "Agent", description: "probe", input_schema: { type: "object", properties: {} } }, { name: "Read", description: "probe", input_schema: { type: "object", properties: {} } }],
+  metadata: { user_id: JSON.stringify({ device_id: "0".repeat(64), account_uuid: "", session_id: sid }) },
+  max_tokens: 64, thinking: { type: "adaptive", display: "updates" }, context_management: { edits: [{ type: "clear_thinking_20251015", keep: "all" }] }, stream,
+};
+const t = core.ccTransportFor?.(version) ?? { runtimeVersion: core.CC_RUNTIME_VERSION, sdkVersion: core.CC_SDK_VERSION };
+const headers = {
+  "content-type": "application/json", authorization: `Bearer ${KEY}`, "anthropic-version": "2023-06-01", "x-app": "cli",
+  "user-agent": `claude-cli/${version} (external, ${entrypoint})`, accept: "application/json",
+  "anthropic-beta": "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,context-management-2025-06-27,per-turn-control-2026-07-01,thinking-token-count-2026-05-13,advanced-tool-use-2025-11-20,effort-2025-11-24,thinking-display-updates-2026-08-18,extended-cache-ttl-2025-04-11",
+  "x-stainless-lang": "js", "x-stainless-runtime": "node", "x-stainless-runtime-version": t.runtimeVersion, "x-stainless-package-version": t.sdkVersion, "x-stainless-os": "Linux", "x-stainless-arch": "x64", "x-stainless-retry-count": "0", "x-stainless-timeout": "600",
+  "x-claude-code-session-id": sid, "anthropic-dangerous-direct-browser-access": "true",
+};
+const started = Date.now();
+const res = await fetch(`${API}/v1/messages?beta=true`, { method: "POST", headers, body: JSON.stringify(body), signal: AbortSignal.timeout(180_000) });
+const text = await res.text();
+console.log(`cc-shaped ${version} ${entrypoint} ${model} stream=${stream}: HTTP ${res.status} in ${Date.now() - started}ms`);
+console.log(`  x-1day-mode=${res.headers.get("x-1day-mode") ?? "(none)"} request-id=${res.headers.get("request-id") ?? "-"} x-1day-ignored-params=${res.headers.get("x-1day-ignored-params") ?? "-"}`);
+console.log(`  body: ${text.replace(/\s+/g, " ").slice(0, 300)}`);
+const health = await fetch(`${API}/health`).then((r) => r.json()).catch(() => ({}));
+console.log(`  counters: ${JSON.stringify(health.counters ?? {})}`);
+process.exit(res.status === 200 ? 0 : 1);
