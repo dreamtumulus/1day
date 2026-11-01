@@ -319,6 +319,7 @@ const MIGRATIONS: Array<{ version: number; up: (d: DatabaseSync, log: Log) => vo
   { version: 31, up: migration31 },
   { version: 32, up: migration32 },
   { version: 33, up: migration33 },
+  { version: 34, up: migration34 },
 ];
 
 // 上号员令牌（独立鉴权的上号站点 /onboard）：admin 签发，绑定目标节点；
@@ -919,6 +920,37 @@ function migration33(d: DatabaseSync, log: Log): void {
     ["proxy_down_proxy_id", "TEXT"],
   ]);
   log("migration 33: accounts.proxy_down_* (proxy failure freezes the account until an operator acts)");
+}
+
+// 2026-11-01 (B1, "多小组织"): an organization's exit claim can be released by an operator once the organization
+// no longer uses the exit (no bound account, no live reservation, quiet for team_claim_release_min_days). The claim
+// row is removed (its append-only trigger goes); the release itself is append-only history, as are the events.
+function migration34(d: DatabaseSync, log: Log): void {
+  d.exec(`
+    DROP TRIGGER IF EXISTS proxy_team_claims_no_update;
+    DROP TRIGGER IF EXISTS proxy_team_claims_no_delete;
+    CREATE TABLE IF NOT EXISTS proxy_team_claim_releases (
+      id TEXT PRIMARY KEY,
+      resource_key TEXT NOT NULL,
+      team_id TEXT NOT NULL,
+      claimed_at TEXT,
+      released_at TEXT NOT NULL DEFAULT (${SQL_NOW}),
+      actor_id TEXT,
+      reason TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_claim_releases_team ON proxy_team_claim_releases(team_id, released_at);
+    CREATE TRIGGER IF NOT EXISTS proxy_team_claim_releases_no_update BEFORE UPDATE ON proxy_team_claim_releases
+      BEGIN SELECT RAISE(ABORT, 'claim release history is append-only'); END;
+    CREATE TRIGGER IF NOT EXISTS proxy_team_claim_releases_no_delete BEFORE DELETE ON proxy_team_claim_releases
+      BEGIN SELECT RAISE(ABORT, 'claim release history is append-only'); END;
+  `);
+  // A claim row may only disappear after its release was recorded; a plain UPDATE still has no business case.
+  d.exec(`CREATE TRIGGER IF NOT EXISTS proxy_team_claims_no_update BEFORE UPDATE ON proxy_team_claims
+    BEGIN SELECT RAISE(ABORT, 'isolation history is append-only: claims are released, never edited'); END`);
+  d.exec(`CREATE TRIGGER IF NOT EXISTS proxy_team_claims_release_first BEFORE DELETE ON proxy_team_claims
+    WHEN NOT EXISTS (SELECT 1 FROM proxy_team_claim_releases r WHERE r.resource_key = OLD.resource_key AND r.team_id = OLD.team_id)
+    BEGIN SELECT RAISE(ABORT, 'isolation history is append-only: record the release (proxy_team_claim_releases) before removing a claim'); END`);
+  log("migration 34: proxy_team_claim_releases; organization exit claims become releasable by an operator");
 }
 
 function migration32(d: DatabaseSync, log: Log): void {

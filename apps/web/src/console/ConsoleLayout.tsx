@@ -58,6 +58,7 @@ export function menuFor(role: Role): NavSection[] {
           { to: "/console/admin/keys", label: "nav.allKeys", icon: LockIcon },
           { to: "/console/admin/groups", label: "nav.groups", icon: CubeIcon },
           { to: "/console/admin/accounts", label: "nav.accounts", icon: PlugIcon },
+          { to: "/console/admin/teams", label: "nav.teams", icon: GlobeIcon },
           { to: "/console/admin/onboard", label: "nav.onboard", icon: RocketIcon },
           { to: "/console/admin/models", label: "nav.pricing", icon: ScaleIcon },
           { to: "/console/admin/redeem", label: "nav.redeem", icon: SparkleIcon },

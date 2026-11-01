@@ -20,7 +20,7 @@ import {
 } from "@1dayapi/core";
 import { authorizeWithSessionKey, exchangeCallbackCode, newPkce, OnboardError, verifyAccessToken, type AuthResult, fetchProfileViaEgress } from "./direct-oauth.js";
 import { enrichAccountProfile } from "../ccr/profile.js";
-import { claimDiscoveredProxy, claimTeamProxy, nodeProxyUrls, proxyOccupancy, quarantineJobProxy, resolveTeamProxy, type IsolatedProxy } from "../node/proxies.js";
+import { claimDiscoveredProxy, claimTeamProxy, nodeProxyUrls, proxyOccupancy, quarantineJobProxy, resolveTeamProxy, type IsolatedProxy, exitCap } from "../node/proxies.js";
 import { pushProxies } from "../node/registry.js";
 import { HttpError } from "../http.js";
 import { assertNodeCapacity } from "../node/capacity.js";
@@ -165,7 +165,7 @@ function insertJob(
   const expected=params.expectedTeamId??null;
   if(p.team_id && p.team_id!==expected)throw new OnboardError("proxy_team_mismatch","Proxy organization mismatch");
   const alreadyBound=params.reauthAccountId && one("SELECT 1 FROM accounts WHERE id=? AND bound_proxy_id=?",params.reauthAccountId,proxyId);
-  if(!alreadyBound && proxyOccupancy(p.resource_key).total>=3)throw new OnboardError("proxy_capacity_reached","Proxy account capacity reached");
+  if(!alreadyBound && proxyOccupancy(p.resource_key).total>=exitCap())throw new OnboardError("proxy_capacity_reached","Proxy account capacity reached");
   run(
     `INSERT INTO onboarding_jobs (id, requester_id, scope, method, node_id, proxy_id, params_json, payload_enc, authorize_url, status, created_at, updated_at,
       team_id,isolation_version,proxy_resource_key,reservation_account_id,expires_at)

@@ -173,6 +173,12 @@ function SettingsForm({ initial, groups, onSaved }: { initial: Settings; groups:
             <Field label={t("admin.settings.proxyReleaseCooldown")} hint={t("admin.settings.proxyReleaseCooldownHint")} error={proxyCooldownValid ? undefined : "0 ≤ n ≤ 2592000"}>
               <Input type="number" min={0} step="3600" value={s.proxy_release_cooldown_sec ?? "86400"} onChange={(e) => set("proxy_release_cooldown_sec", e.target.value)} />
             </Field>
+            <Field label={t("admin.settings.exitCap")} hint={t("admin.settings.exitCapHint")}>
+              <Input type="number" min={1} max={10} step="1" value={s.proxy_exit_max_accounts ?? "3"} onChange={(e) => set("proxy_exit_max_accounts", e.target.value)} />
+            </Field>
+            <Field label={t("admin.settings.claimReleaseDays")} hint={t("admin.settings.claimReleaseDaysHint")}>
+              <Input type="number" min={0} max={365} step="1" value={s.team_claim_release_min_days ?? "7"} onChange={(e) => set("team_claim_release_min_days", e.target.value)} />
+            </Field>
             <Field label={t("admin.settings.directCcEntrypoint")} hint={t("admin.settings.directCcEntrypointHint")}>
               <Select
                 value={s.direct_cc_entrypoint_normalize ?? "1"}

@@ -225,6 +225,35 @@ export class CcWorkerManager {
   private machinePreparationError: string | null = null;
 
   /** Each organization gets a distinct Linux UID; this is not a separate kernel or VM. */
+  /**
+   * Platform-initiated cleanup of organizations that no longer exist (teams.retire, 2026-11-01): remove the team's
+   * worker root (account configs, device identities, scratch) and its system user — only when nothing of that team
+   * is running here. Each result goes back to the platform.
+   */
+  retireTeams(teamIds: string[]): Array<{ teamId: string; removed: boolean; error?: string }> {
+    const out: Array<{ teamId: string; removed: boolean; error?: string }> = [];
+    for (const teamId of teamIds) {
+      if (typeof teamId !== "string" || !teamId) continue;
+      const busy = [...this.sessions.values()].some((s) => !s.closed && s.isolation?.teamId === teamId) || [...this.procs.values()].some((p) => p.isolation?.teamId === teamId);
+      if (busy) { out.push({ teamId, removed: false, error: "team_busy" }); continue; }
+      try {
+        const dir = path.join(this.workerRoot, "teams", createHash("sha256").update(teamId).digest("hex"));
+        if (fs.existsSync(dir)) fs.rmSync(dir, { recursive: true, force: true });
+        const user = `cc-t-${createHash("sha256").update(teamId).digest("hex").slice(0, 24)}`;
+        if (process.env.CC_WORKER_TEAM_UIDS === "1" && resolveRunAs(user)) {
+          const r = spawnSync("userdel", [user], { encoding: "utf8", timeout: 15_000 });
+          if (r.status !== 0) throw new Error(`userdel ${user}: ${(r.stderr || r.stdout || "").trim() || r.status}`);
+        }
+        this.teamUsers.delete(teamId);
+        this.log(`retired team ${teamId.slice(0, 8)}: worker root and system user removed`);
+        out.push({ teamId, removed: true });
+      } catch (err) {
+        out.push({ teamId, removed: false, error: (err as Error).message.slice(0, 200) });
+      }
+    }
+    return out;
+  }
+
   private teamRunAs(teamId?: string): RunAs | null {
     if (!teamId || process.env.CC_WORKER_TEAM_UIDS !== "1") return this.runAs;
     if (process.getuid?.() !== 0) throw new Error("Per-team worker identities require a root supervisor");

@@ -161,6 +161,7 @@ function EditKeyModal({
   const [historyPolicy, setHistoryPolicy] = useState<"reset" | "reject" | "passthrough">(apiKey.policy?.historyPolicy ?? "passthrough");
   const [directOnly, setDirectOnly] = useState(apiKey.policy?.directOnly ?? false);
   const [probeIntercept, setProbeIntercept] = useState(apiKey.policy?.probeIntercept ?? true);
+  const [teamAffinity, setTeamAffinity] = useState<"" | "spread" | "pack">(apiKey.policy?.teamAffinity ?? "");
   const [busy, setBusy] = useState(false);
 
   return (
@@ -184,7 +185,7 @@ function EditKeyModal({
                   quotaUsd: Number(quota) || 0,
                   expiresAt: expires ? new Date(expires).toISOString() : null,
                   status,
-                  policy: { historyPolicy, directOnly, probeIntercept },
+                  policy: { historyPolicy, directOnly, probeIntercept, teamAffinity: teamAffinity || null },
                 });
                 toast.success(t("admin.keys.updated"));
                 onSaved();
@@ -266,6 +267,17 @@ function EditKeyModal({
               options={[
                 { value: "1", label: t("admin.keys.probeInterceptOn") },
                 { value: "0", label: t("admin.keys.probeInterceptOff") },
+              ]}
+            />
+          </Field>
+          <Field label={t("admin.keys.teamAffinity")} hint={t("admin.keys.teamAffinityHint")}>
+            <Select
+              value={teamAffinity}
+              onChange={(e) => setTeamAffinity(e.target.value as "" | "spread" | "pack")}
+              options={[
+                { value: "", label: t("admin.keys.teamAffinityCapacity") },
+                { value: "spread", label: t("admin.keys.teamAffinitySpread") },
+                { value: "pack", label: t("admin.keys.teamAffinityPack") },
               ]}
             />
           </Field>

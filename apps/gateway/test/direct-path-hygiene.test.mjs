@@ -115,3 +115,23 @@ test("B5: x-1day-ignored-params names only the fields present that the path cann
   assert.deepEqual(ignoredParams(chat, "openai-chat", "chat-via-anthropic"), ["n", "seed", "response_format"]);
   assert.deepEqual(ignoredParams({ model: "m", temperature: null }, "anthropic", "ccr-anthropic"), [], "null counts as absent");
 });
+
+const { pickTeam } = await import("../dist/proxy.js");
+test("A1/A3: a new conversation joins the organization with capacity, teamAffinity reorders by organization size", () => {
+  const acc = (id, team, concurrency, windowUsed, extra = {}) => ({ id, team_id: team, concurrency, window_used: windowUsed, ...extra });
+  const BIG = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", SMALL = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+  const inflight = { b1: 4, b2: 4, b3: 4, s1: 0 };
+  const teams = [acc("b1", BIG, 5, 0.9), acc("b2", BIG, 5, 0.9), acc("b3", BIG, 5, 0.9), acc("s1", SMALL, 5, 0.1)];
+  const f = (id) => inflight[id] ?? 0;
+  // capacity: BIG has 3 free slots at 10% headroom (score 3×0.325), SMALL has 5 free at 90% (score 5×0.925) → SMALL
+  assert.equal(pickTeam(teams, null, f).teamId, SMALL);
+  assert.equal(pickTeam(teams, "spread", f).teamId, BIG, "spread: larger organization first");
+  assert.equal(pickTeam(teams, "pack", f).teamId, SMALL, "pack: smaller organization first");
+  // cooling accounts offer no slots; an uncapped account counts as 20
+  const cooled = [acc("b1", BIG, 5, 0.1, { cooling: true }), acc("s1", SMALL, 0, 0.5)];
+  assert.equal(pickTeam(cooled, null, f).teamId, SMALL);
+  // equal scores keep the listCandidates order (first team wins)
+  const tie = [acc("x1", BIG, 2, 0.5), acc("y1", SMALL, 2, 0.5)];
+  assert.equal(pickTeam(tie, null, () => 0).teamId, BIG);
+  assert.match(pickTeam(teams, null, f).why, /freeSlots=5/);
+});

@@ -38,3 +38,12 @@ test("every credential rewrite advances its version and invalidates old readines
   run("UPDATE accounts SET credential_enc = credential_enc WHERE id = 'credential-test'");
   assert.equal(one("SELECT credential_version FROM accounts WHERE id = 'credential-test'").credential_version, 2, "a byte-identical write is not a new credential");
 });
+
+test("key policy: teamAffinity parses spread | pack, anything else is null (2026-11-01)", async () => {
+  const { parseKeyPolicy, DEFAULT_KEY_POLICY } = await import("../dist/key-policy.js");
+  assert.equal(DEFAULT_KEY_POLICY.teamAffinity, null);
+  assert.equal(parseKeyPolicy(JSON.stringify({ teamAffinity: "spread" })).teamAffinity, "spread");
+  assert.equal(parseKeyPolicy(JSON.stringify({ teamAffinity: "pack" })).teamAffinity, "pack");
+  assert.equal(parseKeyPolicy(JSON.stringify({ teamAffinity: "nope" })).teamAffinity, null);
+  assert.equal(parseKeyPolicy(JSON.stringify({ historyPolicy: "reset" })).teamAffinity, null);
+});

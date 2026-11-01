@@ -68,7 +68,8 @@ import {
 import { deployNodeLocal, deployNodeViaSsh } from "../node/deploy.js";
 import { ProxyInputError, addNodeProxies, rebindAccountProxy, removeNodeProxies, listNodeProxies, listNodeProxyGroups, listProxiesForPicker, nodeExists, nodeProxyUrls, normalizeProxyGroup, releaseAccountProxies, releaseNodeResources, replaceNodeProxies, setNodeProxyGroup, unquarantineProxy, validateProxies, type AddProxiesResult, type ProxyInput, type ReplaceProxiesResult } from "../node/proxies.js";
 import { requestViaNode } from "../node/egress-request.js";
-import { disconnectNode, pushProxies } from "../node/registry.js";
+import { disconnectNode, pushProxies, retireTeamOnNodes } from "../node/registry.js";
+import { claimReleaseMinDays, releaseTeamClaims, teamClaims, teamOverview } from "../node/teams.js";
 import { createUser, dropSessions, requireAdmin, requireOps, resetLoginKey } from "../session.js";
 import {
   API_KEY_SELECT,
@@ -320,6 +321,49 @@ export function registerAdminRoutes(app: FastifyInstance): void {
 
   app.get("/api/admin/teams",pre,async()=>({data:all<{id:string;name:string|null;status:string;created_at:string}>(
     "SELECT * FROM upstream_teams ORDER BY created_at DESC").map((r)=>({id:r.id,name:r.name,status:r.status,createdAt:r.created_at}))}));
+  // ---------- organizations as an operations object (2026-11-01, docs/team-isolation.md "多小组织") ----------
+  app.get("/api/admin/teams/overview", pre, async () => ({ data: teamOverview(await gatewayInFlight()), minReleaseDays: claimReleaseMinDays() }));
+  app.get("/api/admin/teams/:id/claims", pre, async (req) => {
+    const { id } = req.params as { id: string };
+    if (!one("SELECT 1 FROM upstream_teams WHERE id=?", id)) notFound("team");
+    return { data: teamClaims(id), minReleaseDays: claimReleaseMinDays() };
+  });
+  app.post("/api/admin/teams/:id/release-claims", pre, async (req) => {
+    const { id } = req.params as { id: string };
+    if (!one("SELECT 1 FROM upstream_teams WHERE id=?", id)) notFound("team");
+    const b = body(req);
+    const keys = strArray(b, "resourceKeys");
+    const r = releaseTeamClaims(id, { resourceKeys: keys, actorId: req.user!.id, reason: typeof b.reason === "string" ? b.reason : null, force: b.force === true });
+    for (const nodeId of r.nodeIds) pushProxies(nodeId, nodeProxyUrls(nodeId));
+    return { data: r };
+  });
+  app.patch("/api/admin/teams/:id", pre, async (req) => {
+    const { id } = req.params as { id: string };
+    const t = one<{ id: string; status: string }>("SELECT id, status FROM upstream_teams WHERE id=?", id);
+    if (!t) notFound("team");
+    const b = body(req);
+    const status = oneOf(b, "status", ["active", "disabled"] as const);
+    const name = typeof b.name === "string" ? b.name.trim().slice(0, 200) : undefined;
+    tx(() => {
+      if (status) run("UPDATE upstream_teams SET status=? WHERE id=?", status, id);
+      if (name !== undefined) run("UPDATE upstream_teams SET name=? WHERE id=?", name || null, id);
+      if (status && status !== t.status) recordProxyTeamEvent({ resourceKey: `team:${id}`, teamId: id, actorId: req.user!.id, event: status === "active" ? "team_enabled" : "team_disabled", reason: "operator" });
+    });
+    return { data: one("SELECT id, name, status, created_at AS createdAt FROM upstream_teams WHERE id=?", id) };
+  });
+  app.post("/api/admin/teams/:id/cleanup-nodes", pre, async (req) => {
+    const { id } = req.params as { id: string };
+    const t = one<{ status: string }>("SELECT status FROM upstream_teams WHERE id=?", id);
+    if (!t) notFound("team");
+    // Only an organization that is switched off and owns no account may be wiped from the nodes.
+    if (t.status === "active") bad("team_active", "Disable the organization first (PATCH status=disabled); node cleanup removes its worker roots and system users");
+    const n = one<{ n: number }>("SELECT COUNT(*) n FROM accounts WHERE team_id=?", id)?.n ?? 0;
+    if (n > 0) bad("team_has_accounts", `${n} account(s) still belong to this organization; delete or move them first`);
+    const asked = retireTeamOnNodes(id);
+    recordProxyTeamEvent({ resourceKey: `team:${id}`, teamId: id, actorId: req.user!.id, event: "team_node_cleanup_requested", reason: asked.length ? `asked ${asked.length} node(s): ${asked.join(",")}` : "no isolation-capable node online" });
+    return { data: { nodes: asked } };
+  });
+
   app.get("/api/admin/teams/events",pre,async(req)=>{
     const q=query(req);const w=new Where();
     w.addIf(q.proxyId,"e.proxy_id=?",q.proxyId);w.addIf(q.teamId,"e.team_id=?",q.teamId);
@@ -765,6 +809,7 @@ export function registerAdminRoutes(app: FastifyInstance): void {
     w.addIf(q.status, "a.status = ?", q.status);
     w.addIf(q.reviewStatus, "a.review_status = ?", q.reviewStatus);
     w.addIf(q.nodeId, "a.node_id = ?", q.nodeId);
+    if (q.teamId && req.user!.role === "admin") w.add("a.team_id = ?", q.teamId);
     if (q.ownerId === "platform") w.add("a.owner_id IS NULL");
     else w.addIf(q.ownerId, "a.owner_id = ?", q.ownerId);
     if (q.q) w.add("(a.name LIKE ? OR a.account_email LIKE ? OR a.base_url LIKE ?)", `%${q.q}%`, `%${q.q}%`, `%${q.q}%`);

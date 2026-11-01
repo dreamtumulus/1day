@@ -57,7 +57,11 @@ export function liftQuarantine(resourceKeys: string[], actorId: string | null, r
   return n;
 }
 
-/** Immutable claim: removing a pool member or account cannot make this resource virgin. */
+/**
+ * Claim: removing a pool member or account does not make this resource virgin. Since 2026-11-01 an operator
+ * can release an unused claim (console `releaseTeamClaims`, history in proxy_team_claim_releases); only then
+ * may another organization claim the exit.
+ */
 export function claimProxyResource(resourceKey: string, teamId: string): void {
   if (quarantineActive(resourceKey)) throw new Error("proxy_quarantined");
   run("INSERT OR IGNORE INTO proxy_team_claims(resource_key,team_id) VALUES (?,?)", resourceKey, teamId);

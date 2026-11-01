@@ -537,7 +537,8 @@ test("reset retains the current text document attachment and removes old remote 
 
 test("busy healthy team waits, preserves generation and leaves its main request intact", async () => {
   const f = seed([{team:TEAM_A, delay:120},{team:TEAM_B}]);
-  core.run("UPDATE accounts SET concurrency=1 WHERE id=?",f.ids[0]);
+  // Equal capacity on both organizations (2026-11-01 pickTeam): the tie keeps candidate order, so A is chosen.
+  core.run("UPDATE accounts SET concurrency=1 WHERE id IN (?,?)",f.ids[0],f.ids[1]);
   const start=attempts.length;
   const first=request(f,payload([question("busy root")]));
   for(let n=0;attempts.length===start && n<100;n++) await new Promise(r=>setTimeout(r,5));

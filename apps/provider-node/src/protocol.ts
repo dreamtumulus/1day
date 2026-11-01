@@ -171,6 +171,12 @@ export interface HttpEgressError {
 }
 
 /** Platform pushes a full replacement of the node proxy pool. */
+/** Platform → node (2026-11-01): remove the worker roots and system users of organizations that no longer exist. */
+export interface TeamsRetire {
+  type: "teams.retire";
+  teamIds: string[];
+}
+
 export interface ProxiesSet {
   type: "proxies.set";
   proxies: string[];
@@ -301,4 +307,5 @@ export type PlatformToNodeMessage =
   | CcWorkerOpen
   | CcWorkerClose
   | IsolationReset
-  | ProxiesSet;
+  | ProxiesSet
+  | TeamsRetire;

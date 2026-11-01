@@ -7,6 +7,7 @@ import { AdminGroups } from "./pages/admin/Groups";
 import { AdminKeys } from "./pages/admin/Keys";
 import { AdminModels } from "./pages/admin/Models";
 import { AdminNodes } from "./pages/admin/Nodes";
+import { AdminTeams } from "./pages/admin/Teams";
 import { AdminNodeMonitor } from "./pages/admin/NodeMonitor";
 import { AdminOnboarders } from "./pages/admin/Onboarders";
 import { AdminRedeem } from "./pages/admin/Redeem";
@@ -77,6 +78,7 @@ export const consoleRoutes = (
     <Route path="admin/usage" element={g(["admin"], <AdminUsage />)} />
     <Route path="admin/errors" element={g(["admin"], <AdminErrors />)} />
     <Route path="admin/nodes" element={g(["admin"], <AdminNodes />)} />
+    <Route path="admin/teams" element={g(["admin"], <AdminTeams />)} />
     <Route path="admin/node-monitor" element={g(["admin"], <AdminNodeMonitor />)} />
     <Route path="admin/settings" element={g(["admin"], <AdminSettings />)} />
     <Route path="*" element={<Home />} />

@@ -367,6 +367,13 @@ export class PlatformBridge {
             this.send({ type: "isolation.reset_ack", resetId: msg.resetId });
           }
           break;
+        case "teams.retire": {
+          // Organization cleanup requested by the platform (2026-11-01): answered with per-team results.
+          const ids = Array.isArray((msg as { teamIds?: unknown }).teamIds) ? ((msg as { teamIds: unknown[] }).teamIds.filter((t): t is string => typeof t === "string")) : [];
+          const results = this.workerManager.retireTeams(ids);
+          this.send({ type: "teams.retire_result", results });
+          break;
+        }
         case "proxies.set": {
           const set = msg as ProxiesSet;
           const urls = Array.isArray(set.proxies)

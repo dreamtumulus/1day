@@ -60,6 +60,8 @@ fable-5-1 ≥ 2.1.251，来自上游 `claude_code_version_too_old` 400；低于�
 2.1.312 还要求 `cc_version` 后缀等于 `ccBuildSuffix(messages)` 的结果，且主 Messages 请求 `stream:true`。其他版本不套用该后缀算法或强制流式，避免把未知构建误判为伪造。
 注意 TLS 在 nginx 终止、网关重新发起，Anthropic 看到的 TLS 指纹永远是平台的，客户端差异只剩头和体。
 
+**小组织容错**（2026-11-01）：工具轮与并发满的等待时长对 ≤ `ACCOUNT_SMALL_TEAM_MAX_ACCOUNTS`（默认 2）个账号的组织取 `ACCOUNT_BUSY_WAIT_SMALL_TEAM_MS`（默认 30 s）而非 `ACCOUNT_BUSY_WAIT_MS`（15 s）：一号一组织时"忙"是两轮之间的常态，不是故障。仍不跨组织。
+
 **软检查**（描述当前 canonical 构建，只记录不判定，用来提前发现 CC 升级）：非 2.1.312 的 `stream:true`、其他 entrypoint 的身份句块、带 cache_control 的长主提示词、
 tools 字母序且无 `strict`、有 `thinking` / `context_management`。beta 仍按功能动态裁剪，不强制完整列表；长主提示词也只作漂移观察。
 巡检脚本 `1day-health` 输出窗口内 genuine / suspect 计数与缺失项分布。
@@ -88,6 +90,7 @@ tools 字母序且无 `strict`、有 `thinking` / `context_management`。beta �
 | `historyPolicy` | `passthrough`（**默认，2026-11-01 起**） | 带着本平台没服务过的前几轮（`unknownInitialHistory`）时历史原样转发，对话绑定到实际服务它的组织（运营方接受跨组织关联风险）。2026-11-01 审计：24h 内更新过的 2,590 个对话有 1,257 个处于 reset 态、API 客户端无法理解"200 但历史被丢"，用户决定改默认。已显式配置的 Key 不受影响 |
 | | `reset` | （2026-10-29 ～ 11-01 的默认）保存边界、只转发最后一个问题，响应 `x-1day-context-reset: 1`（team-isolation.md 对话归属） |
 | | `reject` | 同一情形返回 **409 `history_unknown`**，客户端可换上游 |
+| `teamAffinity` | `null`（默认）/ `spread` / `pack` | **新对话绑定到哪个组织**（2026-11-01）：默认按容量——各组织非冷却账号的空闲并发槽 × 订阅窗口余量（`pickTeam`）；`spread` 大组织优先（单账号组织只承接溢出），`pack` 小组织优先。此前取候选排序第一个账号所属组织，不看组织实时容量 |
 | `directOnly` | `false`（默认）/ `true` | 开启后非 genuine Claude Code 请求返回 **400 `direct_only`**（message 列出缺失项），不转 worker；原样透传分组（§4a）不受影响 |
 | `probeIntercept` | `true`（默认）/ `false` | 测活接管（§2c）：探测请求由平台按号池状态直接回复，不占用账号 |
 

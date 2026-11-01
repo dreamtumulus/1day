@@ -20,14 +20,20 @@
 
 export const HISTORY_POLICIES = ["reset", "reject", "passthrough"] as const;
 export type HistoryPolicy = (typeof HISTORY_POLICIES)[number];
+// teamAffinity (2026-11-01, docs/gateway.md §2b): which organization a NEW conversation is bound to when several
+// have capacity. null = pure capacity (free concurrency slots × window headroom); "spread" = prefer organizations
+// with more accounts (single-account organizations take the overflow); "pack" = prefer the smaller organizations.
+export const TEAM_AFFINITIES = ["spread", "pack"] as const;
+export type TeamAffinity = (typeof TEAM_AFFINITIES)[number];
 
 export interface KeyPolicy {
   historyPolicy: HistoryPolicy;
   directOnly: boolean;
   probeIntercept: boolean;
+  teamAffinity: TeamAffinity | null;
 }
 
-export const DEFAULT_KEY_POLICY: KeyPolicy = Object.freeze({ historyPolicy: "passthrough", directOnly: false, probeIntercept: true });
+export const DEFAULT_KEY_POLICY: KeyPolicy = Object.freeze({ historyPolicy: "passthrough", directOnly: false, probeIntercept: true, teamAffinity: null });
 
 /** Tolerant parse of `api_keys.policy_json`; unknown or malformed input yields the defaults. */
 export function parseKeyPolicy(json: string | null | undefined): KeyPolicy {
@@ -35,7 +41,8 @@ export function parseKeyPolicy(json: string | null | undefined): KeyPolicy {
   try {
     const v = JSON.parse(json) as Record<string, unknown>;
     const hp = typeof v.historyPolicy === "string" && (HISTORY_POLICIES as readonly string[]).includes(v.historyPolicy) ? (v.historyPolicy as HistoryPolicy) : DEFAULT_KEY_POLICY.historyPolicy;
-    return { historyPolicy: hp, directOnly: v.directOnly === true, probeIntercept: v.probeIntercept !== false };
+    const ta = typeof v.teamAffinity === "string" && (TEAM_AFFINITIES as readonly string[]).includes(v.teamAffinity) ? (v.teamAffinity as TeamAffinity) : null;
+    return { historyPolicy: hp, directOnly: v.directOnly === true, probeIntercept: v.probeIntercept !== false, teamAffinity: ta };
   } catch {
     return { ...DEFAULT_KEY_POLICY };
   }

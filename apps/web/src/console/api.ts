@@ -92,7 +92,7 @@ export interface ApiKey {
   createdAt: string;
   revealable: boolean;
   /** Routing policy (admin-only edit): history handling on upstream switch + direct-only. */
-  policy?: { historyPolicy: "reset" | "reject" | "passthrough"; directOnly: boolean; probeIntercept?: boolean };
+  policy?: { historyPolicy: "reset" | "reject" | "passthrough"; directOnly: boolean; probeIntercept?: boolean; teamAffinity?: "spread" | "pack" | null };
 }
 
 export interface UsageRow {
@@ -534,6 +534,8 @@ export interface AdminAccountQuery {
   reviewStatus?: string;
   ownerId?: string;
   nodeId?: string;
+  /** admin only: organization (upstream team) filter */
+  teamId?: string;
   sort?: "createdAt" | "lastUsedAt" | "name" | "priority";
   order?: "asc" | "desc";
 }
@@ -773,6 +775,8 @@ export interface RedeemCode {
 
 export interface Settings {
   _revision?: number;
+  proxy_exit_max_accounts?: string;
+  team_claim_release_min_days?: string;
   default_group_id: string;
   provider_default_payout_rate: string;
   announcement: string;
@@ -821,3 +825,27 @@ export const PLATFORMS: Array<{ id: string; label: string; protocol: "anthropic"
 export function platformLabel(id: string): string {
   return PLATFORMS.find((p) => p.id === id)?.label ?? id;
 }
+
+// ---------- organizations (upstream teams) as an operations object (2026-11-01, docs/team-isolation.md) ----------
+
+export interface TeamOverviewRow {
+  id: string; name: string | null; status: string; createdAt: string;
+  accounts: { total: number; active: number; proxyDown: number; error: number; disabled: number; cooling: number; concurrency: number };
+  inFlight: number | null;
+  windowUsedAvg: number | null;
+  exits: { claimed: number; bound: number; releasable: number };
+  usage24h: { requests: number; failed: number; costUsd: number };
+  lastUsedAt: string | null;
+}
+export interface TeamClaim {
+  resourceKey: string; exitIp: string | null; claimedAt: string;
+  proxies: Array<{ id: string; nodeId: string; status: string }>;
+  boundAccounts: number; reserved: number; lastActivityAt: string | null;
+  releasable: boolean; blocker: "bound_accounts" | "live_reservation" | "too_recent" | null;
+}
+export const adminTeamsOverview = () => api.get<{ data: TeamOverviewRow[]; minReleaseDays: number }>("/api/admin/teams/overview");
+export const adminTeamClaims = (id: string) => api.get<{ data: TeamClaim[]; minReleaseDays: number }>(`/api/admin/teams/${id}/claims`);
+export const adminTeamReleaseClaims = (id: string, body: { resourceKeys?: string[]; reason?: string; force?: boolean }) =>
+  api.post<{ data: { released: string[]; skipped: Array<{ resourceKey: string; blocker: string }>; nodeIds: string[] } }>(`/api/admin/teams/${id}/release-claims`, body);
+export const adminTeamPatch = (id: string, body: { status?: "active" | "disabled"; name?: string }) => api.patch<{ data: { id: string; name: string | null; status: string } }>(`/api/admin/teams/${id}`, body);
+export const adminTeamCleanupNodes = (id: string) => api.post<{ data: { nodes: string[] } }>(`/api/admin/teams/${id}/cleanup-nodes`, {});

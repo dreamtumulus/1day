@@ -281,3 +281,8 @@ console 定时任务每 `cache_refund_interval_sec`（默认 86400）跑一轮�
 | `admin-key.txt` | 首次启动无管理员时生成的登录密钥（0600） |
 | `settlement-journal/` | 0600 结算意图文件；只能在确认已记账后由幂等恢复删除，不得当缓存清空 |
 | `backups/` | v3 重构前的源码 / 数据库快照 |
+
+### 迁移 33 / 34（2026-11-01）
+
+- 33：`accounts.proxy_down_since / proxy_down_reason / proxy_down_proxy_id`——`status='proxy_down'`（代理失联冻结，onboarding.md §1.2）的时间、原因、代理。
+- 34：`proxy_team_claim_releases`（append-only）记录管理员释放的组织出口认领；`proxy_team_claims` 的 no_delete 触发器移除（释放 = 先写 release 行再删 claim 行），no_update 保留。

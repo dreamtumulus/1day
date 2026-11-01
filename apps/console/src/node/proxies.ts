@@ -287,6 +287,12 @@ export function rebindAccountProxy(accountId: string, actorId: string | null, op
 /** Proxies an in-flight onboarding job has already picked (not yet bound: the bot is still running). */
 export const RESERVED_PROXY_SQL = `SELECT proxy_id FROM onboarding_jobs j WHERE proxy_id IS NOT NULL AND ${liveReservationSql()}`;
 
+/** Accounts one measured exit IP may carry (settings `proxy_exit_max_accounts`, 1–10, default 3; 2026-11-01). */
+export function exitCap(): number {
+  const n = Number(getSetting("proxy_exit_max_accounts"));
+  return Number.isFinite(n) && n >= 1 ? Math.min(10, Math.floor(n)) : 3;
+}
+
 /** SQL predicate (one `?` = now ISO): the proxy is not in a release cooldown. */
 const NOT_COOLING_SQL = "(cooldown_until IS NULL OR cooldown_until <= ?)";
 
@@ -332,7 +338,7 @@ export function listNodeProxyGroups(nodeId: string): ProxyGroupSummary[] {
     const occ = p.resource_key ? proxyOccupancy(p.resource_key) : { bound: 0, reserved: 0, total: 0 };
     if (occ.bound > 0 || one("SELECT 1 FROM accounts WHERE bound_proxy_id=?", p.id)) g.bound += 1;
     if (p.isolation_version === 1 && p.status === "live" && p.resource_key && !quarantineActive(p.resource_key, `proxy:${p.id}`) &&
-        (!p.cooldown_until || p.cooldown_until <= now) && occ.total < 3) g.assignable += 1;
+        (!p.cooldown_until || p.cooldown_until <= now) && occ.total < exitCap()) g.assignable += 1;
     by.set(p.group_name ?? null, g);
   }
   return [...by.values()].sort((a, b) => (a.group === null ? 1 : b.group === null ? -1 : a.group.localeCompare(b.group)));
@@ -353,7 +359,7 @@ export function recordNodeProxyExit(nodeId:string,proxyId:string,ip:string):bool
   if(observed && observedKey && observed.resource_key===observedKey && observed.exit_ip===observedKey.slice(3) &&
     !quarantineActive(observedKey,`proxy:${proxyId}`) &&
     (!observed.team_id || one("SELECT 1 FROM proxy_team_claims WHERE resource_key=? AND team_id=?",observedKey,observed.team_id)) &&
-    proxyOccupancy(observedKey).total<=3)return true;
+    proxyOccupancy(observedKey).total<=exitCap())return true;
   return tx(()=>{
     const p=one<IsolatedProxy>("SELECT * FROM node_proxies WHERE id=? AND node_id=? AND isolation_version=1",proxyId,nodeId);
     if(!p)return false;
@@ -374,7 +380,7 @@ export function recordNodeProxyExit(nodeId:string,proxyId:string,ip:string):bool
     }
     if(p.team_id)claimProxyResource(key,p.team_id);
     run("UPDATE node_proxies SET exit_ip=?,resource_key=? WHERE id=?",key.slice(3),key,proxyId);
-    if(proxyOccupancy(key).total>3){
+    if(proxyOccupancy(key).total>exitCap()){
       quarantineResource(`proxy:${p.id}`,"exit capacity exceeded after observation");
       run("UPDATE node_proxies SET status='dead',last_error='exit capacity exceeded' WHERE id=?",proxyId);freeze("exit capacity exceeded after observation");return false;
     }
@@ -452,7 +458,7 @@ export function resolveTeamProxy(nodeId: string, teamIdInput?: string | null, re
     const reason = teamIncompatibleReason(p, teamId);
     if (reason) throw new ProxyInputError(`proxy_unassignable: ${reason}`);
     const occ = proxyOccupancy(p.resource_key!, excludeJobId);
-    if (occ.total >= 3) throw new ProxyInputError(`proxy_full: exit already carries ${occ.total} accounts (maximum 3)`);
+    if (occ.total >= exitCap()) throw new ProxyInputError(`proxy_full: exit already carries ${occ.total} accounts (maximum ${exitCap()})`);
     return p;
   }
   // "auto within a group" (2026-10-29): only rows of that group are candidates.
@@ -460,10 +466,10 @@ export function resolveTeamProxy(nodeId: string, teamIdInput?: string | null, re
   const candidates = all<IsolatedProxy>("SELECT * FROM node_proxies WHERE node_id=? ORDER BY last_check_at,id", nodeId)
     .filter((p) => (group === undefined || (p.group_name ?? null) === group) && !excludeProxyIds?.has(p.id) && teamCompatible(p, teamId))
     .map((p) => ({ p, count: proxyOccupancy(p.resource_key!, excludeJobId).total }))
-    .filter((x) => x.count < 3);
+    .filter((x) => x.count < exitCap());
   // Stable sort: equal loads keep the probe order, so the pick walks the pool instead of camping on one exit.
   const selected = candidates.sort((a, b) => a.count - b.count)[0];
-  if (!selected) throw new ProxyInputError(group !== undefined ? `No compatible verified proxy capacity in group ${group ?? "(ungrouped)"} (maximum 3 per exit)` : "No compatible verified proxy capacity (maximum 3 per exit)");
+  if (!selected) throw new ProxyInputError(group !== undefined ? `No compatible verified proxy capacity in group ${group ?? "(ungrouped)"} (maximum ${exitCap()} per exit)` : `No compatible verified proxy capacity (maximum ${exitCap()} per exit)`);
   return selected.p;
 }
 
@@ -577,7 +583,7 @@ export function resolveSuppliedProxy(nodeId: string, raw: string, opts: {
     return { ...base, parsed: shown, proxyId: p.id, nodeId: owner, existed, added, pushed, reset, status: p.status, lastError: p.last_error ?? null,
       exitIp: p.exit_ip, country: (p as IsolatedProxy & { exit_country?: string | null }).exit_country ?? null,
       quarantined: q.quarantined, quarantineReason: q.reason, boundAccounts: occ.bound, reservedAccounts: occ.reserved,
-      blocked: reason ?? (occ.total >= 3 ? "full" : null) };
+      blocked: reason ?? (occ.total >= exitCap() ? "full" : null) };
   };
   if (hit) return snapshot(hit.id, hit.node_id, true, false, false);
   if (opts.dryRun) {
@@ -607,7 +613,7 @@ export function claimTeamProxy(proxyId: string, teamId: string, accountId: strin
   if (!p || p.isolation_version !== 1 || !p.resource_key || p.resource_key !== job?.proxy_resource_key ||
       !p.exit_ip || canonicalProxyResourceKey(p.exit_ip) !== p.resource_key || p.status !== "live" ||
       (p.team_id && p.team_id !== teamId)) throw new Error("proxy_identity_changed");
-  if (proxyOccupancy(p.resource_key, jobId).total >= 3) throw new Error("proxy_capacity_reached");
+  if (proxyOccupancy(p.resource_key, jobId).total >= exitCap()) throw new Error("proxy_capacity_reached");
   ensureUpstreamTeam(teamId);
   claimProxyResource(`proxy:${p.id}`, teamId);
   claimProxyResource(p.resource_key, teamId);
@@ -837,7 +843,7 @@ export function listProxiesForPicker(nodeId: string, freeOnly: boolean) {
         exitIp:p.exit_ip,resourceKey:p.resource_key,country:p.exit_country??null,
         usable:p.isolation_version===1 && p.status==='live' && !!p.resource_key &&
           !quarantineActive(p.resource_key,`proxy:${p.id}`) &&
-          (!p.cooldown_until || p.cooldown_until<=nowIso()) && slots.total<3};
+          (!p.cooldown_until || p.cooldown_until<=nowIso()) && slots.total<exitCap()};
     }).filter((p)=>!freeOnly || p.usable).map(({usable,...p})=>p);
 }
 

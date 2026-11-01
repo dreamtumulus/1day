@@ -17,7 +17,7 @@ import {
   parseIsoInput,
   pendingCacheRefund,
   run,
-  tx, HISTORY_POLICIES, type HistoryPolicy } from "@1dayapi/core";
+  tx, HISTORY_POLICIES, type HistoryPolicy, TEAM_AFFINITIES, type TeamAffinity } from "@1dayapi/core";
 import {
   Where,
   bad,
@@ -93,11 +93,12 @@ export function applyKeyFields(
     const p = b.policy;
     if (p === null) out.policyJson = null;
     else if (p && typeof p === "object") {
-      const { historyPolicy, directOnly, probeIntercept } = p as Record<string, unknown>;
+      const { historyPolicy, directOnly, probeIntercept, teamAffinity } = p as Record<string, unknown>;
       if (historyPolicy !== undefined && !(HISTORY_POLICIES as readonly string[]).includes(String(historyPolicy))) bad("invalid_request", "policy.historyPolicy must be reset | reject | passthrough");
       if (directOnly !== undefined && typeof directOnly !== "boolean") bad("invalid_request", "policy.directOnly must be a boolean");
       if (probeIntercept !== undefined && typeof probeIntercept !== "boolean") bad("invalid_request", "policy.probeIntercept must be a boolean");
-      out.policyJson = JSON.stringify({ historyPolicy: (historyPolicy as HistoryPolicy | undefined) ?? "passthrough", directOnly: directOnly === true, probeIntercept: probeIntercept !== false });
+      if (teamAffinity !== undefined && teamAffinity !== null && !(TEAM_AFFINITIES as readonly string[]).includes(String(teamAffinity))) bad("invalid_request", "policy.teamAffinity must be spread | pack | null");
+      out.policyJson = JSON.stringify({ historyPolicy: (historyPolicy as HistoryPolicy | undefined) ?? "passthrough", directOnly: directOnly === true, probeIntercept: probeIntercept !== false, teamAffinity: (teamAffinity as TeamAffinity | undefined) ?? null });
     } else bad("invalid_request", "policy must be an object or null");
   }
   return out;

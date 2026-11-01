@@ -839,7 +839,14 @@ async function proxyRequest(req: FastifyRequest, reply: FastifyReply, format: Cl
     // A generation has exactly one verified upstream organization. Non-subscription relays
     // cannot silently become a fallback for a subscription conversation.
     const teams = usable.filter((a) => !!accountTeamId(a));
-    if (!scope.row.team_id && teams.length) scope.row = bindConversationTeam(scope.row.id, scope.token, scope.row.generation, accountTeamId(teams[0])!);
+    if (!scope.row.team_id && teams.length) {
+      // Which organization a new conversation joins (2026-11-01, audit "小组织" A1/A3): by capacity — free
+      // concurrency slots × subscription-window headroom — with the key's teamAffinity as the first-order
+      // preference, instead of whichever organization's account happened to sort first.
+      const pick = pickTeam(teams, caller.policy.teamAffinity);
+      scope.row = bindConversationTeam(scope.row.id, scope.token, scope.row.generation, pick.teamId);
+      console.info(`[team-pick] ${ctx.requestId} conv=${scope.row.id.slice(0, 8)} team=${pick.teamId.slice(0, 8)} ${pick.why}`);
+    }
     const current = scope.row.team_id;
     if (current) scope.triedTeams.add(current);
     all = all.filter((a) => current ? accountTeamId(a) === current : a.type !== "oauth");
@@ -851,7 +858,7 @@ async function proxyRequest(req: FastifyRequest, reply: FastifyReply, format: Cl
         // days, 98% from Agent/SDK callers). Keep the team and its context: wait for one of its accounts to
         // become schedulable again, otherwise fail retryably so the client resends this same round.
         unlockScope(scope);
-        const deadline = Date.now() + busyWaitMs();
+        const deadline = Date.now() + busyWaitMs(all.length);
         while (usable.length === 0 && Date.now() < deadline && !ctx.clientGone) {
           try { await wait(Math.min(500, deadline - Date.now()), ctx.abort.signal); } catch { break; }
           all = listCandidates(caller.groupId, model).filter((a) => accountTeamId(a) === current);
@@ -944,7 +951,7 @@ async function proxyRequest(req: FastifyRequest, reply: FastifyReply, format: Cl
     return ccrBody;
   };
 
-  const busyDeadline = Date.now() + busyWaitMs();
+  const busyDeadline = Date.now() + busyWaitMs(scope?.row.team_id ? all.length : Number.POSITIVE_INFINITY);
   let busy: Candidate[] = [];
   for (;;) {
   busy = [];
@@ -1422,9 +1429,56 @@ export function ignoredParams(body: Json, format: ClientFormat, mode: Mode): str
   return names.filter((n) => body[n] !== undefined && body[n] !== null);
 }
 
-/** How long a request waits for a busy / momentarily unschedulable organization (env, 0–60 s, default 15 s). */
-function busyWaitMs(): number {
-  return Math.max(0, Math.min(60_000, Number(process.env.ACCOUNT_BUSY_WAIT_MS ?? 15_000)));
+/**
+ * How long a request waits for a busy / momentarily unschedulable organization (env, 0–60 s, default 15 s).
+ * Small organizations (≤ ACCOUNT_SMALL_TEAM_MAX_ACCOUNTS accounts, default 2 — a one-account organization in
+ * particular) get ACCOUNT_BUSY_WAIT_SMALL_TEAM_MS (default 2 × base = 30 s): with one account, "busy" is the normal state
+ * between two turns, not a sign of trouble (2026-11-01, A2).
+ */
+function busyWaitMs(teamAccounts = Number.POSITIVE_INFINITY): number {
+  const base = Math.max(0, Math.min(60_000, Number(process.env.ACCOUNT_BUSY_WAIT_MS ?? 15_000)));
+  const smallMax = Math.max(1, Number(process.env.ACCOUNT_SMALL_TEAM_MAX_ACCOUNTS ?? 2));
+  if (teamAccounts > smallMax) return base;
+  // default: twice the base wait (15 s → 30 s in production; tests that shrink the base shrink this too)
+  const small = process.env.ACCOUNT_BUSY_WAIT_SMALL_TEAM_MS !== undefined ? Math.max(0, Math.min(60_000, Number(process.env.ACCOUNT_BUSY_WAIT_SMALL_TEAM_MS))) : base * 2;
+  return Math.max(base, small);
+}
+
+/** Slots an account without a concurrency cap is assumed to offer when organizations are compared. */
+const UNCAPPED_SLOTS = 20;
+
+/**
+ * Organization choice for a new conversation (A1/A3, 2026-11-01). `teams` = the usable candidate accounts that
+ * carry an organization, in listCandidates order (group priority, account priority, least recently used).
+ * Score = free concurrency slots of the non-cooling accounts × (0.25 + 0.75 × average window headroom).
+ * teamAffinity "spread" ranks larger organizations first, "pack" smaller ones; both fall back to the score.
+ */
+export function pickTeam(
+  teams: Array<{ id: string; team_id?: string | null; concurrency: number; window_used: number | null; cooling?: boolean; temp_unschedulable_until?: string | null; overload_until?: string | null }>,
+  affinity: "spread" | "pack" | null | undefined,
+  inFlight: (accountId: string) => number = accountInFlight,
+): { teamId: string; why: string } {
+  const now = nowIso();
+  const byTeam = new Map<string, { n: number; free: number; headroom: number; order: number }>();
+  teams.forEach((a, i) => {
+    const t = accountTeamId(a);
+    if (!t) return;
+    const e = byTeam.get(t) ?? { n: 0, free: 0, headroom: 0, order: i };
+    e.n += 1;
+    const cooling = !!a.cooling || (!!a.temp_unschedulable_until && a.temp_unschedulable_until > now) || (!!a.overload_until && a.overload_until > now);
+    if (!cooling) e.free += a.concurrency > 0 ? Math.max(0, a.concurrency - inFlight(a.id)) : UNCAPPED_SLOTS;
+    e.headroom += 1 - Math.min(1, Math.max(0, a.window_used ?? 0));
+    byTeam.set(t, e);
+  });
+  const rows = [...byTeam.entries()].map(([teamId, e]) => ({ teamId, n: e.n, free: e.free, headroom: e.headroom / e.n, order: e.order, score: e.free * (0.25 + 0.75 * (e.headroom / e.n)) }));
+  rows.sort((x, y) => {
+    if (affinity === "spread" && x.n !== y.n) return y.n - x.n;
+    if (affinity === "pack" && x.n !== y.n) return x.n - y.n;
+    if (y.score !== x.score) return y.score - x.score;
+    return x.order - y.order;
+  });
+  const w = rows[0];
+  return { teamId: w.teamId, why: `affinity=${affinity ?? "capacity"} accounts=${w.n} freeSlots=${w.free} headroom=${w.headroom.toFixed(2)} score=${w.score.toFixed(1)} of ${rows.length} org(s)` };
 }
 
 /**

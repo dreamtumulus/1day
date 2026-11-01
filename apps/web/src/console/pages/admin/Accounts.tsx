@@ -322,6 +322,7 @@ export function AdminAccounts() {
   const review = params.get("reviewStatus") ?? "";
   const owner = params.get("owner") ?? "";
   const nodeId = params.get("nodeId") ?? "";
+  const teamId = params.get("teamId") ?? "";
   const q = params.get("q") ?? "";
 
   const setParam = (patch: Record<string, string | undefined>, resetPage = true) => {
@@ -344,7 +345,7 @@ export function AdminAccounts() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [search]);
 
-  const query: AdminAccountQuery = { kind, page: pageNo, pageSize, sort, order, q, platform, status, reviewStatus: review, ownerId: owner, nodeId };
+  const query: AdminAccountQuery = { kind, page: pageNo, pageSize, sort, order, q, platform, status, reviewStatus: review, ownerId: owner, nodeId, teamId };
   const queryKey = JSON.stringify(query);
   const list = useAsync(() => adminAccounts(query), [queryKey]);
 
@@ -785,7 +786,7 @@ export function AdminAccounts() {
   ];
 
   const counts = list.data?.counts;
-  const filtersActive = !!(q || platform || status || review || owner || nodeId);
+  const filtersActive = !!(q || platform || status || review || owner || nodeId || teamId);
 
   return (
     <div>

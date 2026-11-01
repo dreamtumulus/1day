@@ -1,6 +1,6 @@
 import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { WebSocketServer, type WebSocket } from "ws";
-import { all, boundProxyDown, decryptString, ensureDeviceId, isConversationGenerationActive, nowIso, one, run, sha256Hex, type AccountRow, freezeAccountsOnProxy, freezeAccountForProxy } from "@1dayapi/core";
+import { all, boundProxyDown, decryptString, ensureDeviceId, isConversationGenerationActive, nowIso, one, run, sha256Hex, type AccountRow, freezeAccountsOnProxy, freezeAccountForProxy, recordProxyTeamEvent } from "@1dayapi/core";
 import { nodeProxyConfig, recordNodeProxyExit } from "./proxies.js";
 import { isTrustedExecutionNode } from "./trust.js";
 
@@ -392,6 +392,17 @@ function handleNodeMessage(conn: NodeConn, msg: Record<string, unknown>): void {
       for (const isolation of owed.values()) void forceNodeReset(conn, isolation);
       return;
     }
+    case "teams.retire_result": {
+      // Node-side organization cleanup outcome (2026-11-01): one append-only event per team per node.
+      const results = Array.isArray(msg.results) ? (msg.results as Array<{ teamId?: unknown; removed?: unknown; error?: unknown }>) : [];
+      for (const r of results) {
+        if (typeof r?.teamId !== "string") continue;
+        const removed = r.removed === true;
+        recordProxyTeamEvent({ resourceKey: `team:${r.teamId}`, nodeId: conn.nodeId, teamId: r.teamId, event: removed ? "team_node_cleanup" : "team_node_cleanup_skipped", reason: removed ? "node removed the organization's worker root and system user" : `node did not clean up: ${typeof r.error === "string" ? r.error.slice(0, 160) : "unknown"}` });
+        console.info(`[registry] teams.retire ${r.teamId.slice(0, 8)} on ${conn.nodeId}: ${removed ? "removed" : `skipped (${String(r.error ?? "?")})`}`);
+      }
+      return;
+    }
     case "provider.heartbeat": {
       conn.reportedAccepting = msg.acceptingSessions !== false;
       conn.acceptingSessions = conn.reportedAccepting && !nodeResetDebt.has(conn.nodeId);
@@ -511,6 +522,21 @@ export function pushProxies(nodeId: string, urls: string[]): boolean {
     send(conn.socket, { type: "proxies.set", proxies: policy.proxies.filter((url) => legacy.has(sha256Hex(url).slice(0, 12))) });
   } else send(conn.socket, { type: "proxies.set", ...policy });
   return true;
+}
+
+/**
+ * Ask every online isolation-capable node to remove an organization's worker root and system user
+ * (teams.retire, 2026-11-01). Returns the node ids asked; results arrive as teams.retire_result events.
+ */
+export function retireTeamOnNodes(teamId: string): string[] {
+  const asked: string[] = [];
+  for (const conn of onlineNodes.values()) {
+    if (!conn.capabilities?.includes("team_isolation_v1")) continue;
+    if (conn.runtimeTeamId && conn.runtimeTeamId !== teamId) continue;
+    send(conn.socket, { type: "teams.retire", teamIds: [teamId] });
+    asked.push(conn.nodeId);
+  }
+  return asked;
 }
 
 /** Open tunnel sessions (requests in flight / worker turns) bound to this account; 0 when idle. */

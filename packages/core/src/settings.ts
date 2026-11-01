@@ -37,6 +37,12 @@ export const SETTING_DEFAULTS = {
   // 落库时写 temp_unschedulable_until；两个都为 0 = 关闭。
   onboard_cooldown_min_sec: "3720",
   onboard_cooldown_max_sec: "4200",
+  // 每个实测出口 IP 最多承载的订阅账号数（2026-11-01 起可配，此前写死 3；team-isolation.md "固定代理与容量"）。
+  // 自动分配仍"先铺开"（每个出口先各一个）。1～10。
+  proxy_exit_max_accounts: "3",
+  // 组织出口认领的最短保留天数（2026-11-01，team-isolation.md）：组织下已无账号、无在途上号且最近一次账号释放距今 ≥ N 天，
+  // 管理员才能"释放认领"让该出口回到可被其他组织发现/认领的状态；0 = 随时可释放（仍需手动）。
+  team_claim_release_min_days: "7",
   // 代理释放冷静期（用户 2026-10-20 定）：删除一个被上游拒绝的账号（status=error：401 吊销、on hold 等）时，
   // 其代理释放后 24 小时内不分配给新上号的账号（node_proxies.cooldown_until）。0 = 关闭。
   proxy_release_cooldown_sec: "86400",
