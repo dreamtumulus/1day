@@ -179,13 +179,53 @@ function SettingsForm({ initial, groups, onSaved }: { initial: Settings; groups:
             <Field label={t("admin.settings.claimReleaseDays")} hint={t("admin.settings.claimReleaseDaysHint")}>
               <Input type="number" min={0} max={365} step="1" value={s.team_claim_release_min_days ?? "7"} onChange={(e) => set("team_claim_release_min_days", e.target.value)} />
             </Field>
-            <Field label={t("admin.settings.directCcEntrypoint")} hint={t("admin.settings.directCcEntrypointHint")}>
+            <Field label={t("admin.settings.canaryGroup")} hint={t("admin.settings.canaryGroupHint")}>
               <Select
-                value={s.direct_cc_entrypoint_normalize ?? "1"}
-                onChange={(e) => set("direct_cc_entrypoint_normalize", e.target.value)}
+                value={s.canary_group_id ?? ""}
+                onChange={(e) => set("canary_group_id", e.target.value)}
+                options={[{ value: "", label: t("admin.settings.canaryGroupNone") }, ...groups.map((g) => ({ value: g.id, label: g.name }))]}
+              />
+            </Field>
+            {(
+              [
+                ["direct_cc_entrypoint_normalize", "directCcEntrypoint"],
+                ["direct_strip_user_email", "directStripUserEmail"],
+                ["direct_cc_canonical_fields", "directCanonicalFields"],
+                ["worker_prompt_hide_platform_path", "workerHidePlatformPath"],
+              ] as const
+            ).map(([key, label]) => (
+              <Field key={key} label={t(`admin.settings.${label}`)} hint={t(`admin.settings.${label}Hint`)}>
+                <Select
+                  value={(s as unknown as Record<string, string | undefined>)[key] ?? "0"}
+                  onChange={(e) => set(key, e.target.value)}
+                  options={[
+                    { value: "0", label: t("admin.settings.featureOff") },
+                    { value: "canary", label: t("admin.settings.featureCanary") },
+                    { value: "1", label: t("admin.settings.featureOn") },
+                  ]}
+                />
+              </Field>
+            ))}
+            <Field label={t("admin.settings.historyPolicyDefault")} hint={t("admin.settings.historyPolicyDefaultHint")}>
+              <Select
+                value={s.history_policy_default ?? "reset"}
+                onChange={(e) => set("history_policy_default", e.target.value)}
                 options={[
-                  { value: "1", label: t("common.enabled") },
-                  { value: "0", label: t("common.disabled") },
+                  { value: "reset", label: t("admin.keys.historyReset") },
+                  { value: "reject", label: t("admin.keys.historyReject") },
+                  { value: "passthrough", label: t("admin.keys.historyPassthrough") },
+                ]}
+              />
+            </Field>
+            <Field label={t("admin.settings.historyPolicyCanary")} hint={t("admin.settings.historyPolicyCanaryHint")}>
+              <Select
+                value={s.history_policy_canary ?? ""}
+                onChange={(e) => set("history_policy_canary", e.target.value)}
+                options={[
+                  { value: "", label: t("admin.settings.historyPolicySame") },
+                  { value: "reset", label: t("admin.keys.historyReset") },
+                  { value: "reject", label: t("admin.keys.historyReject") },
+                  { value: "passthrough", label: t("admin.keys.historyPassthrough") },
                 ]}
               />
             </Field>

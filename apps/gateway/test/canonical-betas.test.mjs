@@ -35,10 +35,14 @@ test("Claude Code client with its own betas: passed through, oauth appended only
   assert.equal(r.headers["anthropic-beta"], cc["anthropic-beta"]);
   const noOauth = { ...cc, "anthropic-beta": "claude-code-20250219,interleaved-thinking-2025-05-14" };
   const r2 = buildUpstreamRequest(oauthAccount, { accessToken: "tok" }, "passthrough-anthropic", body, "claude-sonnet-5-5", noOauth);
-  // inserted where a real OAuth client carries it (right after claude-code-20250219), not appended (audit 2026-11-01 B12)
-  assert.equal(r2.headers["anthropic-beta"], "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14");
+  // default (direct_cc_canonical_fields=0, 铁律 2 old behaviour): appended at the tail
+  assert.equal(r2.headers["anthropic-beta"], "claude-code-20250219,interleaved-thinking-2025-05-14,oauth-2025-04-20");
+  // with the switch: inserted where a real OAuth client carries it (right after claude-code-20250219) (audit 2026-11-01 B12)
+  const canonical = { normalizeEntrypoint: false, stripUserEmail: false, canonicalFields: true };
+  const r2c = buildUpstreamRequest(oauthAccount, { accessToken: "tok" }, "passthrough-anthropic", body, "claude-sonnet-5-5", noOauth, "", undefined, canonical);
+  assert.equal(r2c.headers["anthropic-beta"], "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14");
   const noCc = { ...cc, "anthropic-beta": "interleaved-thinking-2025-05-14" };
-  const r3 = buildUpstreamRequest(oauthAccount, { accessToken: "tok" }, "passthrough-anthropic", body, "claude-sonnet-5-5", noCc);
+  const r3 = buildUpstreamRequest(oauthAccount, { accessToken: "tok" }, "passthrough-anthropic", body, "claude-sonnet-5-5", noCc, "", undefined, canonical);
   assert.equal(r3.headers["anthropic-beta"], "interleaved-thinking-2025-05-14,oauth-2025-04-20", "no anchor → appended");
 });
 

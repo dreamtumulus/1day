@@ -611,15 +611,21 @@ test("cloud streaming consumes only the current turn from complete event history
 
 
 // ---------- per-key routing policy (docs/gateway.md §2b, 2026-10-29) ----------
-test("default policy (no policy_json) is passthrough since 2026-11-01: unknown earlier turns are forwarded, no reset header", async () => {
+test("default policy (no policy_json) follows settings.history_policy_default (reset unless changed; 铁律 2): passthrough forwards unknown turns with no reset header", async () => {
   const f = seed([{ team: TEAM_A }]);
-  assert.equal(core.parseKeyPolicy(null).historyPolicy, "passthrough");
-  assert.equal(core.parseKeyPolicy(JSON.stringify({ directOnly: true })).historyPolicy, "passthrough", "a policy_json without historyPolicy follows the default");
-  assert.equal(core.parseKeyPolicy(JSON.stringify({ historyPolicy: "reset" })).historyPolicy, "reset", "explicit choices are kept");
-  const r = await request(f, payload([question("served elsewhere"), answer("old reply"), question("now here")]));
-  assert.equal(r.statusCode, 200, r.body);
-  assert.equal(r.headers["x-1day-context-reset"], undefined);
-  assert.deepEqual(attempts.at(-1).body.messages.map((m) => m.content), ["served elsewhere", "old reply", "now here"]);
+  assert.equal(core.parseKeyPolicy(null).historyPolicy, "reset", "code default = old behaviour");
+  core.setSetting("history_policy_default", "passthrough");
+  try {
+    assert.equal(core.parseKeyPolicy(null).historyPolicy, "passthrough");
+    assert.equal(core.parseKeyPolicy(JSON.stringify({ directOnly: true })).historyPolicy, "passthrough", "a policy_json without historyPolicy follows the default");
+    assert.equal(core.parseKeyPolicy(JSON.stringify({ historyPolicy: "reset" })).historyPolicy, "reset", "explicit choices are kept");
+    const r = await request(f, payload([question("served elsewhere"), answer("old reply"), question("now here")]));
+    assert.equal(r.statusCode, 200, r.body);
+    assert.equal(r.headers["x-1day-context-reset"], undefined);
+    assert.deepEqual(attempts.at(-1).body.messages.map((m) => m.content), ["served elsewhere", "old reply", "now here"]);
+  } finally {
+    core.setSetting("history_policy_default", "reset");
+  }
 });
 test("history policy passthrough: unknown earlier turns are forwarded as-is, no context reset", async () => {
   const f = seed([{ team: TEAM_A }]);

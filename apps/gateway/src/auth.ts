@@ -167,6 +167,6 @@ export function authenticate(
     groupName: r.group_name,
     rateMultiplier: r.rate_multiplier ?? 1,
     allowlist: parseAllowlist(r.model_allowlist),
-    policy: parseKeyPolicy(r.policy_json),
+    policy: parseKeyPolicy(r.policy_json, r.group_id),
   };
 }

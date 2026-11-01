@@ -50,7 +50,20 @@ export const SETTING_DEFAULTS = {
   // direct_cc_entrypoint_normalize=1 → UA 里不是真实 Claude Code 入口（cli / sdk-cli / sdk-ts / sdk-py / claude-vscode / claude-desktop…）
   //   的后缀（如 "(external, mirasim)"）改成 "(external, cli)"，计费头的 cc_entrypoint 同步；0 = 原样透传。
   // direct_cc_version_pin = 直连 UA / 计费头 cc_version / stainless 包版本统一成这个 Claude Code 版本（与节点 worker 一致）；空 = 透传客户版本。
-  direct_cc_entrypoint_normalize: "1",
+  // 2026-11-01 起三态开关（"0" | "canary" | "1"，core/canary.ts）；默认 "0" = 封禁前的老行为（硬拒自定义入口 → worker）。
+  direct_cc_entrypoint_normalize: "0",
+  // ---- 灰度（铁律 2，CLAUDE.md）：上游可见的改动一律三态开关，默认老行为 ----
+  // 灰度测试账号组（groups.id）。Key 属于该组、或被选中的账号属于该组的请求，才吃到 "canary" 档的开关。空 = 没有灰度组（"canary" 等于关）。
+  canary_group_id: "",
+  // 直连删掉客户 Claude Code 自带的 `# userEmail` system-reminder（2026-11-01 审计 A4）。
+  direct_strip_user_email: "0",
+  // 直连按真实 2.1.312 客户端对齐细节：补 oauth beta 时插到 claude-code 之后而非末尾；metadata.user_id 重建为 device_id, account_uuid, session_id 顺序。
+  direct_cc_canonical_fields: "0",
+  // worker 系统提示词里不出现平台路径 /var/lib/1dayapi-cc-worker（审计 A1）。
+  worker_prompt_hide_platform_path: "0",
+  // Key 没显式配置 historyPolicy 时的默认值（reset | reject | passthrough）；history_policy_canary 非空时灰度组的 Key 用它。
+  history_policy_default: "reset",
+  history_policy_canary: "",
   direct_cc_version_pin: "2.1.312",
   // CCR 路径（worker / 云端会话）客户可见缓存 = 上游缓存 − 身份上下文基线（docs/ccr-supply.md §7.1）。
   // 基线 = 真 Claude Code 系统提示词 + 工具集的 token 数，按执行模式实测（worker 2026-10-16：16608–16777）；0 = 上游缓存全额计给客户。

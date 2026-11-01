@@ -17,6 +17,7 @@ import {
   type AccountMachine,
   type AccountRow,
   type Credential,
+  featureFor,
 } from "@1dayapi/core";
 import { anthropicToOpenaiChat, openaiChatToAnthropic } from "./convert.js";
 
@@ -98,6 +99,28 @@ export function rawClientHeaders(clientHeaders: Record<string, string | string[]
   return out;
 }
 
+/**
+ * Upstream-visible shaping decisions for one request (铁律 2 / core canary.ts): each one is a three-state setting
+ * ("0" | "canary" | "1") resolved by proxy.ts for the request's key group and the chosen account. The default
+ * here (settings without canary context) is what tests and ad-hoc callers get.
+ */
+export interface UpstreamShaping {
+  /** direct_cc_entrypoint_normalize: rewrite a customer-made UA entrypoint to (external, cli). */
+  normalizeEntrypoint: boolean;
+  /** direct_strip_user_email: drop the customer's `# userEmail` reminder. */
+  stripUserEmail: boolean;
+  /** direct_cc_canonical_fields: oauth beta after claude-code, metadata.user_id in Claude Code key order. */
+  canonicalFields: boolean;
+}
+
+export function shapingFor(ctx: { groupId?: string | null; accountId?: string | null } = {}): UpstreamShaping {
+  return {
+    normalizeEntrypoint: featureFor("direct_cc_entrypoint_normalize", { groupId: ctx.groupId }),
+    stripUserEmail: featureFor("direct_strip_user_email", ctx),
+    canonicalFields: featureFor("direct_cc_canonical_fields", ctx),
+  };
+}
+
 export function buildUpstreamRequest(
   account: AccountRow,
   cred: Credential,
@@ -107,6 +130,7 @@ export function buildUpstreamRequest(
   clientHeaders: Record<string, string | string[] | undefined>,
   clientQuery = "",
   upstreamSession?: string,
+  shaping: UpstreamShaping = shapingFor(),
 ): UpstreamRequest | null {
   if (upstreamSession) clientBody = { ...clientBody, metadata: { user_id: sessionMetadataUserId(upstreamSession) } };
   const base = accountBaseUrl(account);
@@ -137,7 +161,7 @@ export function buildUpstreamRequest(
   if (mode === "passthrough-anthropic") {
     const pin = getSetting("direct_cc_version_pin").trim();
     const n = normalizeCcSoftware(clientHeaders, clientBody, {
-      normalizeEntrypoint: getSetting("direct_cc_entrypoint_normalize") === "1",
+      normalizeEntrypoint: shaping.normalizeEntrypoint,
       versionPin: pin || null,
     });
     clientHeaders = n.headers;
@@ -162,13 +186,13 @@ export function buildUpstreamRequest(
     case "passthrough-anthropic":
       // Claude Code 恒定带 ?beta=true（docs/claude-code-compat.md §2）
       path = "/v1/messages?beta=true";
-      body = pinDeviceIdentity(normalizeThinking({ ...clientBody, model: upstreamModel }, upstreamModel), account);
+      body = pinDeviceIdentity(normalizeThinking({ ...clientBody, model: upstreamModel }, upstreamModel), account, { canonicalOrder: shaping.canonicalFields });
       if (machine) body = pinMachineEnvironment(body, machine, envUuid);
-      if (account.raw_passthrough !== 1) body = stripUserEmail(body);
+      if (account.raw_passthrough !== 1 && shaping.stripUserEmail) body = stripUserEmail(body);
       break;
     case "chat-via-anthropic":
       path = "/v1/messages?beta=true";
-      body = pinDeviceIdentity(normalizeThinking({ ...openaiChatToAnthropic(clientBody, upstreamModel), ...(upstreamSession ? { metadata: clientBody.metadata } : {}) }, upstreamModel), account);
+      body = pinDeviceIdentity(normalizeThinking({ ...openaiChatToAnthropic(clientBody, upstreamModel), ...(upstreamSession ? { metadata: clientBody.metadata } : {}) }, upstreamModel), account, { canonicalOrder: shaping.canonicalFields });
       if (machine) body = pinMachineEnvironment(body, machine, envUuid);
       break;
     case "passthrough-openai":
@@ -203,9 +227,9 @@ export function buildUpstreamRequest(
     let betaList = [...betas];
     if (account.type === "oauth") {
       // A client list missing the OAuth beta gets it where a real OAuth client carries it — right after
-      // claude-code-20250219 — not appended at the tail (audit 2026-11-01 B12).
+      // claude-code-20250219 (audit 2026-11-01 B12) — behind direct_cc_canonical_fields; otherwise appended (old).
       if (!betas.has("oauth-2025-04-20")) {
-        const i = betaList.indexOf("claude-code-20250219");
+        const i = shaping.canonicalFields ? betaList.indexOf("claude-code-20250219") : -1;
         betaList = i >= 0 ? [...betaList.slice(0, i + 1), "oauth-2025-04-20", ...betaList.slice(i + 1)] : [...betaList, "oauth-2025-04-20"];
       }
       headers.authorization = `Bearer ${secret}`;
@@ -307,7 +331,7 @@ export function normalizeThinking(body: Json, model: string): Json {
   return body;
 }
 
-export function pinDeviceIdentity(body: Json, account: Pick<AccountRow, "id" | "device_id" | "account_uuid">): Json {
+export function pinDeviceIdentity(body: Json, account: Pick<AccountRow, "id" | "device_id" | "account_uuid">, opts: { canonicalOrder?: boolean } = {}): Json {
   const meta = body.metadata;
   const raw = meta && typeof meta === "object" ? (meta as Json).user_id : undefined;
   if (typeof raw !== "string" || !raw) return body;
@@ -322,10 +346,17 @@ export function pinDeviceIdentity(body: Json, account: Pick<AccountRow, "id" | "
   if (t.startsWith("{")) {
     try {
       const j = JSON.parse(t) as Json;
-      // Rebuild in Claude Code's own key order (device_id, account_uuid, session_id, then anything else): a
-      // client that sent only {session_id} used to come out as {session_id, device_id, account_uuid} (audit A9).
-      const { device_id: _d, account_uuid: _a, session_id, ...others } = j;
-      next = JSON.stringify({ device_id: deviceId, account_uuid: acctUuid, ...(session_id !== undefined ? { session_id } : {}), ...others });
+      if (opts.canonicalOrder !== false) {
+        // Rebuild in Claude Code's own key order (device_id, account_uuid, session_id, then anything else): a
+        // client that sent only {session_id} used to come out as {session_id, device_id, account_uuid} (audit A9).
+        const { device_id: _d, account_uuid: _a, session_id, ...others } = j;
+        next = JSON.stringify({ device_id: deviceId, account_uuid: acctUuid, ...(session_id !== undefined ? { session_id } : {}), ...others });
+      } else {
+        // old behaviour (pre-2026-11-01): assign in place, keep the client's key order
+        j.device_id = deviceId;
+        j.account_uuid = acctUuid;
+        next = JSON.stringify(j);
+      }
     } catch {
       return body;
     }

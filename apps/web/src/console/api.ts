@@ -777,6 +777,13 @@ export interface Settings {
   _revision?: number;
   proxy_exit_max_accounts?: string;
   team_claim_release_min_days?: string;
+  /** 铁律 2 (docs/iron-rules.md): canary group + three-state switches ("0" | "canary" | "1") for upstream-visible behaviour. */
+  canary_group_id?: string;
+  direct_strip_user_email?: string;
+  direct_cc_canonical_fields?: string;
+  worker_prompt_hide_platform_path?: string;
+  history_policy_default?: string;
+  history_policy_canary?: string;
   default_group_id: string;
   provider_default_payout_rate: string;
   announcement: string;

@@ -17,7 +17,7 @@ import {
   parseIsoInput,
   pendingCacheRefund,
   run,
-  tx, HISTORY_POLICIES, type HistoryPolicy, TEAM_AFFINITIES, type TeamAffinity } from "@1dayapi/core";
+  tx, HISTORY_POLICIES, type HistoryPolicy, TEAM_AFFINITIES, type TeamAffinity, defaultHistoryPolicy } from "@1dayapi/core";
 import {
   Where,
   bad,
@@ -98,7 +98,7 @@ export function applyKeyFields(
       if (directOnly !== undefined && typeof directOnly !== "boolean") bad("invalid_request", "policy.directOnly must be a boolean");
       if (probeIntercept !== undefined && typeof probeIntercept !== "boolean") bad("invalid_request", "policy.probeIntercept must be a boolean");
       if (teamAffinity !== undefined && teamAffinity !== null && !(TEAM_AFFINITIES as readonly string[]).includes(String(teamAffinity))) bad("invalid_request", "policy.teamAffinity must be spread | pack | null");
-      out.policyJson = JSON.stringify({ historyPolicy: (historyPolicy as HistoryPolicy | undefined) ?? "passthrough", directOnly: directOnly === true, probeIntercept: probeIntercept !== false, teamAffinity: (teamAffinity as TeamAffinity | undefined) ?? null });
+      out.policyJson = JSON.stringify({ historyPolicy: (historyPolicy as HistoryPolicy | undefined) ?? defaultHistoryPolicy(), directOnly: directOnly === true, probeIntercept: probeIntercept !== false, teamAffinity: (teamAffinity as TeamAffinity | undefined) ?? null });
     } else bad("invalid_request", "policy must be an object or null");
   }
   return out;

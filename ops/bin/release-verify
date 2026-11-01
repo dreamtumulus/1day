@@ -13,6 +13,17 @@ chk() { if "$@"; then say "  ok"; else say "  FAIL"; fail=1; fi; }
 say "1. gateway /health"
 chk curl -fsS -m 10 https://api.1dayapi.com/health >/dev/null
 
+# 铁律 2 (docs/iron-rules.md): the canary group's key goes first when present, so a release is verified on the
+# canary accounts before the general pool is touched by the monitor's key.
+CKEY=$(cat /root/monitor/canary-apikey.txt 2>/dev/null || true)
+if [ -n "$CKEY" ]; then
+  say "2a. canary-group request (claude-sonnet-5-5, max_tokens 16)"
+  ccode=$(curl -s -m 120 -o /tmp/release-verify-canary.json -w '%{http_code}' -X POST https://api.1dayapi.com/v1/messages \
+    -H "authorization: Bearer $CKEY" -H 'content-type: application/json' -H 'anthropic-version: 2023-06-01' \
+    -d '{"model":"claude-sonnet-5-5","max_tokens":16,"messages":[{"role":"user","content":"Reply with the single word OK."}]}')
+  say "  HTTP $ccode $(head -c 160 /tmp/release-verify-canary.json)"
+  [ "$ccode" = "200" ] || fail=1
+fi
 say "2. real request (claude-sonnet-5-5, max_tokens 16)"
 if [ -n "$KEY" ]; then
   code=$(curl -s -m 120 -o /tmp/release-verify.json -w '%{http_code}' -X POST https://api.1dayapi.com/v1/messages \

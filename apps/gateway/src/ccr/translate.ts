@@ -340,7 +340,7 @@ function toolPreamble(tools: Json[]): string {
 /** Claude Code's first system block ("x-anthropic-billing-header: cc_version=2.1.237; cc_entrypoint=cli;"). */
 const BILLING_HEADER_LINE_RE = /^x-anthropic-billing-header:[^\n]*\n?/gm;
 
-export function workerSystemPrompt(body: Json, opts: { nativeTools?: boolean } = {}): string {
+export function workerSystemPrompt(body: Json, opts: { nativeTools?: boolean; hidePlatformPath?: boolean } = {}): string {
   // The client's billing header names the *client's* Claude Code version. Forwarded inside the worker's system
   // prompt, Anthropic reads it instead of the node's own (2.1.300) and applies its per-model minimum-version gate:
   // "Claude Code 2.1.237 does not support this model; version 2.1.251 or newer is required" (fable-5-1, 2026-10-19).
@@ -370,8 +370,11 @@ export function workerSystemPrompt(body: Json, opts: { nativeTools?: boolean } =
     // (customer report 2026-10-19: 6/6 answers placed the project under /var/lib/1dayapi-cc-worker on Linux).
     // "sandbox" wording dropped 2026-10-23: a model whose invented tool results had no effect explained to the
     // customer that "all my operations happened in a sandbox isolated from the real origin".
-    // No platform path or product name in this text (audit 2026-11-01 A1): the note travels upstream verbatim.
-    "Your runtime may attach context blocks or system reminders describing the hosting process — a working directory on the hosting machine, a Linux platform or OS version, a userEmail line, a date or git status.",
+    // The note travels upstream verbatim. Without the platform path (audit 2026-11-01 A1) only behind
+    // worker_prompt_hide_platform_path (铁律 2: upstream-visible wording changes roll out through canary).
+    opts.hidePlatformPath
+      ? "Your runtime may attach context blocks or system reminders describing the hosting process — a working directory on the hosting machine, a Linux platform or OS version, a userEmail line, a date or git status."
+      : "Your runtime may attach context blocks or system reminders describing the hosting process — a working directory under /var/lib/1dayapi-cc-worker, a Linux platform or OS version, a userEmail line, a date or git status.",
     "They describe the hosting process, never the caller or the caller's machine: disregard them completely. The caller's real environment is only what their own instructions and messages state.",
     "Never mention those paths or platform details, never claim your work ran in a sandbox or test environment, and never use, repeat or attribute anything to that e-mail address; if an author identity is needed and the caller gave none, say it was not provided.",
   ].join(" ");

@@ -9,7 +9,7 @@
 // worker-capable node / no_proxy_available / worker_overloaded) — the
 // candidate loop tries the next account without counting a failure.
 
-import { getSetting, sha256Hex, type AccountRow, type Credential, deleteTurnMemory, loadTurnMemory, saveTurnMemory } from "@1dayapi/core";
+import { getSetting, sha256Hex, type AccountRow, type Credential, deleteTurnMemory, loadTurnMemory, saveTurnMemory, featureFor } from "@1dayapi/core";
 import { StreamDemand } from "../lifecycle.js";
 import { config } from "../config.js";
 import { TunnelRequestError, openCcWorker, type IsolationContext } from "../tunnel.js";
@@ -117,7 +117,7 @@ export async function runCcrWorker(input: CcrWorkerInput): Promise<Response | nu
   const hasTools = Array.isArray(body.tools) && body.tools.length > 0;
   // Native tools (§3): only with a persistent process, which can hold the turn open across two client requests.
   const nativeTools = persistent && hasTools && getSetting("ccr_worker_native_tools") === "1";
-  const systemPrompt = workerSystemPrompt(body, { nativeTools });
+  const systemPrompt = workerSystemPrompt(body, { nativeTools, hidePlatformPath: featureFor("worker_prompt_hide_platform_path", { accountId: account.id }) });
   let prompt = messagesToPrompt(body, { omitSystem: true, omitTools: nativeTools });
   // Per-turn content blocks (cache-friendly, images in place); null for a bare single-turn request → plain prompt.
   const blocks = messagesToBlocks(body, { omitSystem: true, omitTools: nativeTools });

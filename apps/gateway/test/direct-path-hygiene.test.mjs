@@ -13,7 +13,8 @@ const dir = mkdtempSync(join(tmpdir(), "1dayapi-gw-hygiene-"));
 process.env.DATA_DIR = dir;
 process.on("exit", () => rmSync(dir, { recursive: true, force: true }));
 const core = await import("@1dayapi/core");
-const { buildUpstreamRequest, stripUserEmail } = await import("../dist/upstream.js");
+const { buildUpstreamRequest, stripUserEmail, shapingFor } = await import("../dist/upstream.js");
+const ALL_ON = { normalizeEntrypoint: true, stripUserEmail: true, canonicalFields: true };
 const { sendError } = await import("../dist/http.js");
 const { ignoredParams } = await import("../dist/proxy.js");
 
@@ -44,13 +45,13 @@ const mirasimBody = {
   metadata: { user_id: JSON.stringify({ device_id: "c".repeat(64), account_uuid: "", session_id: SID }) },
 };
 
-test("A2: with direct_cc_entrypoint_normalize=1 (default) a mirasim-shaped request passes the gate and leaves as (external, cli)", () => {
-  const allow = core.getSetting("direct_cc_entrypoint_normalize") === "1";
-  assert.equal(allow, true, "settings default");
-  const shape = core.classifyCcRequest(mirasimHeaders, mirasimBody, { allowCustomEntrypoint: allow });
+test("A2: with direct_cc_entrypoint_normalize on, a mirasim-shaped request passes the gate and leaves as (external, cli); default is off (铁律 2)", () => {
+  assert.equal(core.featureFor("direct_cc_entrypoint_normalize"), false, "default = old behaviour (hard reject)");
+  assert.equal(core.classifyCcRequest(mirasimHeaders, mirasimBody, { allowCustomEntrypoint: core.featureFor("direct_cc_entrypoint_normalize") }).verdict, "suspect");
+  const shape = core.classifyCcRequest(mirasimHeaders, mirasimBody, { allowCustomEntrypoint: true });
   assert.equal(shape.verdict, "genuine", shape.missing.join(","));
   assert.ok(shape.soft.includes("ua_entrypoint_custom"));
-  const r = buildUpstreamRequest(account, { accessToken: "tok" }, "passthrough-anthropic", mirasimBody, "claude-sonnet-5-5", mirasimHeaders);
+  const r = buildUpstreamRequest(account, { accessToken: "tok" }, "passthrough-anthropic", mirasimBody, "claude-sonnet-5-5", mirasimHeaders, "", undefined, ALL_ON);
   assert.equal(r.headers["user-agent"], "claude-cli/2.1.312 (external, cli)");
   const sent = JSON.parse(r.body);
   assert.match(sent.system[0].text, /cc_entrypoint=cli;/);
@@ -59,8 +60,10 @@ test("A2: with direct_cc_entrypoint_normalize=1 (default) a mirasim-shaped reque
   assert.deepEqual(core.classifyCcRequest(mirasimHeaders, mirasimBody).missing, ["ua_entrypoint"]);
 });
 
-test("A4: the customer's # userEmail reminder is dropped on the direct path; the prompt, billing suffix and other reminders stay", () => {
-  const r = buildUpstreamRequest(account, { accessToken: "tok" }, "passthrough-anthropic", mirasimBody, "claude-sonnet-5-5", mirasimHeaders);
+test("A4: with direct_strip_user_email on, the customer's # userEmail reminder is dropped; off (default) it travels as before", () => {
+  const off = buildUpstreamRequest(account, { accessToken: "tok" }, "passthrough-anthropic", mirasimBody, "claude-sonnet-5-5", mirasimHeaders);
+  assert.equal(JSON.stringify(JSON.parse(off.body)).includes("customer@example.com"), true, "default = old behaviour");
+  const r = buildUpstreamRequest(account, { accessToken: "tok" }, "passthrough-anthropic", mirasimBody, "claude-sonnet-5-5", mirasimHeaders, "", undefined, ALL_ON);
   const sent = JSON.parse(r.body);
   assert.equal(JSON.stringify(sent).includes("customer@example.com"), false);
   assert.deepEqual(sent.messages[0].content.map((b) => b.text), ["Reply with the single word OK."]);
@@ -134,4 +137,21 @@ test("A1/A3: a new conversation joins the organization with capacity, teamAffini
   const tie = [acc("x1", BIG, 2, 0.5), acc("y1", SMALL, 2, 0.5)];
   assert.equal(pickTeam(tie, null, () => 0).teamId, BIG);
   assert.match(pickTeam(teams, null, f).why, /freeSlots=5/);
+});
+
+test("铁律 2: shapingFor resolves the three-state switches against the canary group (key group or chosen account)", () => {
+  core.run("INSERT OR IGNORE INTO groups(id,name) VALUES ('g-canary','灰度测试'),('g-main','main')");
+  core.run("INSERT OR IGNORE INTO accounts(id,name,platform,type,protocol,credential_enc) VALUES ('acc-canary','c','anthropic','oauth','anthropic','x')");
+  core.run("INSERT OR IGNORE INTO account_groups(account_id,group_id,priority) VALUES ('acc-canary','g-canary',50)");
+  assert.deepEqual(shapingFor({ groupId: "g-main", accountId: "acc-canary" }), { normalizeEntrypoint: false, stripUserEmail: false, canonicalFields: false }, "all off by default");
+  core.setSetting("canary_group_id", "g-canary");
+  core.setSetting("direct_strip_user_email", "canary"); core.setSetting("direct_cc_canonical_fields", "canary"); core.setSetting("direct_cc_entrypoint_normalize", "canary");
+  assert.deepEqual(shapingFor({ groupId: "g-main" }), { normalizeEntrypoint: false, stripUserEmail: false, canonicalFields: false }, "ordinary key, ordinary account");
+  assert.deepEqual(shapingFor({ groupId: "g-canary" }), { normalizeEntrypoint: true, stripUserEmail: true, canonicalFields: true }, "canary key");
+  // the entrypoint rewrite follows the KEY's group only (it must match the gate decision taken before an account exists)
+  assert.deepEqual(shapingFor({ groupId: "g-main", accountId: "acc-canary" }), { normalizeEntrypoint: false, stripUserEmail: true, canonicalFields: true }, "canary account under an ordinary key");
+  core.setSetting("direct_strip_user_email", "1");
+  assert.equal(shapingFor({ groupId: "g-main" }).stripUserEmail, true, "1 = everyone");
+  for (const k of ["direct_strip_user_email", "direct_cc_canonical_fields", "direct_cc_entrypoint_normalize"]) core.setSetting(k, "0");
+  core.setSetting("canary_group_id", "");
 });

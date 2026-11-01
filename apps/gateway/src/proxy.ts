@@ -60,6 +60,7 @@ import {
   classifyTransportFailure,
   upstreamMessage,
   type UpstreamFailure,
+  featureFor,
 } from "@1dayapi/core";
 import { authenticate, type CallerContext } from "./auth.js";
 import { PROBE_WINDOW_MS, detectProbe, poolHealth, probeReply, type ProbeVerdict } from "./probe.js";
@@ -91,6 +92,7 @@ import {
   wireModeFor,
   type ClientFormat,
   type Mode,
+  shapingFor,
 } from "./upstream.js";
 import { wait, responseBytes } from "./lifecycle.js";
 import { UsageAccumulator, collectText, estimateRequestTokens } from "./usage.js";
@@ -794,7 +796,8 @@ async function proxyRequest(req: FastifyRequest, reply: FastifyReply, format: Cl
   const shape = rawGroup || (!!scope?.row.reset_active && !resetHistoryIntact)
     ? null
     : classifyCcRequest(req.headers as Record<string, string | string[] | undefined>, resetHistoryIntact && scope ? scope.originalBody : body, {
-        allowCustomEntrypoint: getSetting("direct_cc_entrypoint_normalize") === "1",
+        // three-state setting (铁律 2): "canary" admits custom entrypoints only for keys of the 灰度 group
+        allowCustomEntrypoint: featureFor("direct_cc_entrypoint_normalize", { groupId: caller.groupId }),
       });
   let ccClient = shape?.verdict === "genuine";
   if (shape && shape.verdict !== "not_cc") {
@@ -1063,7 +1066,7 @@ async function proxyRequest(req: FastifyRequest, reply: FastifyReply, format: Cl
               });
             }
           } else {
-            const ureq = buildUpstreamRequest(account, cred, mode, body, upstreamModel, upstreamHeaders, req.url.includes("?") ? req.url.slice(req.url.indexOf("?")) : "", upstreamSession);
+            const ureq = buildUpstreamRequest(account, cred, mode, body, upstreamModel, upstreamHeaders, req.url.includes("?") ? req.url.slice(req.url.indexOf("?")) : "", upstreamSession, shapingFor({ groupId: caller.groupId, accountId: account.id }));
             if (!ureq) {
               markFailure(account.id, { kind: "auth", message: "account has no base URL" });
               break;
