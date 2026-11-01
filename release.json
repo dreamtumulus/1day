@@ -1,19 +1,19 @@
 {
-  "releaseId": "20261101T100608Z-proxy-down-rule-and-reaudit",
+  "releaseId": "20261101T103102Z-organizations",
   "sourceTreeSha256": "c5f60dbd0fd7e6f23ad7adad5057b33ea0c89966a1ff503b98549e3284fee71e",
-  "bundleSha256": "8a0f026734e999dc1951d8ad35f71460845818dac37922585917de8d1f9b97ce",
-  "bundleBytes": 1539057,
-  "schemaVersion": 33,
-  "sourceCommit": "c4fa4ba29f9c49431492bcab5ccd8c5a572ef09d",
-  "installedAtUtc": "2026-11-01T10:06:08Z",
+  "bundleSha256": "59dcd739e4362fd91bf9b455b5a301335deec0bf69b6a6430708fd341d3bead5",
+  "bundleBytes": 1540713,
+  "schemaVersion": 34,
+  "sourceCommit": "74fa6ff26e9170a586ec0d06d85972ac14bbe79c",
+  "installedAtUtc": "2026-11-01T10:31:02Z",
   "status": "deployed",
   "tests": {
-    "core": 97,
-    "gateway": 177,
-    "console": 85,
+    "core": 98,
+    "gateway": 178,
+    "console": 86,
     "providerSuites": 6,
     "e2eSuites": 7
   },
-  "bundleNote": "node-bundle-rule1-20261101T100131Z.js; rolled to worker-01 (file in place, service restart pending), worker-02 and mirasim pending",
-  "notes": "2026-11-01 round 2: proxy_down freeze rule (migration 33), boundary anchor by content, extend-only cooldowns, probe repeat detection opt-in; see docs/deployment/2026-11-01-*.md §9"
+  "bundleNote": "node-bundle-teams-20261101T102846Z.js (includes the proxy_down node changes); file placed on worker-01, node service restart pending; worker-02 and mirasim pending",
+  "notes": "2026-11-01 round 3: organizations as an operations object (pickTeam, teamAffinity, claim release, exit cap setting, teams page, node cleanup); migration 34; see docs/deployment/2026-11-01-*.md §10"
 }
