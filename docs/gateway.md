@@ -193,7 +193,7 @@ claude-jetbrains / claude-desktop(-3p) / local-agent）的后缀改成 "(externa
 （默认 2.1.312 = 节点 worker 的版本，空 = 透传）把 UA 版本、`x-stainless-package-version`（取 canonical SDK 版本）和计费头 `cc_version`
 统一。形态判定（§2a）在归一化之前跑，判的仍是客户原始形状，但 `direct_cc_entrypoint_normalize` 开启时同时让判定放行自定义入口（否则归一化永远跑不到）；worker 路径不受影响。两项都是设置项，改完即生效，无需发布。
 **三态开关与灰度（铁律 2，docs/iron-rules.md，2026-11-01）**：`direct_cc_entrypoint_normalize`、`direct_strip_user_email`、`direct_cc_canonical_fields`、`worker_prompt_hide_platform_path` 取 `0 | canary | 1`，`history_policy_default` / `history_policy_canary` 决定 Key 的默认历史策略；`canary` 只对 `canary_group_id` 指向的灰度测试账号组（Key 属于该组，或被选中的账号属于该组）生效。默认全部 = 封禁前的老行为。
-归一化还会在版本等于节点构建（2.1.312）时按**实际转发的 messages** 重算计费后缀：对话重置后从边界起转发的历史，其首条用户文本与客户算后缀时的不同（2026-11-01）。
+**计费后缀是最后一步**（2026-11-01 事故，docs/iron-rules.md）：后缀是 Anthropic 对收到的首条用户文本做的防伪校验，所有改体（设备身份、机器环境、删 reminder、重置边界裁切）都在它之前，`alignBillingSuffix(body)` 在出站前按最终 messages 重算（只对 2.1.312；其他版本不碰首条用户文本）。09:40 的版本在算完后缀之后才删 reminder，短提示 + 同块 reminder 的请求后缀失配 → Anthropic `429 "Error"` → 换号重试放大到全组织 → 组织被停。
 直连路径另外会删掉客户 Claude Code 附加的 `# userEmail` system-reminder（2026-11-01 审计 A4）：共享账号下它是"同一设备、不同邮箱"的信号，也是客户隐私；CLAUDE.md / gitStatus 等任务上下文不动；不改写成号主邮箱，因为该提示要求模型拿它做作者署名，会把号主邮箱写进客户的 commit。
 重置过的对话不再永久锁在 worker 路径（2026-11-01 审计 B4）：边界匹配、边界后历史完整转发的请求仍按客户原始请求做形态判定，genuine 即走直连；只有"刚重置、只转发最后一个问题"的那一次不判定。
 

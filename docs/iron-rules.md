@@ -19,8 +19,12 @@
 
 ## 铁律 2：上游可见的改动必须经灰度测试组
 
-**起因**：2026-11-01 上午三轮发布在一小时内改了上游可见的请求形态（入口改写、删 userEmail、beta 顺序、键序、提示词措辞、默认历史策略），
-没有灰度、没有观察期，42 分钟后整个组织（29 个订阅号）被 Anthropic 停用 Claude Code 订阅访问。因果无法证明，但不可排除。
+**起因（已查明）**：2026-11-01 09:40 的发布在直连路径上把"删客户 `# userEmail` reminder"放在了**计费头后缀算完之后**。后缀是 Anthropic 对
+"收到的首条用户文本"做的防伪校验码（第 4/7/20 个字符 + 版本哈希）；客户把 reminder 和很短的提示词放在同一个文本块时，删掉 reminder 改变了被哈希的字符，
+后缀对不上 → Anthropic 回 `429 {"type":"rate_limit_error","message":"Error"}`（伪造 Claude Code 请求的标准拒绝；此前 7 天 0 次，发布后 3.5 分钟出现第一条）。
+网关又把这个 429 当账号级限流换号重试，31 条请求 × 21 个账号 = 651 次，把同一条校验失败的请求轮流打到组织里每个号上，42 分钟后组织被停用 Claude Code 订阅访问。
+修复：所有改体先做、后缀最后按出站 messages 重算（`alignBillingSuffix`），不会算后缀的版本禁止改首条用户文本；不变量测试 `apps/gateway/test/billing-suffix-invariant.test.mjs`
+（7 种首条消息布局 × 8 种开关组合 × 3 个客户版本 × 2 种入口，出站后缀必须等于 `ccBuildSuffix(出站 messages)`）。
 
 **规则**：
 1. 任何**上游可见**的改动——请求头、请求体、UA、计费头、`metadata`、`# Environment`、系统提示词措辞、历史转发量、令牌刷新/探测节奏、代理与设备身份——
@@ -42,7 +46,8 @@
   | `history_policy_default` / `history_policy_canary` | Key 默认历史策略；灰度组 Key 用 canary 值 | `reset` / 空 |
 - 灰度组：控制台「设置 → 灰度测试账号组」选择；账号加入该组 = 账号页编辑分组；测试 Key = 该组下的 consumer Key。
 - 发布核对：`ops/bin/release-verify` 先用灰度 Key（`/root/monitor/canary-apikey.txt`，如有）发请求，再用常规 Key。
-- 验证：`packages/core/test/canary.test.mjs`、`apps/gateway/test/direct-path-hygiene.test.mjs`（开关开/关两种形态）。
+- **出站不变量**：直连请求离开网关前，`system[0]` 计费头的后缀 ≡ `ccBuildSuffix(出站 messages, 版本)`；改体（设备身份、机器环境、删 reminder …）一律在算后缀之前，`alignBillingSuffix` 是最后一步；版本不是 2.1.312（不会算）时不碰首条用户文本（`canEditFirstUserText`）。运行时还有最后一道闸：对不上就原样转发客户 body 并打 `[billing-suffix] mismatch` 日志。
+- 验证：`packages/core/test/canary.test.mjs`、`apps/gateway/test/direct-path-hygiene.test.mjs`（开关开/关两种形态）、`apps/gateway/test/billing-suffix-invariant.test.mjs`。
 
 ## 附：组织级熔断（待做，铁律 2 的配套）
 

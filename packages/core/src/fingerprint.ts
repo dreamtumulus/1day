@@ -60,6 +60,47 @@ function firstUserText(messages: unknown): string {
   return block?.text ?? "";
 }
 
+/** The `cc_version` of the body's billing block (system[0]) — "2.1.312" — or null when there is no billing block. */
+export function billingVersionOf(body: Json): string | null {
+  const b0 = Array.isArray(body?.system) ? body.system[0] : null;
+  const text = typeof b0 === "string" ? b0 : b0 && typeof b0 === "object" && (b0 as Json).type === "text" ? String((b0 as Json).text ?? "") : "";
+  const m = /cc_version=(\d+\.\d+\.\d+)/.exec(text);
+  return m ? m[1] : null;
+}
+
+/** The billing suffix currently written in system[0] ("6b4"), "" when the block carries none, null without a block. */
+export function billingSuffixOf(body: Json): string | null {
+  const b0 = Array.isArray(body?.system) ? body.system[0] : null;
+  const text = typeof b0 === "string" ? b0 : b0 && typeof b0 === "object" && (b0 as Json).type === "text" ? String((b0 as Json).text ?? "") : "";
+  const m = /cc_version=\d+\.\d+\.\d+(?:\.([0-9a-z]+))?/.exec(text);
+  return m ? (m[1] ?? "") : null;
+}
+
+/**
+ * Last step before a direct request leaves (2026-11-01 incident, docs/iron-rules.md): the billing suffix is
+ * Anthropic's anti-forgery checksum over the FIRST USER TEXT of the body it receives. Every body edit (device
+ * identity, machine environment, reminder stripping …) must happen before this; here the suffix is recomputed from
+ * the outgoing messages for the one version whose algorithm is known (2.1.312). For any other version nothing is
+ * touched — callers must then not have edited the first user text at all (`canEditFirstUserText`).
+ */
+export function alignBillingSuffix(body: Json, version = billingVersionOf(body)): Json {
+  if (version !== CC_VERSION) return body;
+  const system = body?.system;
+  if (!Array.isArray(system) || system.length === 0) return body;
+  const b0 = system[0];
+  const text = typeof b0 === "string" ? b0 : b0 && typeof b0 === "object" && (b0 as Json).type === "text" ? String((b0 as Json).text ?? "") : null;
+  if (text === null || !BILLING_LINE_RE.test(text)) return body;
+  const want = ccBuildSuffix(body.messages, version);
+  const line = text.replace(/(cc_version=\d+\.\d+\.\d+)(\.[0-9a-z]+)?/, (_m, pre) => `${pre}.${want}`);
+  if (line === text) return body;
+  return { ...body, system: [typeof b0 === "string" ? line : { ...(b0 as Json), text: line }, ...system.slice(1)] };
+}
+
+/** Body edits that may change the first user text are allowed only when the outgoing version's suffix can be recomputed. */
+export function canEditFirstUserText(body: Json): boolean {
+  return billingVersionOf(body) === CC_VERSION;
+}
+
 /** Claude Code 2.1.312 derives the three-digit billing flag from the first user text and client version. */
 export function ccBuildSuffix(messages: unknown, version = CC_VERSION): string {
   const text = firstUserText(messages);
