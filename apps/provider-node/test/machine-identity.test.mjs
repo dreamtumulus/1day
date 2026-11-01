@@ -6,11 +6,19 @@ import path from "node:path";
 import { accountMachine, machineKernelRelease, machineUnameArch, machineOsRelease } from "../dist/machine.js";
 import { prepareMachineRuntime, machineEnvironment } from "../dist/machine-runtime.js";
 
-const { accountMachine: coreAccountMachine } = await import("../../../packages/core/dist/fingerprint.js");
+const core = await import("../../../packages/core/dist/fingerprint.js");
+const nodeFp = await import("../dist/fingerprint.js");
 
-for (const accountId of ["acct-1", "acct-2", "selftest", "org-example-account"]) {
-  assert.deepEqual(accountMachine(accountId), coreAccountMachine(accountId), `direct/worker machine profile mismatch for ${accountId}`);
+for (const accountId of ["acct-1", "acct-2", "selftest", "org-example-account", "node_c375060d", "acc_" + "f".repeat(16)]) {
+  assert.deepEqual(accountMachine(accountId), core.accountMachine(accountId), `direct/worker machine profile mismatch for ${accountId}`);
 }
+// The fingerprint constants are kept as two copies (core = direct path body/headers, provider-node = the node's
+// own egress + worker telemetry). They must say the same software (audit 2026-11-01 A10).
+for (const k of ["CC_VERSION", "CC_SDK_VERSION", "CC_RUNTIME_VERSION", "CC_ANTHROPIC_VERSION", "CC_AUX_UA", "CC_AUX_ACCEPT", "CC_BETAS", "NODE_MACHINE_HEADERS"]) {
+  assert.deepEqual(nodeFp[k], core[k], `core/provider-node fingerprint constant drift: ${k}`);
+}
+assert.deepEqual(nodeFp.ccCanonicalBetas(true), core.ccCanonicalBetas(true));
+assert.deepEqual(nodeFp.ccCanonicalBetas(false), core.ccCanonicalBetas(false));
 
 const machine = accountMachine("acct-1");
 assert.match(machineKernelRelease(machine), /^\d+\.\d+\.\d+-\d+-generic$/);
