@@ -22,9 +22,9 @@ const plus = (ms) => new Date(Date.now() + ms).toISOString().slice(0, 19) + "Z";
 test("usage probe: five_hour null → window_model.five_hour=false; Pro/Max body → true", () => {
   const ultra = core.parseUsageSnapshot({ five_hour: null, seven_day: { utilization: 18, resets_at: plus(86_400_000) }, seven_day_sonnet: null });
   assert.deepEqual(ultra.presence, { five_hour: false, seven_day: true, fable: false });
-  core.recordWindowPresence("u1", ultra.presence, "usage_probe");
-  core.recordWindowUsage("u1", ultra);
+  core.recordWindowUsage("u1", ultra, undefined, "usage_probe");
   assert.equal(model("u1").five_hour, false);
+  assert.equal(model("u1").source, "usage_probe");
   assert.equal(core.accountHasFiveHour("u1"), false);
   const max = core.parseUsageSnapshot({ five_hour: { utilization: 1, resets_at: plus(3_600_000) }, seven_day: { utilization: 18, resets_at: plus(86_400_000) } });
   core.recordWindowPresence("m1", max.presence, "usage_probe");

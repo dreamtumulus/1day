@@ -642,18 +642,21 @@ function restFor(id: string, resetAt: string, window: string | null | undefined)
 export function recordRateLimitEvent(id: string, info: unknown): WindowSnapshot | null {
   const snap = parseRateLimitEvent(info);
   if (!snap) return null;
-  if (snap.presence) recordWindowPresence(id, snap.presence, "rate_limit_event");
-  if (snap.window === "five_hour" || snap.window === "seven_day" || snap.fable) recordWindowUsage(id, snap);
+  if (snap.window === "five_hour" || snap.window === "seven_day" || snap.fable) recordWindowUsage(id, snap, undefined, "rate_limit_event");
+  else if (snap.presence) recordWindowPresence(id, snap.presence, "rate_limit_event");
   return snap;
 }
+
+export type WindowSource = "headers" | "usage_probe" | "rate_limit_event";
 
 export function recordWindowUsage(
   id: string,
   snap: WindowSnapshot,
   thresholdPercent = parseThresholdPercent(getSetting("anthropic_window_threshold_percent")),
+  source: WindowSource = "headers",
 ): void {
   const now = nowIso();
-  if (snap.presence) recordWindowPresence(id, snap.presence, snap.fable && !snap.fiveHour && !snap.sevenDay ? "rate_limit_event" : "headers", now);
+  if (snap.presence) recordWindowPresence(id, snap.presence, source, now);
   if (!snap.window && !snap.fiveHour && !snap.sevenDay) {
     // family-only snapshot (fable / overage): never touch the account-wide window columns
     if (snap.fable) {

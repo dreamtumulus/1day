@@ -15,7 +15,6 @@ import {
   parseUsageSnapshot,
   readCredential,
   recordWindowUsage,
-  recordWindowPresence,
   run,
   scrubProfileJson,
   refreshCooldownUntil,
@@ -109,9 +108,8 @@ export async function probeWindow(account: AccountRow): Promise<WindowSnapshot> 
   if (!snap) { console.warn(`[window] probe body (status ${status}): ${text.slice(0, 300)}`); throw new Error("usage probe response did not contain a window snapshot"); }
   // 2026-11-02: the probe is authoritative for which windows exist (verified Ultra: five_hour null) — record it before the
   // numbers so the pause logic sees the model; keep the secret-free body for the console.
-  if (snap.presence) recordWindowPresence(account.id, snap.presence, "usage_probe");
   run("UPDATE accounts SET usage_json = ?, usage_checked_at = ? WHERE id = ?", JSON.stringify(scrubProfileJson(json)).slice(0, 8000), nowIso(), account.id);
-  recordWindowUsage(account.id, snap);
+  recordWindowUsage(account.id, snap, undefined, "usage_probe");
   if (snap.presence && !snap.presence.five_hour) console.info(`[window] ${account.id}: usage probe reports no five_hour window (seven_day=${snap.presence.seven_day}) — Ultra verified?`);
   return snap;
 }
