@@ -30,6 +30,8 @@
 - 发现：直连路径开关按 **Key 组**判定（选号前），账号组不参与 → 待办：选号后按账号组补判（非上游可见，随下一轮发布）。
 - 流程文档：`docs/operations.md §7.3`、`docs/canary-real-traffic-plan-2026-11-02.md`、`docs/monitoring-handover.md §2b`。
 
+- 11-02 04:41Z 构建了账号属性识别发布（`3954508`，迁移 38，快照 `backups/pre-acct-attrs-20261102T044029Z-dist.tgz`）；控制台重启 + 网关切换由操作者执行（系统权限拦截自动部署）。
+
 ## 灰度步骤（R1，原计划，供对照）
 
 1. 控制台「设置」：`canary_group_id` 指向灰度组；灰度账号入组；签一把灰度 Key，放 `/root/monitor/canary-apikey.txt`。

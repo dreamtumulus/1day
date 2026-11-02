@@ -42,3 +42,14 @@
 4. 解析 `grace-*`、`fallback`、`overage-disabled-reason` 头，存入快照。
 5. 灰度期间 `window_rest_*` 的处理：当前全局 1h45m–2h05m；建议加按组覆盖（灰度组 0），避免再浪费 2 小时。
 6. `usage_logs` 加 `cc_version` / `cc_profile_id`；`canary-report` 加按 Key 视角（选号失败的 503 现在按账号看不见）。
+
+## 6. 已实现（2026-11-02，提交 `3954508`，迁移 38；待发布）
+
+- `/api/oauth/profile` 全字段入库：`rate_limit_tier`、`plan_label`（Ultra (ex Max 20x) / Max (ex Max 5x) / Pro / Team · … / Enterprise）、`org_type`、`billing_type`、`seat_tier`、`subscription_status`、去凭证原文 `profile_json`；控制台账号徽章显示套餐档位，详情页显示组织/计费/席位/状态、窗口模型、原始 profile 与 usage 返回体。
+- `/api/oauth/usage` 原文入库（`usage_json` / `usage_checked_at`）；探测结果里 `five_hour` 为空 → `window_model.five_hour=false`（已验证 Ultra），日志 `[window] … no five_hour window — Ultra verified?`。
+- `window_model`（五小时/每周/Fable 各自是否存在、来源、观测时间、连续样本数）：usage 探测与 `rate_limit_event` 直接判定；响应头缺 5h 需连续 3 次才认。
+- 无 5h 窗口的账号：窗口耗尽只停到重置点，不加 1h45m–2h05m 的"重置后休息"；有 5h 的账号行为不变。
+- worker 路径解析 Claude Code 每轮的 `rate_limit_event`（status / rateLimitType / utilization / resetsAt）→ 与响应头同一套窗口记账：`five_hour` 事件写 5h 用量，`rejected` 直接 `window_exhausted`，`allowed_warning` 或 ≥90% 记日志。worker 账号不再在两次探测之间失明。
+- 测试：`packages/core/test/window-model.test.mjs`（4 项）、`profile.test.mjs` 扩展。
+
+实测（04:12Z，发布前）：灰度账号 profile 仍为 `default_claude_max_20x`（→ 显示 "Ultra (ex Max 20x)"），usage 仍返回 `five_hour`（1%，重置 09:00Z），即 API 侧暂未体现"无 5h"；发布后由 09:00Z 前是否再撞墙、以及 `rate_limit_event` 是否再报 `five_hour` 来定。
