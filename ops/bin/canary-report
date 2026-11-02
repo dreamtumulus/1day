@@ -11,7 +11,7 @@ import { DatabaseSync } from "node:sqlite";
 
 const DB_PATH = process.env.DB_PATH ?? "/opt/1dayapi/data/1dayapi.db";
 const HOURS = Number(process.env.HOURS ?? 24);
-const API = process.env.API_BASE ?? "http://127.0.0.1:8400";
+const API = process.env.API_BASE ?? "https://api.1dayapi.com"; // the live instance (blue/green), not a fixed port
 const db = new DatabaseSync(DB_PATH, { readOnly: true });
 const q = (sql, ...a) => db.prepare(sql).all(...a);
 const one = (sql, ...a) => db.prepare(sql).get(...a);

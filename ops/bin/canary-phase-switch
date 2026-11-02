@@ -13,7 +13,7 @@ set -u
 cd /opt/1dayapi || exit 1
 LOG=${LOG:-/var/log/1dayapi-canary-traffic.log}
 DB=${DB_PATH:-/opt/1dayapi/data/1dayapi.db}
-API=${API_BASE:-http://127.0.0.1:8400}
+API=${API_BASE:-https://api.1dayapi.com}
 TARGET=${TARGET:?ISO time}; SETTING=${SETTING:?}; VALUE=${VALUE:?}; ROLLBACK_VALUE=${ROLLBACK_VALUE:-0}; GUARD_HOURS=${GUARD_HOURS:-2}
 SNAP=${SNAP:-/root/monitor/canary-phase-$(date -u +%Y%m%dT%H%M%SZ)-before-$SETTING.txt}
 say() { echo "$(date -u +%FT%TZ) phase-switch[$SETTING]: $*" >> "$LOG"; }
