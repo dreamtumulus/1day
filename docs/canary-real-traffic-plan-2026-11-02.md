@@ -80,7 +80,9 @@ V2 的**代码**已在 11-01 16:33Z 全部上线（网关 8400、控制台、迁
 
 ## 8. 第二阶段：同一账号从「worker」转「直连」（2026-11-02 03:00Z 自动切换）
 
-**目的**：拿两类数据——(a) 形态数据：各版本×入口在严格 profile 下的判定、直连出站再校验是否失配；(b) 用户体验：同一账号上直连 vs worker 的成功率、p50/p95、首字延迟、截断。
+**两段各测一件事**：
+- **阶段一（worker）测客户侧体验**：请求由节点上真正的 Claude Code 发出，上游形态风险为零，形态指标在此无意义。收：成功率、p50/p95、首字延迟、`stream_truncated`、`tool_calls`/`tool_results` 往返、`usage_estimated`（token 计量是否估算）、cache 读写、worker 特有错误码（`session_lost`、`history_import_unsupported`、`canonical_requires_persistent_session`、ccr 限额文本）。
+- **阶段二（直连）测请求形态与归一化**：客户原始请求经网关归一化直达上游。收：`cc_profile_unknown_total{version}` 分布、自定义入口改写后仍匹配 profile（`cc_profile_mismatch_total=0`）、计费头后缀对齐（journald `[billing-suffix] mismatch` 0）、伪造签名 `429 "Error"`（`upstream_request_rejected`=0）、组织级错误 0。体验数据在此只是副产品，用来与阶段一对照（报表第 4 节按 mode 拆体验）。
 
 **机制**（不改账号 executor）：灰度账号 executor 仍是 `ccr_worker`。`modeFor` 的规则是：判定为 genuine 的 Claude Code 请求走**直连**（`passthrough-anthropic`），其余走 worker（`ccr-*`）。
 第一阶段所有请求都是 suspect（自定义入口 `mirasim` 被拒 + 未采样版本），所以全走 worker。第二阶段打开 `direct_cc_entrypoint_normalize=canary`：
