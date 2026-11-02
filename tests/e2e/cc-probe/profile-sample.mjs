@@ -6,8 +6,10 @@
 import { spawn } from "node:child_process";
 import { writeFileSync, readFileSync, existsSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { summarizeBilling } from "./billing.mjs";
 
-const OUT = resolve("docs/evidence/cc-2.1.312");
+const OUT = resolve(process.env.CC_PROBE_OUT ?? "docs/evidence/cc-2.1.312");
+const VERSION = process.env.CC_PROBE_VERSION ?? "2.1.312"; // overridable per batch; default keeps 2.1.312
 export const MODELS = ["claude-sonnet-5-5", "claude-opus-5-5", "claude-haiku-4-5"];
 export const PROMPTS = [
   "Reply with the single word OK.",
@@ -30,7 +32,7 @@ export async function sample(profile) {
       if (!existsSync(file)) {
         await new Promise((r) => {
           const p = spawn(process.execPath, ["tests/e2e/cc-probe/run-gate.mjs", gate], {
-            env: { ...process.env, CC_PROBE_MODEL: model, CC_PROBE_PROMPT: prompt, CC_PROBE_TAG: tag },
+            env: { ...process.env, CC_PROBE_VERSION: VERSION, CC_PROBE_OUT: OUT, CC_PROBE_MODEL: model, CC_PROBE_PROMPT: prompt, CC_PROBE_TAG: tag },
             stdio: ["ignore", "pipe", "pipe"],
           });
           let err = ""; p.stderr.on("data", (d) => (err += d.toString()));
@@ -47,6 +49,7 @@ export function fold(profile, files) {
   const betaSets = new Set(), betaByModel = {}, ident = new Set(), promptLens = [], promptDigests = new Set(), toolsDigests = new Set();
   let topLevelKeys = null, ccFields = new Set(), blockCounts = new Set(), sampleCount = 0, toolNames = null;
   const evidence = [], thinking = new Set(), outputConfig = new Set(), systemBlockLens = new Set(), byModel = {};
+  const billings = [];
   const shapes = new Map();
   for (const { file, model } of files) {
     const d = JSON.parse(readFileSync(join(OUT, file), "utf8"));
@@ -89,7 +92,8 @@ export function fold(profile, files) {
     for (const f of main.ccFieldHits ?? []) ccFields.add(f);
     thinking.add(JSON.stringify(main.thinking));
     outputConfig.add(JSON.stringify(main.output_config ?? main.output_format ?? null));
-    evidence.push({ file, model, sampledAt: d.sampledAt, digest: d.digest, toolsCount: main.tools?.length ?? null, systemBlockLens: sys.map((s) => s.len), allRequestURLs: (d.requests ?? []).length });
+    if (main.billing) billings.push(main.billing);
+    evidence.push({ file, model, sampledAt: d.sampledAt, digest: d.digest, toolsCount: main.tools?.length ?? null, systemBlockLens: sys.map((s) => s.len), allRequestURLs: (d.requests ?? []).length, billing: main.billing ?? null });
   }
   return {
     profile,
@@ -110,6 +114,7 @@ export function fold(profile, files) {
     thinking: [...thinking].map((s) => JSON.parse(s)),
     outputConfig: [...outputConfig].map((s) => JSON.parse(s)),
     ccFields: [...ccFields],
+    billingSuffix: summarizeBilling(billings, VERSION),
     requestShapes: [...shapes.values()],
     evidence,
   };

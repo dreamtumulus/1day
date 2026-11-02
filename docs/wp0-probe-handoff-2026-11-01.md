@@ -96,3 +96,44 @@ T8 证明 resume 会回放 transcript 里的 `prompt_snapshot` 并忽略当次 a
 
 ### T12 `--resume` 后 `# Environment update` 块（选做）
 T1 发现 cwd 变化时 resume 会在 messages 尾部追加 role=system 的 `# Environment update … (was …)`。节点每次 open 的 scratch cwd 都不同，所以每次 resume 都会多这一块（上游可见、含路径）。请测：`CLAUDE_CODE_DISABLE_ATTACHMENTS=1` 下是否仍追加；以及 transcript 行里的 `cwd` 字段改成与本次相同时是否消失。结论决定节点是否要把导入/resume 的 transcript `cwd` 改写成本次 workDir（现已改写）以及是否足够。
+
+## 8. 第四批（2026-11-02；2.1.316 与 2.1.301 profile 采样）
+
+任务书：`docs/wp0-batch4-brief-2026-11-02.md`。仍然只打本机假上游、临时 HOME/假 OAuth；未连服务器/真实上游，未改 `packages/`，未 commit。
+
+### 8.1 做了什么
+
+- **工具链参数化**（不设变量时行为与 2.1.312 一致）：`CC_PROBE_VERSION`（默认 `2.1.312`）、`CC_PROBE_OUT`（默认 `docs/evidence/cc-2.1.312`），`run-gate.mjs` 的 `binaryVersion` 与 `CC_PROBE_BIN` 默认路径随版本走；`profile-sample.mjs` / `profile-cli.mjs` / `build-profiles.mjs` / `scrub-evidence.mjs` / `evidence.mjs` 全部读同一组变量。`evidence.mjs` 新增 `profilesOnly` 模式：目录里没有 G1–G10 gate 文件时只汇总 profile/transport/billing，不伪造 gate 结论。
+- **计费后缀探针**：新增 `tests/e2e/cc-probe/billing.mjs`（复刻 `packages/core/src/fingerprint.ts#ccBuildSuffix`，只读），每次采样把 `system[0]` 的 `cc_version=<ver>.<3hex>` 与 `ccBuildSuffix(出站 messages, 该版本)` 对照，逐请求写进证据的 `requests[].billing`，并在 `profiles.json` 汇总成 `billingSuffix`。
+- **采样**：每个版本 3 个 profile × 12 次（4 提示词 × 3 模型，要求 ≥12），共 72 次运行、120 个 `/v1/messages` 请求。逐次证据 + 折叠结果：
+  - `docs/evidence/cc-2.1.316/`：`baseline-sdk-01..12.json`、`profile-cli-cli-01..12.json`、`restricted-res-01..12.json` → `profile-sdk-cli.json`、`profile-cc-2.1.316-cli.json`、`profile-restricted.json`、`profiles.json`、`README.md`（`evidence.mjs` 生成，40 个 JSON 脱敏校验 0 命中）。
+  - `docs/evidence/cc-2.1.301/`：同名结构。
+- **传输常量**（取自二进制真实发出的头，写进 `profiles.json.transport`）：
+  - 2.1.316：`x-stainless-runtime-version=v26.12.1`（Bun 1.4.4）、`x-stainless-package-version=0.128.0`、UA `claude-cli/2.1.316 (external, sdk-cli)` / `claude-cli/2.1.316 (external, cli)`。
+  - 2.1.301：`x-stainless-runtime-version=v26.3.0`（Bun 1.4.3）、`x-stainless-package-version=0.128.0`、UA `claude-cli/2.1.301 (external, sdk-cli)` / `claude-cli/2.1.301 (external, cli)`。
+- **计费后缀结论**：两个版本各 36 个主请求（含额度/标题请求共 48 个带计费头）**全部命中** `ccBuildSuffix`，0 不符；算法与盐 `59cf53e54c78`、取位 `[4,7,20]` 在两个客户端的 shipped code 中逐字确认。
+
+### 8.2 与 2.1.312 的差异（实测）
+
+| 维度 | 2.1.312（基线） | 2.1.316 | 2.1.301 |
+|---|---|---|---|
+| 身份句 | sdk-cli/restricted `You are a Claude agent, built on Anthropic's Claude Agent SDK.`；cli `You are Claude Code, Anthropic's official CLI for Claude.` | **不变** | **不变** |
+| system 块 | `[74,62,5599]` sdk / `[70,57,5854]` cli / `[74,62,3513]` res | `[74,62,5503]`（opus 5693）/ `[70,57,5758]`（opus 5948）/ `[74,62,3417]`（opus 3607）；haiku 26946/27282/14138 | `[74,62,5599]` / `[70,57,5854]` / `[74,62,3513]`（与 2.1.312 相同）；haiku 27158/27282/14332 |
+| beta（sonnet/opus） | sdk 10 / cli 12；含 `advanced-tool-use-2025-11-20`；`dangerous-tool-use`、`afk-mode` 仅 cli | **与 2.1.312 逐位相同**（sdk 10 / cli 12） | **12**：`prompt-caching-scope-2026-01-05` 插到第 6 位，`advanced-tool-use-2025-11-20` 移除；`dangerous-tool-use`、`afk-mode` 现在 sdk/restricted 也有 |
+| beta（haiku） | 8（`oauth` 第 1） | 8（同 2.1.312） | 8（`oauth` 第 1，含 `prompt-caching-scope`） |
+| tools | sdk 12 / cli 13 / res 12；digest `2106a379…` / `51d4b5a2…` / `60c5d5dd…` | **名单与 digest 完全相同**（可直接复用 2.1.312 工具表） | sdk **22** / cli **25** / res **19**；新增 `Cron*`、`DesignSync`、`EnterWorktree/ExitWorktree`、`NotebookEdit`、`RemoteTrigger`、`SendMessage`、`TaskStop`、`WebFetch/WebSearch` 等，移除 `ToolSearch/DeferredToolPlaceholder`；haiku 再 +4 个 `Task*` |
+| 顶层键序 | sdk/res 10 键；cli 11 键（含 `safeguards`） | **不变**（sdk/res 10；cli 11，`safeguards` 在 `output_config` 前） | sdk/res **也变 11 键**，`safeguards` 在 `context_management` 后；cli 11 键（同 2.1.312） |
+| thinking | adaptive / haiku `enabled,31999` | 不变 | 不变 |
+| output_config | 仅标题请求带 `format` | 不变 | 不变 |
+| max_tokens | 128000 / 32000 | 不变 | 不变 |
+| cc_* 字段 | 36 次 0 命中 | 0 命中 | 0 命中 |
+| transport | `v26.12.1` / `0.128.0` | 同（UA 版本号变） | `v26.3.0` / `0.128.0` |
+
+### 8.3 坑
+
+- **计费后缀的输入不是出站首块**：`-p` 模式下出站 `messages[0].content[0]` 是 583B 的 `<system-reminder>`（attribution），CC 的哈希对象是 **pre-normalization** 的首条用户文本（`messagesPreNormalize`）。`fingerprint.ts#firstUserText` 已跳过 `<system-reminder>` 块，必须保持一致；第一版探针没跳，算出 `a38` 而真实头是 `6b4`，修正后 36/36 命中。
+- **主提示词按模型分档**：2.1.316 的 opus 比 sonnet 多 190B（末尾一段游戏开发指引 `Do build original games …`，2.1.301/2.1.312 都没有；sonnet 的 5503 也比 2.1.312 的 5599 短）。`cc-profile.ts` 的 `mainPromptLen/mainPromptDigests` 不能只按入口存一份。
+- **工具表按模型分档**：2.1.301 的 haiku 比 sonnet/opus 多 4 个 `Task*` 工具（sdk 26 / cli 29 / res 23）。工具 digest 必须按 (入口, 模型) 分档。
+- **顶层键不能按“集合相等”判**：2.1.301 所有入口都有 `safeguards`；2.1.316 只有 cli 有。按入口+键序判，不要按集合判。
+- **样本计数**：cli 每次还发 1 条 `max_tokens:1` 无 system 额度探针 + 1 条标题生成（`output_config.format`），统计“12 样本”要按主请求（有 system 且非结构化输出）算。
+- `evidence.mjs` 的 README 不能出现 `sk-ant-` / 邮箱符号 / `/tmp/` / `/home/` 字面量（校验行本身也不行）；profile-only 模式已改成“token 前缀 / 邮箱符号 / 临时目录 / 家目录路径”的措辞。

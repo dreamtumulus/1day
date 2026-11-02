@@ -1,0 +1,497 @@
+{
+ "gate": "profile-cli",
+ "tag": "cli-02",
+ "profile": "cli",
+ "binaryVersion": "2.1.316",
+ "model": "claude-sonnet-5-5",
+ "promptLen": 63,
+ "sampledAt": "2026-11-02T05:33:36.660Z",
+ "exitCode": 0,
+ "driverOut": "{\"tag\": \"cli-02\", \"model\": \"claude-sonnet-5-5\", \"mainSeen\": true, \"requests\": 3, \"screenTail\": \" \\u276f \\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500 \\u23f5\\u23f5automodeon (shift+tabtocycle)\\u00b7esctointerrupt \\u001b]0;\\u2733 Claude Code\\u0007 \\u25cfOK \\u273b Saut\\u00e9ed for 0s \\u00b7 done 1:33 PM \\u276f \\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500\\u2500 \\u23f5\\u23f5automodeon (shift+tabtocycle)\"}",
+ "driverErr": null,
+ "requests": [
+  {
+   "url": "/v1/messages?beta=true",
+   "method": "POST",
+   "headers": {
+    "accept": "application/json",
+    "content-type": "application/json",
+    "user-agent": "claude-cli/2.1.316 (external, cli)",
+    "x-claude-code-session-id": "b3e6186b-630c-4f71-ba61-0dfea0505597",
+    "x-stainless-arch": "x64",
+    "x-stainless-lang": "js",
+    "x-stainless-os": "Linux",
+    "x-stainless-package-version": "0.128.0",
+    "x-stainless-retry-count": "0",
+    "x-stainless-runtime": "node",
+    "x-stainless-runtime-version": "v26.12.1",
+    "x-stainless-timeout": "600",
+    "anthropic-beta": "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,redact-thinking-2026-02-12,context-management-2025-06-27",
+    "anthropic-dangerous-direct-browser-access": "true",
+    "anthropic-version": "2023-06-01",
+    "x-app": "cli",
+    "accept-encoding": "gzip, deflate, br, zstd"
+   },
+   "betaList": [
+    "claude-code-20250219",
+    "oauth-2025-04-20",
+    "interleaved-thinking-2025-05-14",
+    "redact-thinking-2026-02-12",
+    "context-management-2025-06-27"
+   ],
+   "authScheme": "bearer",
+   "topLevelKeys": [
+    "model",
+    "max_tokens",
+    "messages",
+    "metadata"
+   ],
+   "system": [],
+   "systemDigest": "e3b0c44298fc1c14",
+   "systemBlockDigests": [],
+   "identitySentence": null,
+   "billingLine": null,
+   "messages": [
+    {
+     "role": "user",
+     "blocks": [
+      {
+       "type": "string",
+       "len": 5,
+       "head": "quota"
+      }
+     ]
+    }
+   ],
+   "messageDigest": "c0beea23f212e9cf",
+   "tools": null,
+   "toolsDigest": "74234e98afe7498f",
+   "metadataKeys": [
+    "user_id"
+   ],
+   "metadataUserIdKeys": [
+    "device_id",
+    "account_uuid",
+    "session_id"
+   ],
+   "thinking": null,
+   "context_management": null,
+   "output_config": null,
+   "output_format": null,
+   "stream": null,
+   "max_tokens": 1,
+   "ccFieldHits": [],
+   "billing": {
+    "system0IsBillingHeader": false,
+    "headerVersion": null,
+    "observedSuffix": null,
+    "computedSuffix": "71d",
+    "match": null,
+    "algorithmMatchesVersion": null,
+    "firstUserTextLen": 5,
+    "firstUserTextDigest": "b878a6801d9a9e68",
+    "chars": "a00"
+   },
+   "bodyDigest": "1028fa9651120095",
+   "hasSystem": false
+  },
+  {
+   "url": "/v1/messages?beta=true",
+   "method": "POST",
+   "headers": {
+    "accept": "application/json",
+    "content-type": "application/json",
+    "user-agent": "claude-cli/2.1.316 (external, cli)",
+    "x-claude-code-session-id": "b3e6186b-630c-4f71-ba61-0dfea0505597",
+    "x-stainless-arch": "x64",
+    "x-stainless-lang": "js",
+    "x-stainless-os": "Linux",
+    "x-stainless-package-version": "0.128.0",
+    "x-stainless-retry-count": "0",
+    "x-stainless-runtime": "node",
+    "x-stainless-runtime-version": "v26.12.1",
+    "x-stainless-timeout": "600",
+    "anthropic-beta": "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,redact-thinking-2026-02-12,context-management-2025-06-27,per-turn-control-2026-07-01,thinking-token-count-2026-05-13,effort-2025-11-24,structured-outputs-2025-12-15",
+    "anthropic-dangerous-direct-browser-access": "true",
+    "anthropic-version": "2023-06-01",
+    "x-app": "cli",
+    "accept-encoding": "gzip, deflate, br, zstd"
+   },
+   "betaList": [
+    "claude-code-20250219",
+    "oauth-2025-04-20",
+    "interleaved-thinking-2025-05-14",
+    "redact-thinking-2026-02-12",
+    "context-management-2025-06-27",
+    "per-turn-control-2026-07-01",
+    "thinking-token-count-2026-05-13",
+    "effort-2025-11-24",
+    "structured-outputs-2025-12-15"
+   ],
+   "authScheme": "bearer",
+   "topLevelKeys": [
+    "model",
+    "messages",
+    "system",
+    "tools",
+    "metadata",
+    "max_tokens",
+    "output_config",
+    "stream"
+   ],
+   "system": [
+    {
+     "len": 70,
+     "head": "x-anthropic-billing-header: cc_version=2.1.316.2c6; cc_entrypoint=cli;",
+     "cache_control": null,
+     "hasMarker": false
+    },
+    {
+     "len": 57,
+     "head": "You are Claude Code, Anthropic's official CLI for Claude.",
+     "cache_control": null,
+     "hasMarker": false
+    },
+    {
+     "len": 3059,
+     "head": "You are naming a coding session so the user can pick it out of a long list of sessions. The title is a name for what the session is about, not a sentence descri",
+     "cache_control": null,
+     "hasMarker": false
+    }
+   ],
+   "systemDigest": "0f45c9b8330f7521",
+   "systemBlockDigests": [
+    "682b64619fb67904",
+    "2719b7a469d904b3",
+    "765b5ba2fa0a315a"
+   ],
+   "identitySentence": "You are Claude Code, Anthropic's official CLI for Claude.",
+   "billingLine": "x-anthropic-billing-header: cc_version=2.1.316.2c6; cc_entrypoint=cli;",
+   "messages": [
+    {
+     "role": "user",
+     "blocks": [
+      {
+       "type": "text",
+       "len": 264,
+       "head": "<session>\nSummarize in one sentence what a reverse proxy does, then stop.\n</session>\n\nWrite the title in the predominant language of the session — a stray word ",
+       "cache_control": null
+      }
+     ]
+    }
+   ],
+   "messageDigest": "6c778181e86d8194",
+   "tools": [],
+   "toolsDigest": "4f53cda18c2baa0c",
+   "metadataKeys": [
+    "user_id"
+   ],
+   "metadataUserIdKeys": [
+    "device_id",
+    "account_uuid",
+    "session_id"
+   ],
+   "thinking": null,
+   "context_management": null,
+   "output_config": {
+    "effort": "medium",
+    "format": {
+     "type": "json_schema",
+     "schema": {
+      "type": "object",
+      "properties": {
+       "title": {
+        "type": "string"
+       }
+      },
+      "required": [
+       "title"
+      ],
+      "additionalProperties": false
+     }
+    }
+   },
+   "output_format": null,
+   "stream": true,
+   "max_tokens": 128000,
+   "ccFieldHits": [],
+   "billing": {
+    "system0IsBillingHeader": true,
+    "headerVersion": "2.1.316",
+    "observedSuffix": "2c6",
+    "computedSuffix": "2c6",
+    "match": true,
+    "algorithmMatchesVersion": true,
+    "firstUserTextLen": 264,
+    "firstUserTextDigest": "e57ac8bd669a1062",
+    "chars": "sni"
+   },
+   "bodyDigest": "352ce77bada71cc6",
+   "hasSystem": true
+  },
+  {
+   "url": "/v1/messages?beta=true",
+   "method": "POST",
+   "headers": {
+    "accept": "application/json",
+    "content-type": "application/json",
+    "user-agent": "claude-cli/2.1.316 (external, cli)",
+    "x-claude-code-session-id": "b3e6186b-630c-4f71-ba61-0dfea0505597",
+    "x-stainless-arch": "x64",
+    "x-stainless-lang": "js",
+    "x-stainless-os": "Linux",
+    "x-stainless-package-version": "0.128.0",
+    "x-stainless-retry-count": "0",
+    "x-stainless-runtime": "node",
+    "x-stainless-runtime-version": "v26.12.1",
+    "x-stainless-timeout": "600",
+    "anthropic-beta": "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,context-management-2025-06-27,per-turn-control-2026-07-01,thinking-token-count-2026-05-13,advanced-tool-use-2025-11-20,effort-2025-11-24,dangerous-tool-use-2026-09-03,thinking-display-updates-2026-08-18,afk-mode-2026-01-31,extended-cache-ttl-2025-04-11",
+    "anthropic-dangerous-direct-browser-access": "true",
+    "anthropic-version": "2023-06-01",
+    "x-app": "cli",
+    "accept-encoding": "gzip, deflate, br, zstd"
+   },
+   "betaList": [
+    "claude-code-20250219",
+    "oauth-2025-04-20",
+    "interleaved-thinking-2025-05-14",
+    "context-management-2025-06-27",
+    "per-turn-control-2026-07-01",
+    "thinking-token-count-2026-05-13",
+    "advanced-tool-use-2025-11-20",
+    "effort-2025-11-24",
+    "dangerous-tool-use-2026-09-03",
+    "thinking-display-updates-2026-08-18",
+    "afk-mode-2026-01-31",
+    "extended-cache-ttl-2025-04-11"
+   ],
+   "authScheme": "bearer",
+   "topLevelKeys": [
+    "model",
+    "messages",
+    "system",
+    "tools",
+    "metadata",
+    "max_tokens",
+    "thinking",
+    "context_management",
+    "safeguards",
+    "output_config",
+    "stream"
+   ],
+   "system": [
+    {
+     "len": 70,
+     "head": "x-anthropic-billing-header: cc_version=2.1.316.39e; cc_entrypoint=cli;",
+     "cache_control": null,
+     "hasMarker": false
+    },
+    {
+     "len": 57,
+     "head": "You are Claude Code, Anthropic's official CLI for Claude.",
+     "cache_control": {
+      "type": "ephemeral",
+      "ttl": "1h"
+     },
+     "hasMarker": false
+    },
+    {
+     "len": 5758,
+     "head": "\nYou are an agent working with the user toward their goals, using your own judgment along the way.\n\nIMPORTANT: Assist with authorized security testing, defensiv",
+     "cache_control": {
+      "type": "ephemeral",
+      "ttl": "1h"
+     },
+     "hasMarker": false
+    }
+   ],
+   "systemDigest": "4f43c3fd71262226",
+   "systemBlockDigests": [
+    "49cf9a683522a90e",
+    "2719b7a469d904b3",
+    "1859298031dcd3a6"
+   ],
+   "identitySentence": "You are Claude Code, Anthropic's official CLI for Claude.",
+   "billingLine": "x-anthropic-billing-header: cc_version=2.1.316.39e; cc_entrypoint=cli;",
+   "messages": [
+    {
+     "role": "user",
+     "blocks": [
+      {
+       "type": "text",
+       "len": 583,
+       "head": "<system-reminder>\nAttribution for git commits and pull requests you create from here on (this replaces Claude Code's own earlier attribution guidance, such as a",
+       "cache_control": null
+      },
+      {
+       "type": "text",
+       "len": 63,
+       "head": "Summarize in one sentence what a reverse proxy does, then stop.",
+       "cache_control": null
+      }
+     ]
+    },
+    {
+     "role": "system",
+     "blocks": [
+      {
+       "type": "text",
+       "len": 4296,
+       "head": "Available agent types for the Agent tool:\n- claude: Catch-all for any task that doesn't fit a more specific agent. FleetView's default when no agent name is typ",
+       "cache_control": {
+        "type": "ephemeral",
+        "ttl": "1h"
+       }
+      }
+     ]
+    }
+   ],
+   "messageDigest": "96bf02cae620c5c9",
+   "tools": [
+    "Agent",
+    "AskUserQuestion",
+    "Bash",
+    "Edit",
+    "ListAgents",
+    "Read",
+    "ReportFindings",
+    "ScheduleWakeup",
+    "Skill",
+    "ToolSearch",
+    "Workflow",
+    "DeferredToolPlaceholder",
+    "Write"
+   ],
+   "toolsDigest": "51d4b5a2143407cb",
+   "metadataKeys": [
+    "user_id"
+   ],
+   "metadataUserIdKeys": [
+    "device_id",
+    "account_uuid",
+    "session_id"
+   ],
+   "thinking": {
+    "type": "adaptive",
+    "display": "updates"
+   },
+   "context_management": {
+    "edits": [
+     {
+      "type": "clear_thinking_20251015",
+      "keep": "all"
+     }
+    ]
+   },
+   "output_config": {
+    "effort": "medium"
+   },
+   "output_format": null,
+   "stream": true,
+   "max_tokens": 128000,
+   "ccFieldHits": [],
+   "billing": {
+    "system0IsBillingHeader": true,
+    "headerVersion": "2.1.316",
+    "observedSuffix": "39e",
+    "computedSuffix": "39e",
+    "match": true,
+    "algorithmMatchesVersion": true,
+    "firstUserTextLen": 63,
+    "firstUserTextDigest": "1d396ec565a279f1",
+    "chars": "azt"
+   },
+   "bodyDigest": "d04808a2580867af",
+   "hasSystem": true
+  }
+ ],
+ "otherEndpoints": [],
+ "connectAttempts": [
+  {
+   "at": "2026-11-02T05:33:12.042Z",
+   "kind": "connect",
+   "target": "api.anthropic.com:443"
+  },
+  {
+   "at": "2026-11-02T05:33:12.130Z",
+   "kind": "connect",
+   "target": "api.anthropic.com:443"
+  },
+  {
+   "at": "2026-11-02T05:33:12.260Z",
+   "kind": "connect",
+   "target": "api.anthropic.com:443"
+  },
+  {
+   "at": "2026-11-02T05:33:12.753Z",
+   "kind": "connect",
+   "target": "raw.githubusercontent.com:443"
+  },
+  {
+   "at": "2026-11-02T05:33:12.755Z",
+   "kind": "connect",
+   "target": "api.anthropic.com:443"
+  },
+  {
+   "at": "2026-11-02T05:33:12.755Z",
+   "kind": "connect",
+   "target": "api.anthropic.com:443"
+  },
+  {
+   "at": "2026-11-02T05:33:12.755Z",
+   "kind": "connect",
+   "target": "api.anthropic.com:443"
+  },
+  {
+   "at": "2026-11-02T05:33:12.755Z",
+   "kind": "connect",
+   "target": "api.anthropic.com:443"
+  },
+  {
+   "at": "2026-11-02T05:33:12.755Z",
+   "kind": "connect",
+   "target": "api.anthropic.com:443"
+  },
+  {
+   "at": "2026-11-02T05:33:12.755Z",
+   "kind": "connect",
+   "target": "downloads.claude.ai:443"
+  },
+  {
+   "at": "2026-11-02T05:33:12.862Z",
+   "kind": "connect",
+   "target": "github.com:443"
+  },
+  {
+   "at": "2026-11-02T05:33:17.547Z",
+   "kind": "connect",
+   "target": "api.anthropic.com:443"
+  },
+  {
+   "at": "2026-11-02T05:33:18.053Z",
+   "kind": "connect",
+   "target": "api.anthropic.com:443"
+  },
+  {
+   "at": "2026-11-02T05:33:22.048Z",
+   "kind": "connect",
+   "target": "api.anthropic.com:443"
+  },
+  {
+   "at": "2026-11-02T05:33:22.556Z",
+   "kind": "connect",
+   "target": "api.anthropic.com:443"
+  },
+  {
+   "at": "2026-11-02T05:33:24.566Z",
+   "kind": "connect",
+   "target": "api.anthropic.com:443"
+  },
+  {
+   "at": "2026-11-02T05:33:29.073Z",
+   "kind": "connect",
+   "target": "api.anthropic.com:443"
+  }
+ ],
+ "digest": "063669a13406038f"
+}

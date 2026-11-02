@@ -76,3 +76,11 @@
 
 ### §8.2 阶段二首小时的 4 条客户可见错误（04:00–04:35Z，mirasim.ai）
 `400 no_forwardable_question` ×1、`409 tool_continuation_after_reset` ×2、`503 team_capacity_exhausted` ×1。三者同源：02:30–03:40Z 的 70 分钟 503 期间，客户端的会话在平台这边没有被服务，Key 轮转回来后客户端接着发"继续工具回合"的请求，平台找不到自己签发过的 tool_use 边界（历史策略 `reset`），只能 409/400；`team_capacity_exhausted` 是 04:12Z 账号瞬时不可调度（并发/临时冷却）时工具回合不能换组织。属于**停机后的余波，不是 V2 新行为的 bug**，但它说明：灰度账号一停，用户不只是当时 503，恢复后还要丢一轮任务重来。另外 04:00–04:01 的 24 条 503 是 Key 轮转前的最后两分钟。
+
+### §9.1 profile 入库（06:05Z）
+Pi 第四批交付：2.1.316 与 2.1.301 各 3 个入口 × 12 样本（`docs/evidence/cc-2.1.316/`、`docs/evidence/cc-2.1.301/`，去敏校验 0 命中），已写进 `CC_PROFILES`（6 条，grade sampled）。关键事实：
+- 两版的**计费后缀算法与 2.1.312 完全一致**（盐 / 取位 / 版本输入，shipped code 逐字 + 各 36/36 主请求命中）→ 新增 `CC_BILLING_VERIFIED_VERSIONS = [2.1.312, 2.1.316, 2.1.301]`：`canEditFirstUserText`、`alignBillingSuffix`、出站最后一道闸、入站 `billing_suffix` 硬校验都按这张表走。
+- 传输常量：2.1.316 `v26.12.1/0.128.0`（同 2.1.312）；2.1.301 `v26.3.0/0.128.0`（Bun 1.4.3）——`ccTransportFor` 现在按版本给头。
+- 2.1.301 与 2.1.312/316 的差异：beta 多 `prompt-caching-scope-2026-01-05`、少 `advanced-tool-use-2025-11-20`；`safeguards` 在所有入口都有；tools 25/22/19 且 haiku 多 4 个 `Task*`；2.1.316 的主提示词按模型分档（opus 多 190B）。
+- 不变量测试抓到一个本来会复现 11-01 事故的 bug：扩了可编辑版本但 `alignBillingSuffix` 仍只重算 2.1.312 → 2.1.316 的 reminder 被剥、后缀却是旧的。已改为按验证表重算，`billing-suffix-invariant` 7 布局 × 8 开关 × 3 版本 × 2 入口全过。
+- 对灰度的意义：上线后灰度组里 2.1.316/2.1.301（72% 的 CC 流量）判 genuine → **直连**；mirasim 自定义入口按 identity 落到 `cc-<ver>-cli`。阶段二终于能拿到形态数据。未采样的 2.1.314 / 2.1.283 / 2.1.305 / 2.1.303 / 2.1.241 仍走 worker。

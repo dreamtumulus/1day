@@ -15,8 +15,10 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { startCapture } from "./mock-upstream-capture.mjs";
+import { billingProbe } from "./billing.mjs";
 
-const CLAUDE = process.env.CC_PROBE_BIN ?? "/home/ubuntu/claude-code-re/2.1.312/package/claude";
+const VERSION = process.env.CC_PROBE_VERSION ?? "2.1.312"; // which client version we are sampling (evidence + billing probe)
+const CLAUDE = process.env.CC_PROBE_BIN ?? `/home/ubuntu/claude-code-re/${VERSION}/package/claude`;
 const MODEL = process.env.CC_PROBE_MODEL ?? "claude-sonnet-5-5";
 const PROMPT = process.env.CC_PROBE_PROMPT ?? "Reply with the single word OK.";
 const gate = process.argv[2] ?? "baseline";
@@ -177,6 +179,8 @@ const describe = (r) => {
     stream: b.stream ?? null, max_tokens: b.max_tokens ?? null,
     // does the binary emit any client-side correlation field yet? (spec G9 `cc_*` / cch)
     ccFieldHits: ["cch", "cc_prev_req", "cc_prompt_id", "cc_turn_origin", "cc_session_id"].filter((k) => raw.includes(k)),
+    // billing suffix must be recomputable for THIS version before the first user text may be edited
+    billing: billingProbe(b, VERSION),
     bodyDigest: sha(raw),
   };
 };
@@ -194,7 +198,7 @@ const initInfo = init ? {
   outputStyle: init.output_style ?? null, keys: Object.keys(init),
 } : null;
 const evidence = {
-  gate, tag: tag || null, binaryVersion: "2.1.312", model: MODEL, promptLen: PROMPT.length, sampledAt: new Date().toISOString(), durationMs: Date.now() - started, exitCode: code,
+  gate, tag: tag || null, binaryVersion: VERSION, model: MODEL, promptLen: PROMPT.length, sampledAt: new Date().toISOString(), durationMs: Date.now() - started, exitCode: code,
   killed, killedAfterMs: killedAt ? killedAt - started : null, killReason,
   args: args.map((a) => (a.startsWith("/") ? "<tmp-path>" : a)),
   env: Object.keys(env).filter((k) => !/PATH|HOME|TMPDIR|CONFIG/.test(k)),

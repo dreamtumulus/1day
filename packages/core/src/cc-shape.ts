@@ -13,7 +13,7 @@
  * only reported (logging / drift detection), never enforced.
  */
 
-import { ccBuildSuffix } from "./fingerprint.js";
+import { CC_BILLING_VERIFIED_VERSIONS, ccBuildSuffix } from "./fingerprint.js";
 import { CC_KNOWN_VERSIONS, CC_MIN_VERSION_BY_MODEL, ccProfileFor } from "./cc-profile.js";
 
 type Headers = Record<string, string | string[] | undefined>;
@@ -118,9 +118,10 @@ export function classifyCcRequest(headers: Headers, body: Json, opts: CcShapeOpt
     billingEntrypoint = BILLING_ENTRYPOINT_RE.exec(textOf(sysBlocks[0]))?.[1] ?? "";
     if (!billingEntrypoint) missing.push("billing_entrypoint");
     if (billing[1] !== version) missing.push("billing_version_mismatch");
-    if (version === "2.1.312" && billing[2] !== ccBuildSuffix(body.messages)) missing.push("billing_suffix");
-    // Other sampled builds share the algorithm (2.1.300's captured .f23 reproduces); reported only until ≥12 samples confirm it.
-    else if (version !== "2.1.312" && CC_KNOWN_VERSIONS.includes(version) && billing[2] !== ccBuildSuffix(body.messages, version)) soft.push("billing_suffix");
+    // Verified builds (2.1.312 / 2.1.316 / 2.1.301: algorithm confirmed in the shipped code and on 36 captures each) fail hard;
+    // other sampled builds (2.1.300 interim) share the algorithm but are reported only until ≥12 samples confirm it.
+    if (CC_BILLING_VERIFIED_VERSIONS.includes(version) && billing[2] !== ccBuildSuffix(body.messages, version)) missing.push("billing_suffix");
+    else if (!CC_BILLING_VERIFIED_VERSIONS.includes(version) && CC_KNOWN_VERSIONS.includes(version) && billing[2] !== ccBuildSuffix(body.messages, version)) soft.push("billing_suffix");
   }
   if (uaEntrypoint && billingEntrypoint && uaEntrypoint !== billingEntrypoint) missing.push("entrypoint_mismatch");
 

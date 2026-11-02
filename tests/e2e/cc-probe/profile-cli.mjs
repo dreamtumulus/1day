@@ -11,8 +11,9 @@ import { startCapture } from "./mock-upstream-capture.mjs";
 import { describeMessageRequest } from "./shape.mjs";
 import { MODELS, PROMPTS, fold } from "./profile-sample.mjs";
 
-const OUT = resolve("docs/evidence/cc-2.1.312");
-const CLAUDE = process.env.CC_PROBE_BIN ?? "/home/ubuntu/claude-code-re/2.1.312/package/claude";
+const OUT = resolve(process.env.CC_PROBE_OUT ?? "docs/evidence/cc-2.1.312");
+const VERSION = process.env.CC_PROBE_VERSION ?? "2.1.312";
+const CLAUDE = process.env.CC_PROBE_BIN ?? `/home/ubuntu/claude-code-re/${VERSION}/package/claude`;
 const perArg = process.argv.slice(2).find((a) => /^\d+$/.test(a));
 const per = Number(perArg ?? 1); // samples per (model,prompt) pair; 1 ⇒ 12 samples
 
@@ -40,9 +41,9 @@ for (const model of MODELS) {
         p.on("close", (code) => r({ code, out: out.trim(), err: err.slice(-800) }));
       });
       await cap.close();
-      const described = cap.requests.filter((r) => r.url.startsWith("/v1/messages")).map(describeMessageRequest);
+      const described = cap.requests.filter((r) => r.url.startsWith("/v1/messages")).map((r) => describeMessageRequest(r, VERSION));
       const ev = {
-        gate: "profile-cli", tag, profile: "cli", binaryVersion: "2.1.312", model, promptLen: prompt.length,
+        gate: "profile-cli", tag, profile: "cli", binaryVersion: VERSION, model, promptLen: prompt.length,
         sampledAt: new Date().toISOString(), exitCode: res.code, driverOut: res.out || null, driverErr: res.err || null,
         requests: described,
         otherEndpoints: cap.requests.filter((r) => !r.url.startsWith("/v1/messages")).map((r) => `${r.method} ${r.url}`),
@@ -57,5 +58,5 @@ for (const model of MODELS) {
   }
 }
 const folded = fold("cli", files);
-writeFileSync(join(OUT, "profile-cc-2.1.312-cli.json"), JSON.stringify(folded, null, 1));
+writeFileSync(join(OUT, `profile-cc-${VERSION}-cli.json`), JSON.stringify(folded, null, 1));
 console.log(JSON.stringify({ samples: folded.samples, identityBlock: folded.identityBlock, identityVariants: folded.identityVariants, mainPromptLen: folded.mainPromptLen, systemBlockLens: folded.systemBlockLens, betaSets: folded.betaSets, ccFields: folded.ccFields, topLevelKeys: folded.topLevelKeys }, null, 1));

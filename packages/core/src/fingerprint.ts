@@ -80,11 +80,13 @@ export function billingSuffixOf(body: Json): string | null {
  * Last step before a direct request leaves (2026-11-01 incident, docs/iron-rules.md): the billing suffix is
  * Anthropic's anti-forgery checksum over the FIRST USER TEXT of the body it receives. Every body edit (device
  * identity, machine environment, reminder stripping …) must happen before this; here the suffix is recomputed from
- * the outgoing messages for the one version whose algorithm is known (2.1.312). For any other version nothing is
+ * the outgoing messages for the versions whose algorithm is verified (CC_BILLING_VERIFIED_VERSIONS). For any other version nothing is
  * touched — callers must then not have edited the first user text at all (`canEditFirstUserText`).
  */
 export function alignBillingSuffix(body: Json, version = billingVersionOf(body)): Json {
-  if (version !== CC_VERSION) return body;
+  // 2026-11-02: every version whose algorithm is verified (2.1.312 / 2.1.316 / 2.1.301) is realigned; `canEditFirstUserText`
+  // uses the same list, so an edited body is never sent with a stale suffix for any of them.
+  if (!version || !CC_BILLING_VERIFIED_VERSIONS.includes(version)) return body;
   const system = body?.system;
   if (!Array.isArray(system) || system.length === 0) return body;
   const b0 = system[0];
@@ -96,9 +98,17 @@ export function alignBillingSuffix(body: Json, version = billingVersionOf(body))
   return { ...body, system: [typeof b0 === "string" ? line : { ...(b0 as Json), text: line }, ...system.slice(1)] };
 }
 
+/**
+ * Builds whose billing-suffix algorithm was verified against the shipped client code AND ≥36 captured requests each
+ * (docs/evidence/cc-<ver>/profiles.json `billingSuffix`, WP0 batch 4, 2026-11-02): same salt, positions and version
+ * input as 2.1.312. Only these may have their first user text edited; every other version is forwarded untouched.
+ */
+export const CC_BILLING_VERIFIED_VERSIONS: readonly string[] = Object.freeze(["2.1.312", "2.1.316", "2.1.301"]);
+
 /** Body edits that may change the first user text are allowed only when the outgoing version's suffix can be recomputed. */
 export function canEditFirstUserText(body: Json): boolean {
-  return billingVersionOf(body) === CC_VERSION;
+  const v = billingVersionOf(body);
+  return !!v && CC_BILLING_VERIFIED_VERSIONS.includes(v);
 }
 
 /** Claude Code 2.1.312 derives the three-digit billing flag from the first user text and client version. */

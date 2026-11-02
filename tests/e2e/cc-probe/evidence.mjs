@@ -1,16 +1,20 @@
-// WP0 evidence aggregator (task book §3 T6). Reads docs/evidence/cc-2.1.312/*.json, derives the G1–G10 verdict
-// lines from the evidence itself (not from prose), writes docs/evidence/cc-2.1.312/README.md, and fails (exit 1)
+// WP0 evidence aggregator (task book §3 T6). Reads docs/evidence/cc-<ver>/*.json, derives the G1–G10 verdict
+// lines from the evidence itself (not from prose), writes docs/evidence/cc-<ver>/README.md, and fails (exit 1)
 // if any evidence file still contains a secret-shaped or path-shaped string: `sk-ant-`, `@`, `/tmp/`, `/home/`.
-//   node tests/e2e/cc-probe/evidence.mjs            # write README.md
+//   node tests/e2e/cc-probe/evidence.mjs            # write README.md (default: 2.1.312)
+//   CC_PROBE_VERSION=2.1.316 CC_PROBE_OUT=docs/evidence/cc-2.1.316 node tests/e2e/cc-probe/evidence.mjs
 //   node tests/e2e/cc-probe/evidence.mjs --check    # validate only
-import { readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 
-const OUT = resolve("docs/evidence/cc-2.1.312");
+const VERSION = process.env.CC_PROBE_VERSION ?? "2.1.312";
+const OUT = resolve(process.env.CC_PROBE_OUT ?? `docs/evidence/cc-${VERSION}`);
 const checkOnly = process.argv.includes("--check");
 const files = readdirSync(OUT).filter((f) => f.endsWith(".json")).sort();
-const doc = (f) => { try { return JSON.parse(readFileSync(join(OUT, f), "utf8")); } catch { return null; } };
 const has = (f) => files.includes(f);
+// 第四批的目录只有 profile 采样（没有 G1–G10 的 gate 文件）→ 只汇总 profile，不伪造 gate 结论
+const profilesOnly = has("profiles.json") && !has("append.json") && !has("baseline.json");
+const doc = (f) => { try { return JSON.parse(readFileSync(join(OUT, f), "utf8")); } catch { return null; } };
 const mainReq = (d) => (d?.requests ?? []).find((r) => r.url?.startsWith("/v1/messages")) ?? d?.requests?.[0] ?? null;
 const flat = (d) => JSON.stringify(d?.requests ?? []);
 const row = (gate, verdict, fileList, evidenceDoc) => ({
@@ -90,7 +94,8 @@ const g8 = row("G8 --json-schema", schemaTools === 13 ? "通过" : "失败", ["s
 // ---- G9 profiles ----
 const profiles = doc("profiles.json");
 const profileRows = profiles ? Object.entries(profiles).filter(([k]) => k.startsWith("cc-")).map(([k, v]) => `${k}: ${v.samples} 次 / ${v.betaSets.length} 组 beta / identity 「${v.identityBlock}」`).join("<br>") : "缺失";
-const g9 = row("G9 profile", profiles ? "通过" : "失败", ["profiles.json", "profile-sdk-cli.json", "profile-cc-2.1.312-cli.json", "profile-restricted.json", "beta-midconv.json"], profiles?.["cc-2.1.312-sdk-cli"]?.evidence?.[0] ? { sampledAt: profiles["cc-2.1.312-sdk-cli"].evidence[0].sampledAt, digest: profiles["cc-2.1.312-sdk-cli"].evidence[0].digest } : null);
+const g9key = `cc-${VERSION}-sdk-cli`;
+const g9 = row("G9 profile", profiles ? "通过" : "失败", ["profiles.json", "profile-sdk-cli.json", `profile-cc-${VERSION}-cli.json`, "profile-restricted.json", "beta-midconv.json"], profiles?.[g9key]?.evidence?.[0] ? { sampledAt: profiles[g9key].evidence[0].sampledAt, digest: profiles[g9key].evidence[0].digest } : null);
 
 // ---- G10 telemetry ----
 const targets = new Set();
@@ -99,7 +104,7 @@ const tel = doc("telemetry-structure.json");
 const g10a = row("G10-A structure", targets.size && [...targets].every((t) => /:443$/.test(t)) ? "通过" : "通过", ["baseline.json"], doc("baseline.json"));
 const g10b = row("G10-B acceptance", tel?.tls?.handshakeCompleted ? (tel.tls.sslkeylog?.lines > 0 ? "通过（keylog）" : "通过（CA 注入，无需 keylog）") : "未做", ["telemetry-structure.json"], tel);
 
-const rows = [g1, g2, g3, g4, g5, g6, g7, g8, g9, g10a, g10b];
+const rows = profilesOnly ? [g9] : [g1, g2, g3, g4, g5, g6, g7, g8, g9, g10a, g10b];
 
 // per-gate spec fallback (docs/canonical-implementation-spec-2026-11-01.md §7 "失败处置") + whether it fired
 const DISPOSITION = {
@@ -111,18 +116,19 @@ const DISPOSITION = {
   "G6 restricted": ["只用 tools-disabled-canonical", "未触发"],
   "G7 Bash": ["本期不开放", "未触发（restricted 无 Bash 工具）"],
   "G8 --json-schema": ["`response_format` → `unsupported_parameter`", "未触发（schema 可解析，13 工具）"],
-  "G9 profile": ["不做跨版本 pin", "未触发（按 2.1.312 三 profile 存证）"],
+  "G9 profile": ["不做跨版本 pin", `未触发（按 ${VERSION} 三 profile 存证）`],
   "G10-A structure": ["`unknown` 不开放", "未触发"],
   "G10-B acceptance": ["`unknown` 不开放", tel?.tls?.handshakeCompleted ? "未触发（结构可取证；真实受理仍需专用测试账号）" : "触发"],
 };
 
 const md = [];
-md.push("# CC 2.1.312 探针证据（WP0 汇总，自动生成）", "");
-md.push("由 `node tests/e2e/cc-probe/evidence.mjs` 生成；逐项过程记录见 [PROGRESS.md](./PROGRESS.md)，",
+md.push(`# CC ${VERSION} 探针证据（WP0 汇总，自动生成）`, "");
+if (profilesOnly) md.push("由 `node tests/e2e/cc-probe/evidence.mjs` 生成；逐项过程记录见 [PROGRESS.md](./PROGRESS.md)。", "");
+else md.push("由 `node tests/e2e/cc-probe/evidence.mjs` 生成；逐项过程记录见 [PROGRESS.md](./PROGRESS.md)，",
   "G3 见 [G3-matrix.md](./G3-matrix.md)，G10-B 见 [G10-B-mitm.md](./G10-B-mitm.md)。", "");
-md.push(`- 证据文件：${files.length} 个 JSON（\`docs/evidence/cc-2.1.312/\`）`);
+md.push(`- 证据文件：${files.length} 个 JSON（\`docs/evidence/cc-${VERSION}/\`）`);
 md.push(`- 生成时间：${new Date().toISOString()}`);
-md.push(`- 脱敏校验（\`sk-ant-\` / \`@\` / \`/tmp/\` / \`/home/\`）：${violations.length === 0 ? "通过（0 处命中）" : `${violations.length} 处命中 → exit 1`}`);
+md.push(`- 脱敏校验（token 前缀 / 邮箱符号 / 临时目录 / 家目录路径）：${violations.length === 0 ? "通过（0 处命中）" : `${violations.length} 处命中 → exit 1`}`);
 md.push(`- 所有 gate 的 CONNECT 目标：${[...targets].join(", ") || "—"}`);
 md.push("");
 md.push("| Gate | 结论 | 文件 | sampledAt | digest | spec 失败处置 | 是否触发 |");
@@ -132,6 +138,56 @@ for (const r of rows) {
   md.push(`| ${r.gate} | ${r.verdict} | ${r.files.map((f) => `\`${f}\``).join("<br>") || "—"} | ${r.sampledAt ?? "—"} | ${r.digest ?? "—"} | ${disp} | ${fired} |`);
 }
 md.push("");
+if (profilesOnly) {
+  // 第四批：目录里只有 profile 采样（没有 G1–G10 的 gate 文件）→ 汇总 profile / transport / 计费后缀，不伪造 gate 结论
+  const profEntries = Object.entries(profiles).filter(([k]) => k.startsWith("cc-"));
+  const base = (() => { try { return JSON.parse(readFileSync(resolve("docs/evidence/cc-2.1.312/profiles.json"), "utf8")); } catch { return null; } })();
+  md.push("## 采样概要（第四批：只采 profile）", "");
+  md.push("| profile | samples | 身份句 | 主提示词长度 | tools | beta 组数 | 顶层键 | cc_* 字段 | 计费后缀核对 |");
+  md.push("|---|---|---|---|---|---|---|---|---|");
+  for (const [k, v] of profEntries) {
+    md.push(`| \`${k}\` | ${v.samples} | 「${v.identityBlock}」 | ${v.mainPromptLen.join(" / ")} | ${v.tools?.length ?? "—"} (\`${v.toolsDigest}\`) | ${v.betaSets.length} | \`${v.topLevelKeys.join(", ")}\` | ${v.ccFields.length} | ${v.billingSuffix ? `${v.billingSuffix.matchRate} 命中` : "—"} |`);
+  }
+  md.push("");
+  const t = profiles.transport ?? {};
+  const one = (x) => (Array.isArray(x) ? x.join(" / ") : x ?? "—");
+  md.push("## 传输常量（二进制真实发出的请求头）", "");
+  md.push(`- \`x-stainless-runtime-version\`：\`${one(t["x-stainless-runtime-version"])}\``);
+  md.push(`- \`x-stainless-package-version\`：\`${one(t["x-stainless-package-version"])}\``);
+  md.push(`- UA 原文：${(t.userAgents ?? []).map((u) => `\`${u}\``).join("<br>") || "—"}`);
+  md.push("");
+  md.push("| profile | UA | x-stainless-runtime-version | x-stainless-package-version | os/arch/lang |");
+  md.push("|---|---|---|---|---|");
+  for (const [p, v] of Object.entries(t.byProfile ?? {})) {
+    md.push(`| ${p} | \`${one(v["user-agent"])}\` | \`${one(v["x-stainless-runtime-version"])}\` | \`${one(v["x-stainless-package-version"])}\` | ${one(v["x-stainless-os"])}/${one(v["x-stainless-arch"])}/${one(v["x-stainless-lang"])} |`);
+  }
+  md.push("");
+  const b = profiles.billingSuffix ?? {};
+  md.push("## 计费后缀核对（system[0] 的 \`x-anthropic-billing-header\`）", "");
+  md.push(`- 算法：\`${b.algorithm}\`（与 \`packages/core/src/fingerprint.ts#ccBuildSuffix\` 同盐、同取位、同截断；盐与取位在 ${VERSION} 客户端代码中逐字确认）`);
+  md.push(`- 结果：带计费头样本 \`${b.checked}\` 个，命中 \`${b.matched}\`，不符 \`${b.mismatched}\`（matchRate \`${b.matchRate}\`）；headerVersion 均为 ${VERSION}：${b.headerVersionOk}`);
+  md.push(`- 观测后缀：${(b.observedSuffixes ?? []).map((s) => `\`${s}\``).join(" / ") || "—"}；重算后缀：${(b.computedSuffixes ?? []).map((s) => `\`${s}\``).join(" / ") || "—"}`);
+  md.push(`- 结论：${b.checked > 0 && b.matched === b.checked ? "该版本的计费后缀可由出站 messages 重算 → 直连改首条用户文本在该版本上没有形态障碍（仍需在 cc-profile 中登记版本并让 canEditFirstUserText 按版本放行）" : "**算法未确认** → 不得改首条用户文本"}。`);
+  md.push("");
+  if (base) {
+    md.push("## 与 2.1.312 的差异", "");
+    for (const [k, v] of profEntries) {
+      const b0 = base[k.replace(VERSION, "2.1.312")] ?? base[k];
+      if (!b0) { md.push(`- \`${k}\`：2.1.312 无同名 profile`); continue; }
+      const union = (x) => new Set((x.betaSets ?? []).flat());
+      const bv = union(b0), vv = union(v);
+      const added = [...vv].filter((x) => !bv.has(x));
+      const removed = [...bv].filter((x) => !vv.has(x));
+      const toolsAdded = (v.tools ?? []).filter((x) => !(b0.tools ?? []).includes(x));
+      const toolsRemoved = (b0.tools ?? []).filter((x) => !(v.tools ?? []).includes(x));
+      const sameKeys = JSON.stringify(v.topLevelKeys) === JSON.stringify(b0.topLevelKeys);
+      const sameThinking = JSON.stringify(v.thinking) === JSON.stringify(b0.thinking);
+      const sameOutput = JSON.stringify(v.outputConfig) === JSON.stringify(b0.outputConfig);
+      md.push(`- \`${k}\`：身份句 ${v.identityBlock === b0.identityBlock ? "不变" : `\`${b0.identityBlock}\` → \`${v.identityBlock}\``}；主提示词 ${b0.mainPromptLen.join("/")} → ${v.mainPromptLen.join("/")}；beta ${added.length ? "+" + added.join(",") : "无新增"}${removed.length ? " / -" + removed.join(",") : ""}；tools ${v.tools?.length}（${toolsAdded.length ? "+" + toolsAdded.join(",") : "无新增"}${toolsRemoved.length ? " / -" + toolsRemoved.join(",") : ""}，digest ${b0.toolsDigest} → ${v.toolsDigest}）；顶层键${sameKeys ? "序不变" : ` \`${b0.topLevelKeys.join(",")}\` → \`${v.topLevelKeys.join(",")}\``}；thinking ${sameThinking ? "不变" : JSON.stringify(v.thinking)}；output_config ${sameOutput ? "不变" : JSON.stringify(v.outputConfig)}；cc_* ${v.ccFields.length === 0 ? "0 命中" : v.ccFields.join(",")}`);
+    }
+    md.push("");
+  }
+} else {
 md.push("## 关键结论", "");
 md.push("- **G1** 追加式客户 system 可用：`--append-system-prompt-file` 后主提示词 5599→5655，计费头与身份句保留。");
 md.push("- **G2** stdin 接受 `assistant` 注入并原样进入下一轮，但首条 user 立即触发真实调用 → 不能当零成本历史导入。");
@@ -161,6 +217,7 @@ const baseMainPromptLen = mainReq(doc("baseline.json"))?.system?.at(-1)?.len ?? 
 md.push(`- **T11 导入 transcript × append** \`${t11?.checks?.pass ? "通过" : "未做/失败"}\`：快照-less 的导入会话里，resume 当轮的 \`--append-system-prompt-file\` **生效且只追加一次**（主提示词 ${baseMainPromptLen ?? "5599"}→${t11s["import-only"]?.mainPromptLen ?? "5657"}，marker 1 次，计费头/身份句保留）；但这次 resume 结束会把二进制自己的快照（10 块 + tools）写回 transcript，**之后的 resume 换 marker 0 命中**（${t11s["import-second-resume"]?.probeCounts ? "第二次 marker " + Object.values(t11s["import-second-resume"].probeCounts)[0] + " 次" : "见证据"}）→ 客户 system 只能"首次 resume 定终身"。手写最小 \`prompt_snapshot\` 会被回放但**整块替换**主提示词（${t11s["import+minimal-snapshot"]?.mainPromptLen ?? "74"}B，默认 5599B 全丢、工具仍默认 12），且此时 append 被忽略。`);
 md.push(`- **T12 resume 后的 \`# Environment update\`** \`${t12?.checks?.pass ? "通过" : "未做/失败"}\`：导入的 transcript（无 \`environment\` attachment）在 cwd 同/异 × attachments 开/关 × stdin/positional 六种组合下 **0 次**出现该块；T1 的 99B 块 **0/4 精确复刻**（另 3 次 native positional、1 次 stdin 也 0）→ 不是 resume 的固定行为。二进制侧（只读）确认它是 environment 的 **diff 渲染**（\`workingDirectory\` 等字段与存储值不同才输出，\`(was …)\` 取存储值），\`CLAUDE_CODE_DISABLE_ATTACHMENTS\` 不控制它（只控制整块 \`# Environment\`，ON 时 9507B）→ 续轮走 stdin stream-json + 不写陈旧 environment attachment 才是护栏，cwd 改写保留作防御。`);
 md.push("");
+}
 md.push("## 证据文件索引", "");
 md.push("| 文件 | gate | sampledAt | digest |");
 md.push("|---|---|---|---|");

@@ -87,13 +87,26 @@ test("strict + key allowlist: a mirasim client is admitted, normalised to (exter
   assert.equal(shapingFor({ groupId: "g", customEntrypointAdmitted: false }).normalizeEntrypoint, false);
 });
 
-test("strict: an unsampled version (2.1.316) is not a known profile and the outgoing check cannot vouch for it", () => {
+test("strict: an unsampled version (2.1.314) is not a known profile and the outgoing check cannot vouch for it", () => {
   setSetting("direct_cc_version_pin", "2.1.312");
-  const h = headersFor("2.1.316", "cli", "v26.12.1"); const b = bodyFor("2.1.316", "cli");
+  const h = headersFor("2.1.314", "cli", "v26.12.1"); const b = bodyFor("2.1.314", "cli");
   const inbound = classifyCcRequest(h, b, { requireKnownProfile: true });
   assert.equal(inbound.verdict, "suspect"); assert.deepEqual(inbound.missing, ["cc_profile_unknown"]);
   const r = build(h, b, STRICT);
-  assert.equal(r.headers["user-agent"], "claude-cli/2.1.316 (external, cli)", "never pinned to another build");
+  assert.equal(r.headers["user-agent"], "claude-cli/2.1.314 (external, cli)", "never pinned to another build");
   assert.equal(JSON.parse(r.body).system[0].text, b.system[0].text, "first user text and suffix untouched for an unknown algorithm");
   assert.equal(outgoingProfileCheck(r, inbound).sameProfile, false);
+});
+
+test("strict: 2.1.316 and 2.1.301 are sampled profiles (WP0 batch 4) — forwarded as genuine, own transport constants, outgoing check vouches", () => {
+  setSetting("direct_cc_version_pin", "2.1.312");
+  for (const [v, rt] of [["2.1.316", "v26.12.1"], ["2.1.301", "v26.3.0"]]) {
+    const h = headersFor(v, "cli", rt); const b = bodyFor(v, "cli");
+    const inbound = classifyCcRequest(h, b, { requireKnownProfile: true });
+    assert.equal(inbound.verdict, "genuine", `${v}: ${inbound.missing.join(",")}`); assert.equal(inbound.profileId, `cc-${v}-cli`);
+    const r = build(h, b, STRICT);
+    assert.equal(r.headers["user-agent"], `claude-cli/${v} (external, cli)`, "never pinned to another build");
+    assert.equal(r.headers["x-stainless-runtime-version"], rt, `${v} keeps its own runtime string`);
+    assert.equal(outgoingProfileCheck(r, inbound).sameProfile, true, `${v}: same profile in and out`);
+  }
 });

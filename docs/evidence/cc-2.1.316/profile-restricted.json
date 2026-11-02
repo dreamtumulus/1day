@@ -1,0 +1,682 @@
+{
+ "profile": "restricted",
+ "samples": 12,
+ "betaSets": [
+  [
+   "claude-code-20250219",
+   "oauth-2025-04-20",
+   "interleaved-thinking-2025-05-14",
+   "context-management-2025-06-27",
+   "per-turn-control-2026-07-01",
+   "thinking-token-count-2026-05-13",
+   "advanced-tool-use-2025-11-20",
+   "effort-2025-11-24",
+   "thinking-display-updates-2026-08-18",
+   "extended-cache-ttl-2025-04-11"
+  ],
+  [
+   "oauth-2025-04-20",
+   "interleaved-thinking-2025-05-14",
+   "context-management-2025-06-27",
+   "claude-code-20250219",
+   "thinking-token-count-2026-05-13",
+   "advanced-tool-use-2025-11-20",
+   "thinking-display-updates-2026-08-18",
+   "extended-cache-ttl-2025-04-11"
+  ]
+ ],
+ "betaByModel": {
+  "claude-sonnet-5-5": [
+   "claude-code-20250219",
+   "oauth-2025-04-20",
+   "interleaved-thinking-2025-05-14",
+   "context-management-2025-06-27",
+   "per-turn-control-2026-07-01",
+   "thinking-token-count-2026-05-13",
+   "advanced-tool-use-2025-11-20",
+   "effort-2025-11-24",
+   "thinking-display-updates-2026-08-18",
+   "extended-cache-ttl-2025-04-11"
+  ],
+  "claude-opus-5-5": [
+   "claude-code-20250219",
+   "oauth-2025-04-20",
+   "interleaved-thinking-2025-05-14",
+   "context-management-2025-06-27",
+   "per-turn-control-2026-07-01",
+   "thinking-token-count-2026-05-13",
+   "advanced-tool-use-2025-11-20",
+   "effort-2025-11-24",
+   "thinking-display-updates-2026-08-18",
+   "extended-cache-ttl-2025-04-11"
+  ],
+  "claude-haiku-4-5": [
+   "oauth-2025-04-20",
+   "interleaved-thinking-2025-05-14",
+   "context-management-2025-06-27",
+   "claude-code-20250219",
+   "thinking-token-count-2026-05-13",
+   "advanced-tool-use-2025-11-20",
+   "thinking-display-updates-2026-08-18",
+   "extended-cache-ttl-2025-04-11"
+  ]
+ },
+ "byModel": {
+  "claude-sonnet-5-5": {
+   "samples": 4,
+   "mainPromptLen": 3417,
+   "thinking": {
+    "type": "adaptive",
+    "display": "updates"
+   },
+   "outputConfig": {
+    "effort": "medium"
+   },
+   "maxTokens": 128000,
+   "toolsDigest": "60c5d5dd0a586e3a",
+   "toolsCount": 12,
+   "systemBlockLens": [
+    74,
+    62,
+    3417
+   ],
+   "betaList": [
+    "claude-code-20250219",
+    "oauth-2025-04-20",
+    "interleaved-thinking-2025-05-14",
+    "context-management-2025-06-27",
+    "per-turn-control-2026-07-01",
+    "thinking-token-count-2026-05-13",
+    "advanced-tool-use-2025-11-20",
+    "effort-2025-11-24",
+    "thinking-display-updates-2026-08-18",
+    "extended-cache-ttl-2025-04-11"
+   ]
+  },
+  "claude-opus-5-5": {
+   "samples": 4,
+   "mainPromptLen": 3607,
+   "thinking": {
+    "type": "adaptive",
+    "display": "updates"
+   },
+   "outputConfig": {
+    "effort": "medium"
+   },
+   "maxTokens": 128000,
+   "toolsDigest": "60c5d5dd0a586e3a",
+   "toolsCount": 12,
+   "systemBlockLens": [
+    74,
+    62,
+    3607
+   ],
+   "betaList": [
+    "claude-code-20250219",
+    "oauth-2025-04-20",
+    "interleaved-thinking-2025-05-14",
+    "context-management-2025-06-27",
+    "per-turn-control-2026-07-01",
+    "thinking-token-count-2026-05-13",
+    "advanced-tool-use-2025-11-20",
+    "effort-2025-11-24",
+    "thinking-display-updates-2026-08-18",
+    "extended-cache-ttl-2025-04-11"
+   ]
+  },
+  "claude-haiku-4-5": {
+   "samples": 4,
+   "mainPromptLen": 14138,
+   "thinking": {
+    "budget_tokens": 31999,
+    "type": "enabled",
+    "display": "updates"
+   },
+   "outputConfig": null,
+   "maxTokens": 32000,
+   "toolsDigest": "60c5d5dd0a586e3a",
+   "toolsCount": 12,
+   "systemBlockLens": [
+    74,
+    62,
+    14138
+   ],
+   "betaList": [
+    "oauth-2025-04-20",
+    "interleaved-thinking-2025-05-14",
+    "context-management-2025-06-27",
+    "claude-code-20250219",
+    "thinking-token-count-2026-05-13",
+    "advanced-tool-use-2025-11-20",
+    "thinking-display-updates-2026-08-18",
+    "extended-cache-ttl-2025-04-11"
+   ]
+  }
+ },
+ "identityBlock": "You are a Claude agent, built on Anthropic's Claude Agent SDK.",
+ "identityVariants": [
+  "You are a Claude agent, built on Anthropic's Claude Agent SDK."
+ ],
+ "mainPromptLen": [
+  3417,
+  3607,
+  14138
+ ],
+ "mainPromptDigests": [
+  "3883dd7e704a5a3d",
+  "1cf006735cbea2bb",
+  "54cb07fdc4973aa0"
+ ],
+ "systemBlockCount": [
+  3
+ ],
+ "systemBlockLens": [
+  [
+   74,
+   62,
+   3417
+  ],
+  [
+   74,
+   62,
+   3607
+  ],
+  [
+   74,
+   62,
+   14138
+  ]
+ ],
+ "toolsDigest": "60c5d5dd0a586e3a",
+ "tools": [
+  "Agent",
+  "Edit",
+  "Glob",
+  "Grep",
+  "ListAgents",
+  "Read",
+  "ReportFindings",
+  "ScheduleWakeup",
+  "Skill",
+  "ToolSearch",
+  "DeferredToolPlaceholder",
+  "Write"
+ ],
+ "toolsDigests": [
+  "60c5d5dd0a586e3a"
+ ],
+ "topLevelKeys": [
+  "model",
+  "messages",
+  "system",
+  "tools",
+  "metadata",
+  "max_tokens",
+  "thinking",
+  "context_management",
+  "output_config",
+  "stream"
+ ],
+ "thinking": [
+  {
+   "type": "adaptive",
+   "display": "updates"
+  },
+  {
+   "budget_tokens": 31999,
+   "type": "enabled",
+   "display": "updates"
+  }
+ ],
+ "outputConfig": [
+  {
+   "effort": "medium"
+  },
+  null
+ ],
+ "ccFields": [],
+ "billingSuffix": {
+  "checked": 12,
+  "matched": 12,
+  "mismatched": 0,
+  "matchRate": "12/12",
+  "headerVersionOk": true,
+  "observedSuffixes": [
+   "057",
+   "39e",
+   "3c9",
+   "1f8"
+  ],
+  "computedSuffixes": [
+   "057",
+   "39e",
+   "3c9",
+   "1f8"
+  ],
+  "mismatches": [],
+  "algorithm": "sha256(\"59cf53e54c78\" + firstUserText[4,7,20] + \"2.1.316\").slice(0,3)",
+  "source": "CC 2.1.316 client code (salt/positions present in the shipped JS/binary); same as packages/core/src/fingerprint.ts#ccBuildSuffix"
+ },
+ "requestShapes": [
+  {
+   "kind": "main",
+   "occurrences": 4,
+   "betaList": [
+    "claude-code-20250219",
+    "oauth-2025-04-20",
+    "interleaved-thinking-2025-05-14",
+    "context-management-2025-06-27",
+    "per-turn-control-2026-07-01",
+    "thinking-token-count-2026-05-13",
+    "advanced-tool-use-2025-11-20",
+    "effort-2025-11-24",
+    "thinking-display-updates-2026-08-18",
+    "extended-cache-ttl-2025-04-11"
+   ],
+   "topLevelKeys": [
+    "model",
+    "messages",
+    "system",
+    "tools",
+    "metadata",
+    "max_tokens",
+    "thinking",
+    "context_management",
+    "output_config",
+    "stream"
+   ],
+   "maxTokens": 128000,
+   "systemBlockLens": [
+    74,
+    62,
+    3417
+   ],
+   "toolsCount": 12,
+   "outputConfig": {
+    "effort": "medium"
+   },
+   "authScheme": "bearer",
+   "files": [
+    "restricted-res-01.json",
+    "restricted-res-02.json",
+    "restricted-res-03.json",
+    "restricted-res-04.json"
+   ]
+  },
+  {
+   "kind": "main",
+   "occurrences": 4,
+   "betaList": [
+    "claude-code-20250219",
+    "oauth-2025-04-20",
+    "interleaved-thinking-2025-05-14",
+    "context-management-2025-06-27",
+    "per-turn-control-2026-07-01",
+    "thinking-token-count-2026-05-13",
+    "advanced-tool-use-2025-11-20",
+    "effort-2025-11-24",
+    "thinking-display-updates-2026-08-18",
+    "extended-cache-ttl-2025-04-11"
+   ],
+   "topLevelKeys": [
+    "model",
+    "messages",
+    "system",
+    "tools",
+    "metadata",
+    "max_tokens",
+    "thinking",
+    "context_management",
+    "output_config",
+    "stream"
+   ],
+   "maxTokens": 128000,
+   "systemBlockLens": [
+    74,
+    62,
+    3607
+   ],
+   "toolsCount": 12,
+   "outputConfig": {
+    "effort": "medium"
+   },
+   "authScheme": "bearer",
+   "files": [
+    "restricted-res-05.json",
+    "restricted-res-06.json",
+    "restricted-res-07.json",
+    "restricted-res-08.json"
+   ]
+  },
+  {
+   "kind": "main",
+   "occurrences": 4,
+   "betaList": [
+    "oauth-2025-04-20",
+    "interleaved-thinking-2025-05-14",
+    "context-management-2025-06-27",
+    "claude-code-20250219",
+    "thinking-token-count-2026-05-13",
+    "advanced-tool-use-2025-11-20",
+    "thinking-display-updates-2026-08-18",
+    "extended-cache-ttl-2025-04-11"
+   ],
+   "topLevelKeys": [
+    "model",
+    "messages",
+    "system",
+    "tools",
+    "metadata",
+    "max_tokens",
+    "thinking",
+    "context_management",
+    "stream"
+   ],
+   "maxTokens": 32000,
+   "systemBlockLens": [
+    74,
+    62,
+    14138
+   ],
+   "toolsCount": 12,
+   "outputConfig": null,
+   "authScheme": "bearer",
+   "files": [
+    "restricted-res-09.json",
+    "restricted-res-10.json",
+    "restricted-res-11.json",
+    "restricted-res-12.json"
+   ]
+  }
+ ],
+ "evidence": [
+  {
+   "file": "restricted-res-01.json",
+   "model": "claude-sonnet-5-5",
+   "sampledAt": "2026-11-02T05:42:59.280Z",
+   "digest": "210898cbf27e7e89",
+   "toolsCount": 12,
+   "systemBlockLens": [
+    74,
+    62,
+    3417
+   ],
+   "allRequestURLs": 1,
+   "billing": {
+    "system0IsBillingHeader": true,
+    "headerVersion": "2.1.316",
+    "observedSuffix": "057",
+    "computedSuffix": "057",
+    "match": true,
+    "algorithmMatchesVersion": true,
+    "firstUserTextLen": 30,
+    "firstUserTextDigest": "ef7e7ff96d04cdcd",
+    "chars": "yie"
+   }
+  },
+  {
+   "file": "restricted-res-02.json",
+   "model": "claude-sonnet-5-5",
+   "sampledAt": "2026-11-02T05:43:01.048Z",
+   "digest": "266169ee48e05813",
+   "toolsCount": 12,
+   "systemBlockLens": [
+    74,
+    62,
+    3417
+   ],
+   "allRequestURLs": 1,
+   "billing": {
+    "system0IsBillingHeader": true,
+    "headerVersion": "2.1.316",
+    "observedSuffix": "39e",
+    "computedSuffix": "39e",
+    "match": true,
+    "algorithmMatchesVersion": true,
+    "firstUserTextLen": 63,
+    "firstUserTextDigest": "1d396ec565a279f1",
+    "chars": "azt"
+   }
+  },
+  {
+   "file": "restricted-res-03.json",
+   "model": "claude-sonnet-5-5",
+   "sampledAt": "2026-11-02T05:43:02.789Z",
+   "digest": "eca103fedf9e63a5",
+   "toolsCount": 12,
+   "systemBlockLens": [
+    74,
+    62,
+    3417
+   ],
+   "allRequestURLs": 1,
+   "billing": {
+    "system0IsBillingHeader": true,
+    "headerVersion": "2.1.316",
+    "observedSuffix": "3c9",
+    "computedSuffix": "3c9",
+    "match": true,
+    "algorithmMatchesVersion": true,
+    "firstUserTextLen": 642,
+    "firstUserTextDigest": "530a20d8c5c66c65",
+    "chars": "xxx"
+   }
+  },
+  {
+   "file": "restricted-res-04.json",
+   "model": "claude-sonnet-5-5",
+   "sampledAt": "2026-11-02T05:43:04.595Z",
+   "digest": "404eab4b0a3e0fd7",
+   "toolsCount": 12,
+   "systemBlockLens": [
+    74,
+    62,
+    3417
+   ],
+   "allRequestURLs": 1,
+   "billing": {
+    "system0IsBillingHeader": true,
+    "headerVersion": "2.1.316",
+    "observedSuffix": "1f8",
+    "computedSuffix": "1f8",
+    "match": true,
+    "algorithmMatchesVersion": true,
+    "firstUserTextLen": 38,
+    "firstUserTextDigest": "b0992f5655a4957d",
+    "chars": "用中第"
+   }
+  },
+  {
+   "file": "restricted-res-05.json",
+   "model": "claude-opus-5-5",
+   "sampledAt": "2026-11-02T05:43:06.360Z",
+   "digest": "94f2994eb174a7c3",
+   "toolsCount": 12,
+   "systemBlockLens": [
+    74,
+    62,
+    3607
+   ],
+   "allRequestURLs": 1,
+   "billing": {
+    "system0IsBillingHeader": true,
+    "headerVersion": "2.1.316",
+    "observedSuffix": "057",
+    "computedSuffix": "057",
+    "match": true,
+    "algorithmMatchesVersion": true,
+    "firstUserTextLen": 30,
+    "firstUserTextDigest": "ef7e7ff96d04cdcd",
+    "chars": "yie"
+   }
+  },
+  {
+   "file": "restricted-res-06.json",
+   "model": "claude-opus-5-5",
+   "sampledAt": "2026-11-02T05:43:08.133Z",
+   "digest": "770cd4afcd058c7f",
+   "toolsCount": 12,
+   "systemBlockLens": [
+    74,
+    62,
+    3607
+   ],
+   "allRequestURLs": 1,
+   "billing": {
+    "system0IsBillingHeader": true,
+    "headerVersion": "2.1.316",
+    "observedSuffix": "39e",
+    "computedSuffix": "39e",
+    "match": true,
+    "algorithmMatchesVersion": true,
+    "firstUserTextLen": 63,
+    "firstUserTextDigest": "1d396ec565a279f1",
+    "chars": "azt"
+   }
+  },
+  {
+   "file": "restricted-res-07.json",
+   "model": "claude-opus-5-5",
+   "sampledAt": "2026-11-02T05:43:09.939Z",
+   "digest": "297efa7d3abdfa49",
+   "toolsCount": 12,
+   "systemBlockLens": [
+    74,
+    62,
+    3607
+   ],
+   "allRequestURLs": 1,
+   "billing": {
+    "system0IsBillingHeader": true,
+    "headerVersion": "2.1.316",
+    "observedSuffix": "3c9",
+    "computedSuffix": "3c9",
+    "match": true,
+    "algorithmMatchesVersion": true,
+    "firstUserTextLen": 642,
+    "firstUserTextDigest": "530a20d8c5c66c65",
+    "chars": "xxx"
+   }
+  },
+  {
+   "file": "restricted-res-08.json",
+   "model": "claude-opus-5-5",
+   "sampledAt": "2026-11-02T05:43:11.704Z",
+   "digest": "3abadd408c592077",
+   "toolsCount": 12,
+   "systemBlockLens": [
+    74,
+    62,
+    3607
+   ],
+   "allRequestURLs": 1,
+   "billing": {
+    "system0IsBillingHeader": true,
+    "headerVersion": "2.1.316",
+    "observedSuffix": "1f8",
+    "computedSuffix": "1f8",
+    "match": true,
+    "algorithmMatchesVersion": true,
+    "firstUserTextLen": 38,
+    "firstUserTextDigest": "b0992f5655a4957d",
+    "chars": "用中第"
+   }
+  },
+  {
+   "file": "restricted-res-09.json",
+   "model": "claude-haiku-4-5",
+   "sampledAt": "2026-11-02T05:43:13.468Z",
+   "digest": "7931ec3ff652493e",
+   "toolsCount": 12,
+   "systemBlockLens": [
+    74,
+    62,
+    14138
+   ],
+   "allRequestURLs": 1,
+   "billing": {
+    "system0IsBillingHeader": true,
+    "headerVersion": "2.1.316",
+    "observedSuffix": "057",
+    "computedSuffix": "057",
+    "match": true,
+    "algorithmMatchesVersion": true,
+    "firstUserTextLen": 30,
+    "firstUserTextDigest": "ef7e7ff96d04cdcd",
+    "chars": "yie"
+   }
+  },
+  {
+   "file": "restricted-res-10.json",
+   "model": "claude-haiku-4-5",
+   "sampledAt": "2026-11-02T05:43:15.255Z",
+   "digest": "137492f93e69d7e1",
+   "toolsCount": 12,
+   "systemBlockLens": [
+    74,
+    62,
+    14138
+   ],
+   "allRequestURLs": 1,
+   "billing": {
+    "system0IsBillingHeader": true,
+    "headerVersion": "2.1.316",
+    "observedSuffix": "39e",
+    "computedSuffix": "39e",
+    "match": true,
+    "algorithmMatchesVersion": true,
+    "firstUserTextLen": 63,
+    "firstUserTextDigest": "1d396ec565a279f1",
+    "chars": "azt"
+   }
+  },
+  {
+   "file": "restricted-res-11.json",
+   "model": "claude-haiku-4-5",
+   "sampledAt": "2026-11-02T05:43:17.022Z",
+   "digest": "854ba3989a5289e4",
+   "toolsCount": 12,
+   "systemBlockLens": [
+    74,
+    62,
+    14138
+   ],
+   "allRequestURLs": 1,
+   "billing": {
+    "system0IsBillingHeader": true,
+    "headerVersion": "2.1.316",
+    "observedSuffix": "3c9",
+    "computedSuffix": "3c9",
+    "match": true,
+    "algorithmMatchesVersion": true,
+    "firstUserTextLen": 642,
+    "firstUserTextDigest": "530a20d8c5c66c65",
+    "chars": "xxx"
+   }
+  },
+  {
+   "file": "restricted-res-12.json",
+   "model": "claude-haiku-4-5",
+   "sampledAt": "2026-11-02T05:43:18.775Z",
+   "digest": "adf6fd43a0e174fb",
+   "toolsCount": 12,
+   "systemBlockLens": [
+    74,
+    62,
+    14138
+   ],
+   "allRequestURLs": 1,
+   "billing": {
+    "system0IsBillingHeader": true,
+    "headerVersion": "2.1.316",
+    "observedSuffix": "1f8",
+    "computedSuffix": "1f8",
+    "match": true,
+    "algorithmMatchesVersion": true,
+    "firstUserTextLen": 38,
+    "firstUserTextDigest": "b0992f5655a4957d",
+    "chars": "用中第"
+   }
+  }
+ ]
+}

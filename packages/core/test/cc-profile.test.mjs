@@ -31,8 +31,8 @@ const bodyFor = (version, entrypoint, identity = CLI) => {
 };
 
 test("profile table: 2.1.312 cli / sdk-cli / restricted + 2.1.300 cli / sdk-cli, suffix-v1 only, transport per build", () => {
-  assert.deepEqual(Object.keys(CC_PROFILES).sort(), ["cc-2.1.300-cli", "cc-2.1.300-sdk-cli", "cc-2.1.312-cli", "cc-2.1.312-restricted", "cc-2.1.312-sdk-cli"]);
-  assert.deepEqual([...CC_KNOWN_VERSIONS].sort(), ["2.1.300", "2.1.312"]);
+  assert.deepEqual(Object.keys(CC_PROFILES).sort(), ["cc-2.1.300-cli", "cc-2.1.300-sdk-cli", "cc-2.1.301-cli", "cc-2.1.301-restricted", "cc-2.1.301-sdk-cli", "cc-2.1.312-cli", "cc-2.1.312-restricted", "cc-2.1.312-sdk-cli", "cc-2.1.316-cli", "cc-2.1.316-restricted", "cc-2.1.316-sdk-cli"]);
+  assert.deepEqual([...CC_KNOWN_VERSIONS].sort(), ["2.1.300", "2.1.301", "2.1.312", "2.1.316"]);
   for (const p of Object.values(CC_PROFILES)) {
     assert.equal(p.billingAlgo, "suffix-v1");
     assert.equal(p.betaPolicy.base[0], "claude-code-20250219");
@@ -60,7 +60,7 @@ test("profile table: 2.1.312 cli / sdk-cli / restricted + 2.1.300 cli / sdk-cli,
   assert.ok(knownCcProfile("2.1.300", "sdk-cli").betaPolicy.base.includes("prompt-caching-scope-2026-01-05"));
   assert.deepEqual(ccTransportFor("2.1.312"), { runtimeVersion: "v26.12.1", sdkVersion: "0.128.0" });
   assert.deepEqual(ccTransportFor("2.1.300"), { runtimeVersion: "v26.3.0", sdkVersion: "0.128.0" });
-  assert.equal(ccTransportFor("2.1.316"), null);
+  assert.equal(ccTransportFor("2.1.314"), null, "2.1.314 not sampled");
   assert.equal(ccBuildSuffix([{ role: "user", content: "Reply with the single word OK." }], "2.1.300"), "f23", "the 2.1.300 capture reproduces → same algorithm");
 });
 
@@ -71,7 +71,7 @@ test("ccProfileFor: official entrypoints by name, customer-made ones by identity
   assert.equal(ccProfileFor("2.1.312", "mirasim", SDK).profileId, "cc-2.1.312-sdk-cli");
   assert.equal(ccProfileFor("2.1.312", "mirasim", "You are something else."), null);
   assert.equal(ccProfileFor("2.1.312", "sdk-ts", SDK), null);
-  assert.equal(ccProfileFor("2.1.316", "cli", CLI), null, "no sampled profile for 2.1.316");
+  assert.equal(ccProfileFor("2.1.314", "cli", CLI), null, "no sampled profile for 2.1.314");
   assert.equal(sameCcProfile(knownCcProfile("2.1.312", "cli"), knownCcProfile("2.1.312", "cli")), true);
   assert.equal(sameCcProfile(knownCcProfile("2.1.312", "cli"), knownCcProfile("2.1.300", "cli")), false, "no cross-version");
   assert.equal(sameCcProfile(knownCcProfile("2.1.312", "cli"), null), false);
@@ -84,10 +84,14 @@ test("gate: profileId reported; unknown profile is soft by default and hard with
   assert.ok(!ok.soft.includes("cc_profile_unknown"));
   const old = classifyCcRequest(headersFor("2.1.300", "cli", "v26.3.0"), bodyFor("2.1.300", "cli"));
   assert.equal(old.verdict, "genuine", old.missing.join(",")); assert.equal(old.profileId, "cc-2.1.300-cli");
-  const unknown = classifyCcRequest(headersFor("2.1.316", "cli"), bodyFor("2.1.316", "cli"));
+  const unknown = classifyCcRequest(headersFor("2.1.314", "cli"), bodyFor("2.1.314", "cli"));
   assert.equal(unknown.verdict, "genuine", "observe: an unsampled version is still forwarded as today"); assert.equal(unknown.profileId, null);
   assert.ok(unknown.soft.includes("cc_profile_unknown"));
-  const strict = classifyCcRequest(headersFor("2.1.316", "cli"), bodyFor("2.1.316", "cli"), { requireKnownProfile: true });
+  const strict = classifyCcRequest(headersFor("2.1.314", "cli"), bodyFor("2.1.314", "cli"), { requireKnownProfile: true });
+  const sampled316 = classifyCcRequest(headersFor("2.1.316", "cli"), bodyFor("2.1.316", "cli"), { requireKnownProfile: true });
+  assert.equal(sampled316.verdict, "genuine", sampled316.missing.join(",")); assert.equal(sampled316.profileId, "cc-2.1.316-cli");
+  const sampled301 = classifyCcRequest(headersFor("2.1.301", "cli", "v26.3.0"), bodyFor("2.1.301", "cli"), { requireKnownProfile: true });
+  assert.equal(sampled301.verdict, "genuine", sampled301.missing.join(",")); assert.equal(sampled301.profileId, "cc-2.1.301-cli");
   assert.equal(strict.verdict, "suspect"); assert.deepEqual(strict.missing, ["cc_profile_unknown"]);
 });
 
@@ -166,4 +170,39 @@ test("key policy: console override replaces only the override layer; admin input
   assert.equal(invalidKeyPolicyField({ teamAffinity: null }), null);
   assert.equal(invalidKeyPolicyField(null), "policy");
   assert.deepEqual(sanitizeKeyPolicyLayer({ teamAffinity: null, probeIntercept: false }), { teamAffinity: null, probeIntercept: false });
+});
+
+test("profile table (WP0 batch 4, 2026-11-02): 2.1.316 / 2.1.301 sampled for all three entrypoints; transport per build; billing verified", async () => {
+  const { knownCcProfile, ccProfileFor, ccTransportFor, CC_KNOWN_VERSIONS } = await import("../dist/cc-profile.js");
+  const { CC_BILLING_VERIFIED_VERSIONS, canEditFirstUserText, ccBuildSuffix } = await import("../dist/fingerprint.js");
+  for (const v of ["2.1.316", "2.1.301"]) {
+    for (const ep of ["cli", "sdk-cli", "restricted"]) {
+      const p = knownCcProfile(v, ep);
+      assert.ok(p, `${v}/${ep} sampled`);
+      assert.equal(p.ccVersion, v);
+      assert.ok(p.evidence.length >= 12 && p.evidence.every((e) => e.grade === "sampled"), `${v}/${ep} ≥12 sampled evidence rows`);
+      assert.ok(p.betaPolicy.base.includes("claude-code-20250219") && p.betaPolicy.base.includes("oauth-2025-04-20"));
+      assert.ok(p.betaPolicy.byModel["claude-haiku-4-5"]?.length === 8, "haiku beta set recorded");
+      assert.ok(p.mainPromptLengths.length >= 2 && p.toolsDigest && p.tools.length > 0);
+    }
+    assert.ok(CC_KNOWN_VERSIONS.includes(v));
+    assert.ok(CC_BILLING_VERIFIED_VERSIONS.includes(v));
+  }
+  // customer-made entrypoint on a 2.1.316 client resolves by the CLI identity sentence (what the canary's mirasim traffic needs)
+  assert.equal(ccProfileFor("2.1.316", "mirasim", "You are Claude Code, Anthropic's official CLI for Claude.")?.profileId, "cc-2.1.316-cli");
+  assert.equal(ccProfileFor("2.1.301", "cli", "You are Claude Code, Anthropic's official CLI for Claude.")?.profileId, "cc-2.1.301-cli");
+  assert.equal(ccTransportFor("2.1.316").runtimeVersion, "v26.12.1");
+  assert.equal(ccTransportFor("2.1.301").runtimeVersion, "v26.3.0", "2.1.301 ships Bun 1.4.3");
+  assert.equal(ccTransportFor("2.1.301").sdkVersion, "0.128.0");
+  // 2.1.301 differs from 2.1.312/316: prompt-caching-scope beta present, advanced-tool-use absent, safeguards on every entrypoint
+  const c301 = knownCcProfile("2.1.301", "sdk-cli"), c316 = knownCcProfile("2.1.316", "sdk-cli");
+  assert.ok(c301.betaPolicy.base.includes("prompt-caching-scope-2026-01-05") && !c301.betaPolicy.base.includes("advanced-tool-use-2025-11-20"));
+  assert.ok(!c316.betaPolicy.base.includes("prompt-caching-scope-2026-01-05") && c316.betaPolicy.base.includes("advanced-tool-use-2025-11-20"));
+  assert.ok(c301.topLevelKeys.includes("safeguards") && !c316.topLevelKeys.includes("safeguards"));
+  // first-user-text edits allowed only for verified builds
+  const body = (v) => ({ system: [{ type: "text", text: `x-anthropic-billing-header: cc_version=${v}.${ccBuildSuffix([{ role: "user", content: "hi" }], v)}; cc_entrypoint=cli;` }], messages: [{ role: "user", content: "hi" }] });
+  assert.equal(canEditFirstUserText(body("2.1.316")), true);
+  assert.equal(canEditFirstUserText(body("2.1.301")), true);
+  assert.equal(canEditFirstUserText(body("2.1.300")), false, "interim build: never edit");
+  assert.equal(canEditFirstUserText(body("2.1.314")), false);
 });

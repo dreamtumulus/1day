@@ -5,7 +5,7 @@
 import { readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 
-const OUT = resolve("docs/evidence/cc-2.1.312");
+const OUT = resolve(process.env.CC_PROBE_OUT ?? "docs/evidence/cc-2.1.312");
 const dry = process.argv.includes("--dry");
 const scrub = (s) => s
   .replace(/\/(?:tmp|var\/tmp)\/[A-Za-z0-9_.@+-]+(?:\/[A-Za-z0-9_.@+-]+)*/g, "<tmp-path>")

@@ -1,4 +1,5 @@
 import {
+  CC_BILLING_VERIFIED_VERSIONS,
   CC_ANTHROPIC_VERSION,
   ccCanonicalBetas,
   accountBaseUrl,
@@ -234,14 +235,15 @@ export function buildUpstreamRequest(
       body = pinDeviceIdentity(normalizeThinking({ ...clientBody, model: upstreamModel }, upstreamModel), account, { canonicalOrder: shaping.canonicalFields });
       if (machine) body = pinMachineEnvironment(body, machine, envUuid);
       // Edits that touch the first user text are allowed only when the outgoing version's billing suffix can be
-      // recomputed below (2.1.312); otherwise the request is forwarded untouched here (2026-11-01 incident).
+      // recomputed below (verified builds: 2.1.312 / 2.1.316 / 2.1.301); otherwise the request is forwarded untouched here (2026-11-01 incident).
       if (account.raw_passthrough !== 1 && shaping.stripUserEmail && canEditFirstUserText(body)) body = stripUserEmail(body);
       // LAST: the billing suffix is Anthropic's checksum over the first user text of the body it receives. It is
       // recomputed from the outgoing messages after every edit — the 2026-11-01 release computed it before
       // stripping the userEmail reminder, 31 requests then carried a stale suffix, Anthropic answered 429 "Error"
       // on every account they were retried on, and the organization was disabled 42 minutes later.
       body = alignBillingSuffix(body);
-      if (billingVersionOf(body) === CC_VERSION && billingSuffixOf(body) !== ccBuildSuffix(body.messages, CC_VERSION)) {
+      const outVersion = billingVersionOf(body);
+      if (outVersion && CC_BILLING_VERIFIED_VERSIONS.includes(outVersion) && billingSuffixOf(body) !== ccBuildSuffix(body.messages, outVersion)) {
         // Cannot happen after alignBillingSuffix; kept as the last gate: never send a mismatched checksum.
         console.error(`[billing-suffix] mismatch after alignment on account ${account.name}; forwarding the client's original body`);
         body = { ...clientBody, model: upstreamModel };

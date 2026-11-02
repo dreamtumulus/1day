@@ -1,0 +1,2071 @@
+{
+ "cc-2.1.301-cli": {
+  "samples": 12,
+  "betaSets": [
+   [
+    "claude-code-20250219",
+    "oauth-2025-04-20",
+    "interleaved-thinking-2025-05-14",
+    "thinking-token-count-2026-05-13",
+    "context-management-2025-06-27",
+    "prompt-caching-scope-2026-01-05",
+    "per-turn-control-2026-07-01",
+    "effort-2025-11-24",
+    "dangerous-tool-use-2026-09-03",
+    "thinking-display-updates-2026-08-18",
+    "afk-mode-2026-01-31",
+    "extended-cache-ttl-2025-04-11"
+   ],
+   [
+    "oauth-2025-04-20",
+    "interleaved-thinking-2025-05-14",
+    "thinking-token-count-2026-05-13",
+    "context-management-2025-06-27",
+    "prompt-caching-scope-2026-01-05",
+    "claude-code-20250219",
+    "thinking-display-updates-2026-08-18",
+    "extended-cache-ttl-2025-04-11"
+   ]
+  ],
+  "betaByModel": {
+   "claude-sonnet-5-5": [
+    "claude-code-20250219",
+    "oauth-2025-04-20",
+    "interleaved-thinking-2025-05-14",
+    "thinking-token-count-2026-05-13",
+    "context-management-2025-06-27",
+    "prompt-caching-scope-2026-01-05",
+    "per-turn-control-2026-07-01",
+    "effort-2025-11-24",
+    "dangerous-tool-use-2026-09-03",
+    "thinking-display-updates-2026-08-18",
+    "afk-mode-2026-01-31",
+    "extended-cache-ttl-2025-04-11"
+   ],
+   "claude-opus-5-5": [
+    "claude-code-20250219",
+    "oauth-2025-04-20",
+    "interleaved-thinking-2025-05-14",
+    "thinking-token-count-2026-05-13",
+    "context-management-2025-06-27",
+    "prompt-caching-scope-2026-01-05",
+    "per-turn-control-2026-07-01",
+    "effort-2025-11-24",
+    "dangerous-tool-use-2026-09-03",
+    "thinking-display-updates-2026-08-18",
+    "afk-mode-2026-01-31",
+    "extended-cache-ttl-2025-04-11"
+   ],
+   "claude-haiku-4-5": [
+    "oauth-2025-04-20",
+    "interleaved-thinking-2025-05-14",
+    "thinking-token-count-2026-05-13",
+    "context-management-2025-06-27",
+    "prompt-caching-scope-2026-01-05",
+    "claude-code-20250219",
+    "thinking-display-updates-2026-08-18",
+    "extended-cache-ttl-2025-04-11"
+   ]
+  },
+  "identityBlock": "You are Claude Code, Anthropic's official CLI for Claude.",
+  "identityVariants": [
+   "You are Claude Code, Anthropic's official CLI for Claude."
+  ],
+  "mainPromptLen": [
+   5854,
+   27282
+  ],
+  "mainPromptDigests": [
+   "ee08c18e2bb60bcd",
+   "54002c7e70f2b035",
+   "dd38dad064c538d2",
+   "e8bd689cd4497b9f",
+   "234d3c696712d425",
+   "efb5e354367cf6e7",
+   "86f5b410cafabaa0",
+   "b986e3392d963e3c",
+   "d443874f5b83c497",
+   "942be7ce47865dd0",
+   "d4a8f7daa546177c",
+   "2869676edae8df9a"
+  ],
+  "systemBlockLens": [
+   [
+    70,
+    57,
+    5854
+   ],
+   [
+    70,
+    57,
+    27282
+   ]
+  ],
+  "toolsDigest": "bd29b46fcf18e040",
+  "tools": [
+   "Agent",
+   "AskUserQuestion",
+   "Bash",
+   "CronCreate",
+   "CronDelete",
+   "CronList",
+   "DesignSync",
+   "Edit",
+   "EnterPlanMode",
+   "EnterWorktree",
+   "ExitPlanMode",
+   "ExitWorktree",
+   "ListAgents",
+   "NotebookEdit",
+   "Read",
+   "RemoteTrigger",
+   "ReportFindings",
+   "ScheduleWakeup",
+   "SendMessage",
+   "Skill",
+   "TaskStop",
+   "WebFetch",
+   "WebSearch",
+   "Workflow",
+   "Write"
+  ],
+  "topLevelKeys": [
+   "model",
+   "messages",
+   "system",
+   "tools",
+   "metadata",
+   "max_tokens",
+   "thinking",
+   "context_management",
+   "safeguards",
+   "output_config",
+   "stream"
+  ],
+  "thinking": [
+   {
+    "type": "adaptive",
+    "display": "updates"
+   },
+   {
+    "budget_tokens": 31999,
+    "type": "enabled",
+    "display": "updates"
+   }
+  ],
+  "outputConfig": [
+   {
+    "effort": "medium"
+   },
+   null
+  ],
+  "ccFields": [],
+  "byModel": {
+   "claude-sonnet-5-5": {
+    "samples": 4,
+    "mainPromptLen": 5854,
+    "thinking": {
+     "type": "adaptive",
+     "display": "updates"
+    },
+    "outputConfig": {
+     "effort": "medium"
+    },
+    "maxTokens": 128000,
+    "toolsDigest": "bd29b46fcf18e040",
+    "toolsCount": 25,
+    "systemBlockLens": [
+     70,
+     57,
+     5854
+    ],
+    "betaList": [
+     "claude-code-20250219",
+     "oauth-2025-04-20",
+     "interleaved-thinking-2025-05-14",
+     "thinking-token-count-2026-05-13",
+     "context-management-2025-06-27",
+     "prompt-caching-scope-2026-01-05",
+     "per-turn-control-2026-07-01",
+     "effort-2025-11-24",
+     "dangerous-tool-use-2026-09-03",
+     "thinking-display-updates-2026-08-18",
+     "afk-mode-2026-01-31",
+     "extended-cache-ttl-2025-04-11"
+    ]
+   },
+   "claude-opus-5-5": {
+    "samples": 4,
+    "mainPromptLen": 5854,
+    "thinking": {
+     "type": "adaptive",
+     "display": "updates"
+    },
+    "outputConfig": {
+     "effort": "medium"
+    },
+    "maxTokens": 128000,
+    "toolsDigest": "bd29b46fcf18e040",
+    "toolsCount": 25,
+    "systemBlockLens": [
+     70,
+     57,
+     5854
+    ],
+    "betaList": [
+     "claude-code-20250219",
+     "oauth-2025-04-20",
+     "interleaved-thinking-2025-05-14",
+     "thinking-token-count-2026-05-13",
+     "context-management-2025-06-27",
+     "prompt-caching-scope-2026-01-05",
+     "per-turn-control-2026-07-01",
+     "effort-2025-11-24",
+     "dangerous-tool-use-2026-09-03",
+     "thinking-display-updates-2026-08-18",
+     "afk-mode-2026-01-31",
+     "extended-cache-ttl-2025-04-11"
+    ]
+   },
+   "claude-haiku-4-5": {
+    "samples": 4,
+    "mainPromptLen": 27282,
+    "thinking": {
+     "budget_tokens": 31999,
+     "type": "enabled",
+     "display": "updates"
+    },
+    "outputConfig": null,
+    "maxTokens": 32000,
+    "toolsDigest": "4fa879cc8154956a",
+    "toolsCount": 29,
+    "systemBlockLens": [
+     70,
+     57,
+     27282
+    ],
+    "betaList": [
+     "oauth-2025-04-20",
+     "interleaved-thinking-2025-05-14",
+     "thinking-token-count-2026-05-13",
+     "context-management-2025-06-27",
+     "prompt-caching-scope-2026-01-05",
+     "claude-code-20250219",
+     "thinking-display-updates-2026-08-18",
+     "extended-cache-ttl-2025-04-11"
+    ]
+   }
+  },
+  "requestShapes": [
+   {
+    "kind": "no-system",
+    "occurrences": 8,
+    "betaList": [
+     "claude-code-20250219",
+     "oauth-2025-04-20",
+     "interleaved-thinking-2025-05-14",
+     "redact-thinking-2026-02-12",
+     "thinking-token-count-2026-05-13",
+     "context-management-2025-06-27",
+     "prompt-caching-scope-2026-01-05"
+    ],
+    "topLevelKeys": [
+     "model",
+     "max_tokens",
+     "messages",
+     "metadata"
+    ],
+    "maxTokens": 1,
+    "systemBlockLens": [],
+    "toolsCount": 0,
+    "outputConfig": null,
+    "authScheme": "bearer",
+    "files": [
+     "profile-cli-cli-01.json",
+     "profile-cli-cli-02.json",
+     "profile-cli-cli-03.json",
+     "profile-cli-cli-04.json"
+    ]
+   },
+   {
+    "kind": "structured-output",
+    "occurrences": 8,
+    "betaList": [
+     "claude-code-20250219",
+     "oauth-2025-04-20",
+     "interleaved-thinking-2025-05-14",
+     "redact-thinking-2026-02-12",
+     "thinking-token-count-2026-05-13",
+     "context-management-2025-06-27",
+     "prompt-caching-scope-2026-01-05",
+     "per-turn-control-2026-07-01",
+     "effort-2025-11-24",
+     "structured-outputs-2025-12-15"
+    ],
+    "topLevelKeys": [
+     "model",
+     "messages",
+     "system",
+     "tools",
+     "metadata",
+     "max_tokens",
+     "output_config",
+     "stream"
+    ],
+    "maxTokens": 128000,
+    "systemBlockLens": [
+     70,
+     57,
+     3059
+    ],
+    "toolsCount": 0,
+    "outputConfig": {
+     "effort": "medium",
+     "format": {
+      "type": "json_schema",
+      "schema": {
+       "type": "object",
+       "properties": {
+        "title": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "title"
+       ],
+       "additionalProperties": false
+      }
+     }
+    },
+    "authScheme": "bearer",
+    "files": [
+     "profile-cli-cli-01.json",
+     "profile-cli-cli-02.json",
+     "profile-cli-cli-03.json",
+     "profile-cli-cli-04.json"
+    ]
+   },
+   {
+    "kind": "main",
+    "occurrences": 8,
+    "betaList": [
+     "claude-code-20250219",
+     "oauth-2025-04-20",
+     "interleaved-thinking-2025-05-14",
+     "thinking-token-count-2026-05-13",
+     "context-management-2025-06-27",
+     "prompt-caching-scope-2026-01-05",
+     "per-turn-control-2026-07-01",
+     "effort-2025-11-24",
+     "dangerous-tool-use-2026-09-03",
+     "thinking-display-updates-2026-08-18",
+     "afk-mode-2026-01-31",
+     "extended-cache-ttl-2025-04-11"
+    ],
+    "topLevelKeys": [
+     "model",
+     "messages",
+     "system",
+     "tools",
+     "metadata",
+     "max_tokens",
+     "thinking",
+     "context_management",
+     "safeguards",
+     "output_config",
+     "stream"
+    ],
+    "maxTokens": 128000,
+    "systemBlockLens": [
+     70,
+     57,
+     5854
+    ],
+    "toolsCount": 25,
+    "outputConfig": {
+     "effort": "medium"
+    },
+    "authScheme": "bearer",
+    "files": [
+     "profile-cli-cli-01.json",
+     "profile-cli-cli-02.json",
+     "profile-cli-cli-03.json",
+     "profile-cli-cli-04.json"
+    ]
+   },
+   {
+    "kind": "no-system",
+    "occurrences": 4,
+    "betaList": [
+     "oauth-2025-04-20",
+     "interleaved-thinking-2025-05-14",
+     "redact-thinking-2026-02-12",
+     "thinking-token-count-2026-05-13",
+     "context-management-2025-06-27",
+     "prompt-caching-scope-2026-01-05"
+    ],
+    "topLevelKeys": [
+     "model",
+     "max_tokens",
+     "messages",
+     "metadata"
+    ],
+    "maxTokens": 1,
+    "systemBlockLens": [],
+    "toolsCount": 0,
+    "outputConfig": null,
+    "authScheme": "bearer",
+    "files": [
+     "profile-cli-cli-09.json",
+     "profile-cli-cli-10.json",
+     "profile-cli-cli-11.json",
+     "profile-cli-cli-12.json"
+    ]
+   },
+   {
+    "kind": "structured-output",
+    "occurrences": 4,
+    "betaList": [
+     "oauth-2025-04-20",
+     "interleaved-thinking-2025-05-14",
+     "redact-thinking-2026-02-12",
+     "thinking-token-count-2026-05-13",
+     "context-management-2025-06-27",
+     "prompt-caching-scope-2026-01-05",
+     "structured-outputs-2025-12-15"
+    ],
+    "topLevelKeys": [
+     "model",
+     "messages",
+     "system",
+     "tools",
+     "metadata",
+     "max_tokens",
+     "thinking",
+     "temperature",
+     "output_config",
+     "stream"
+    ],
+    "maxTokens": 32000,
+    "systemBlockLens": [
+     70,
+     57,
+     3059
+    ],
+    "toolsCount": 0,
+    "outputConfig": {
+     "format": {
+      "type": "json_schema",
+      "schema": {
+       "type": "object",
+       "properties": {
+        "title": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "title"
+       ],
+       "additionalProperties": false
+      }
+     }
+    },
+    "authScheme": "bearer",
+    "files": [
+     "profile-cli-cli-09.json",
+     "profile-cli-cli-10.json",
+     "profile-cli-cli-11.json",
+     "profile-cli-cli-12.json"
+    ]
+   },
+   {
+    "kind": "main",
+    "occurrences": 4,
+    "betaList": [
+     "oauth-2025-04-20",
+     "interleaved-thinking-2025-05-14",
+     "thinking-token-count-2026-05-13",
+     "context-management-2025-06-27",
+     "prompt-caching-scope-2026-01-05",
+     "claude-code-20250219",
+     "thinking-display-updates-2026-08-18",
+     "extended-cache-ttl-2025-04-11"
+    ],
+    "topLevelKeys": [
+     "model",
+     "messages",
+     "system",
+     "tools",
+     "metadata",
+     "max_tokens",
+     "thinking",
+     "context_management",
+     "stream"
+    ],
+    "maxTokens": 32000,
+    "systemBlockLens": [
+     70,
+     57,
+     27282
+    ],
+    "toolsCount": 29,
+    "outputConfig": null,
+    "authScheme": "bearer",
+    "files": [
+     "profile-cli-cli-09.json",
+     "profile-cli-cli-10.json",
+     "profile-cli-cli-11.json",
+     "profile-cli-cli-12.json"
+    ]
+   }
+  ],
+  "billingSuffix": {
+   "checked": 12,
+   "matched": 12,
+   "mismatched": 0,
+   "matchRate": "12/12",
+   "headerVersionOk": true,
+   "observedSuffixes": [
+    "b22",
+    "0b9",
+    "d5f",
+    "d39"
+   ],
+   "computedSuffixes": [
+    "b22",
+    "0b9",
+    "d5f",
+    "d39"
+   ],
+   "mismatches": [],
+   "algorithm": "sha256(\"59cf53e54c78\" + firstUserText[4,7,20] + \"2.1.301\").slice(0,3)",
+   "source": "CC 2.1.301 client code (salt/positions present in the shipped JS/binary); same as packages/core/src/fingerprint.ts#ccBuildSuffix"
+  },
+  "identityBlocks": [
+   "You are Claude Code, Anthropic's official CLI for Claude."
+  ],
+  "mainPromptLengths": [
+   5854,
+   27282
+  ],
+  "evidence": [
+   {
+    "file": "profile-cli-cli-01.json",
+    "source": "docs/evidence/cc-2.1.301/profile-cli-cli-01.json",
+    "sampledAt": "2026-11-02T05:38:17.975Z",
+    "digest": "66e87c55624a26b8",
+    "model": "claude-sonnet-5-5",
+    "grade": "sampled",
+    "billing": {
+     "system0IsBillingHeader": true,
+     "headerVersion": "2.1.301",
+     "observedSuffix": "b22",
+     "computedSuffix": "b22",
+     "match": true,
+     "algorithmMatchesVersion": true,
+     "firstUserTextLen": 30,
+     "firstUserTextDigest": "ef7e7ff96d04cdcd",
+     "chars": "yie"
+    }
+   },
+   {
+    "file": "profile-cli-cli-02.json",
+    "source": "docs/evidence/cc-2.1.301/profile-cli-cli-02.json",
+    "sampledAt": "2026-11-02T05:38:42.995Z",
+    "digest": "074d86b189d9bec6",
+    "model": "claude-sonnet-5-5",
+    "grade": "sampled",
+    "billing": {
+     "system0IsBillingHeader": true,
+     "headerVersion": "2.1.301",
+     "observedSuffix": "0b9",
+     "computedSuffix": "0b9",
+     "match": true,
+     "algorithmMatchesVersion": true,
+     "firstUserTextLen": 63,
+     "firstUserTextDigest": "1d396ec565a279f1",
+     "chars": "azt"
+    }
+   },
+   {
+    "file": "profile-cli-cli-03.json",
+    "source": "docs/evidence/cc-2.1.301/profile-cli-cli-03.json",
+    "sampledAt": "2026-11-02T05:39:07.852Z",
+    "digest": "340042fd3911459d",
+    "model": "claude-sonnet-5-5",
+    "grade": "sampled",
+    "billing": {
+     "system0IsBillingHeader": true,
+     "headerVersion": "2.1.301",
+     "observedSuffix": "d5f",
+     "computedSuffix": "d5f",
+     "match": true,
+     "algorithmMatchesVersion": true,
+     "firstUserTextLen": 642,
+     "firstUserTextDigest": "530a20d8c5c66c65",
+     "chars": "xxx"
+    }
+   },
+   {
+    "file": "profile-cli-cli-04.json",
+    "source": "docs/evidence/cc-2.1.301/profile-cli-cli-04.json",
+    "sampledAt": "2026-11-02T05:39:32.688Z",
+    "digest": "136ceda0ec9c7691",
+    "model": "claude-sonnet-5-5",
+    "grade": "sampled",
+    "billing": {
+     "system0IsBillingHeader": true,
+     "headerVersion": "2.1.301",
+     "observedSuffix": "d39",
+     "computedSuffix": "d39",
+     "match": true,
+     "algorithmMatchesVersion": true,
+     "firstUserTextLen": 38,
+     "firstUserTextDigest": "b0992f5655a4957d",
+     "chars": "用中第"
+    }
+   },
+   {
+    "file": "profile-cli-cli-05.json",
+    "source": "docs/evidence/cc-2.1.301/profile-cli-cli-05.json",
+    "sampledAt": "2026-11-02T05:39:57.519Z",
+    "digest": "e5a881e32f2d216f",
+    "model": "claude-opus-5-5",
+    "grade": "sampled",
+    "billing": {
+     "system0IsBillingHeader": true,
+     "headerVersion": "2.1.301",
+     "observedSuffix": "b22",
+     "computedSuffix": "b22",
+     "match": true,
+     "algorithmMatchesVersion": true,
+     "firstUserTextLen": 30,
+     "firstUserTextDigest": "ef7e7ff96d04cdcd",
+     "chars": "yie"
+    }
+   },
+   {
+    "file": "profile-cli-cli-06.json",
+    "source": "docs/evidence/cc-2.1.301/profile-cli-cli-06.json",
+    "sampledAt": "2026-11-02T05:40:22.524Z",
+    "digest": "87225f2fbf414579",
+    "model": "claude-opus-5-5",
+    "grade": "sampled",
+    "billing": {
+     "system0IsBillingHeader": true,
+     "headerVersion": "2.1.301",
+     "observedSuffix": "0b9",
+     "computedSuffix": "0b9",
+     "match": true,
+     "algorithmMatchesVersion": true,
+     "firstUserTextLen": 63,
+     "firstUserTextDigest": "1d396ec565a279f1",
+     "chars": "azt"
+    }
+   },
+   {
+    "file": "profile-cli-cli-07.json",
+    "source": "docs/evidence/cc-2.1.301/profile-cli-cli-07.json",
+    "sampledAt": "2026-11-02T05:40:47.622Z",
+    "digest": "3b27a69fb82a93e0",
+    "model": "claude-opus-5-5",
+    "grade": "sampled",
+    "billing": {
+     "system0IsBillingHeader": true,
+     "headerVersion": "2.1.301",
+     "observedSuffix": "d5f",
+     "computedSuffix": "d5f",
+     "match": true,
+     "algorithmMatchesVersion": true,
+     "firstUserTextLen": 642,
+     "firstUserTextDigest": "530a20d8c5c66c65",
+     "chars": "xxx"
+    }
+   },
+   {
+    "file": "profile-cli-cli-08.json",
+    "source": "docs/evidence/cc-2.1.301/profile-cli-cli-08.json",
+    "sampledAt": "2026-11-02T05:41:12.649Z",
+    "digest": "7f4feb3c806a83fd",
+    "model": "claude-opus-5-5",
+    "grade": "sampled",
+    "billing": {
+     "system0IsBillingHeader": true,
+     "headerVersion": "2.1.301",
+     "observedSuffix": "d39",
+     "computedSuffix": "d39",
+     "match": true,
+     "algorithmMatchesVersion": true,
+     "firstUserTextLen": 38,
+     "firstUserTextDigest": "b0992f5655a4957d",
+     "chars": "用中第"
+    }
+   },
+   {
+    "file": "profile-cli-cli-09.json",
+    "source": "docs/evidence/cc-2.1.301/profile-cli-cli-09.json",
+    "sampledAt": "2026-11-02T05:41:37.506Z",
+    "digest": "362e7a9479fbec03",
+    "model": "claude-haiku-4-5",
+    "grade": "sampled",
+    "billing": {
+     "system0IsBillingHeader": true,
+     "headerVersion": "2.1.301",
+     "observedSuffix": "b22",
+     "computedSuffix": "b22",
+     "match": true,
+     "algorithmMatchesVersion": true,
+     "firstUserTextLen": 30,
+     "firstUserTextDigest": "ef7e7ff96d04cdcd",
+     "chars": "yie"
+    }
+   },
+   {
+    "file": "profile-cli-cli-10.json",
+    "source": "docs/evidence/cc-2.1.301/profile-cli-cli-10.json",
+    "sampledAt": "2026-11-02T05:42:02.428Z",
+    "digest": "c7bf6a87a106546b",
+    "model": "claude-haiku-4-5",
+    "grade": "sampled",
+    "billing": {
+     "system0IsBillingHeader": true,
+     "headerVersion": "2.1.301",
+     "observedSuffix": "0b9",
+     "computedSuffix": "0b9",
+     "match": true,
+     "algorithmMatchesVersion": true,
+     "firstUserTextLen": 63,
+     "firstUserTextDigest": "1d396ec565a279f1",
+     "chars": "azt"
+    }
+   },
+   {
+    "file": "profile-cli-cli-11.json",
+    "source": "docs/evidence/cc-2.1.301/profile-cli-cli-11.json",
+    "sampledAt": "2026-11-02T05:42:27.492Z",
+    "digest": "7e446ec9d2153889",
+    "model": "claude-haiku-4-5",
+    "grade": "sampled",
+    "billing": {
+     "system0IsBillingHeader": true,
+     "headerVersion": "2.1.301",
+     "observedSuffix": "d5f",
+     "computedSuffix": "d5f",
+     "match": true,
+     "algorithmMatchesVersion": true,
+     "firstUserTextLen": 642,
+     "firstUserTextDigest": "530a20d8c5c66c65",
+     "chars": "xxx"
+    }
+   },
+   {
+    "file": "profile-cli-cli-12.json",
+    "source": "docs/evidence/cc-2.1.301/profile-cli-cli-12.json",
+    "sampledAt": "2026-11-02T05:42:52.415Z",
+    "digest": "92345ed6b4cdc779",
+    "model": "claude-haiku-4-5",
+    "grade": "sampled",
+    "billing": {
+     "system0IsBillingHeader": true,
+     "headerVersion": "2.1.301",
+     "observedSuffix": "d39",
+     "computedSuffix": "d39",
+     "match": true,
+     "algorithmMatchesVersion": true,
+     "firstUserTextLen": 38,
+     "firstUserTextDigest": "b0992f5655a4957d",
+     "chars": "用中第"
+    }
+   }
+  ]
+ },
+ "cc-2.1.301-sdk-cli": {
+  "samples": 12,
+  "betaSets": [
+   [
+    "claude-code-20250219",
+    "oauth-2025-04-20",
+    "interleaved-thinking-2025-05-14",
+    "thinking-token-count-2026-05-13",
+    "context-management-2025-06-27",
+    "prompt-caching-scope-2026-01-05",
+    "per-turn-control-2026-07-01",
+    "effort-2025-11-24",
+    "dangerous-tool-use-2026-09-03",
+    "thinking-display-updates-2026-08-18",
+    "afk-mode-2026-01-31",
+    "extended-cache-ttl-2025-04-11"
+   ],
+   [
+    "oauth-2025-04-20",
+    "interleaved-thinking-2025-05-14",
+    "thinking-token-count-2026-05-13",
+    "context-management-2025-06-27",
+    "prompt-caching-scope-2026-01-05",
+    "claude-code-20250219",
+    "thinking-display-updates-2026-08-18",
+    "extended-cache-ttl-2025-04-11"
+   ]
+  ],
+  "betaByModel": {
+   "claude-sonnet-5-5": [
+    "claude-code-20250219",
+    "oauth-2025-04-20",
+    "interleaved-thinking-2025-05-14",
+    "thinking-token-count-2026-05-13",
+    "context-management-2025-06-27",
+    "prompt-caching-scope-2026-01-05",
+    "per-turn-control-2026-07-01",
+    "effort-2025-11-24",
+    "dangerous-tool-use-2026-09-03",
+    "thinking-display-updates-2026-08-18",
+    "afk-mode-2026-01-31",
+    "extended-cache-ttl-2025-04-11"
+   ],
+   "claude-opus-5-5": [
+    "claude-code-20250219",
+    "oauth-2025-04-20",
+    "interleaved-thinking-2025-05-14",
+    "thinking-token-count-2026-05-13",
+    "context-management-2025-06-27",
+    "prompt-caching-scope-2026-01-05",
+    "per-turn-control-2026-07-01",
+    "effort-2025-11-24",
+    "dangerous-tool-use-2026-09-03",
+    "thinking-display-updates-2026-08-18",
+    "afk-mode-2026-01-31",
+    "extended-cache-ttl-2025-04-11"
+   ],
+   "claude-haiku-4-5": [
+    "oauth-2025-04-20",
+    "interleaved-thinking-2025-05-14",
+    "thinking-token-count-2026-05-13",
+    "context-management-2025-06-27",
+    "prompt-caching-scope-2026-01-05",
+    "claude-code-20250219",
+    "thinking-display-updates-2026-08-18",
+    "extended-cache-ttl-2025-04-11"
+   ]
+  },
+  "identityBlock": "You are a Claude agent, built on Anthropic's Claude Agent SDK.",
+  "identityVariants": [
+   "You are a Claude agent, built on Anthropic's Claude Agent SDK."
+  ],
+  "mainPromptLen": [
+   5599,
+   27158
+  ],
+  "mainPromptDigests": [
+   "c6b2fc6ab472303f",
+   "db96220e679bdf1e",
+   "46fa5cbfc2a29070",
+   "e3d46734261ae43e",
+   "de509fe5827b0fb7",
+   "0229efab82f26762",
+   "12c747640d3edf03",
+   "7435513264422df3",
+   "bc748ec47b762207",
+   "c078d66d8c24a87d",
+   "bb7e0695e3132876",
+   "5529f89016aaafeb"
+  ],
+  "systemBlockLens": [
+   [
+    74,
+    62,
+    5599
+   ],
+   [
+    74,
+    62,
+    27158
+   ]
+  ],
+  "toolsDigest": "31bf2e21ce4230bb",
+  "tools": [
+   "Agent",
+   "Bash",
+   "CronCreate",
+   "CronDelete",
+   "CronList",
+   "DesignSync",
+   "Edit",
+   "EnterWorktree",
+   "ExitWorktree",
+   "ListAgents",
+   "NotebookEdit",
+   "Read",
+   "RemoteTrigger",
+   "ReportFindings",
+   "ScheduleWakeup",
+   "SendMessage",
+   "Skill",
+   "TaskStop",
+   "WebFetch",
+   "WebSearch",
+   "Workflow",
+   "Write"
+  ],
+  "topLevelKeys": [
+   "model",
+   "messages",
+   "system",
+   "tools",
+   "metadata",
+   "max_tokens",
+   "thinking",
+   "context_management",
+   "safeguards",
+   "output_config",
+   "stream"
+  ],
+  "thinking": [
+   {
+    "type": "adaptive",
+    "display": "updates"
+   },
+   {
+    "budget_tokens": 31999,
+    "type": "enabled",
+    "display": "updates"
+   }
+  ],
+  "outputConfig": [
+   {
+    "effort": "medium"
+   },
+   null
+  ],
+  "ccFields": [],
+  "byModel": {
+   "claude-sonnet-5-5": {
+    "samples": 4,
+    "mainPromptLen": 5599,
+    "thinking": {
+     "type": "adaptive",
+     "display": "updates"
+    },
+    "outputConfig": {
+     "effort": "medium"
+    },
+    "maxTokens": 128000,
+    "toolsDigest": "31bf2e21ce4230bb",
+    "toolsCount": 22,
+    "systemBlockLens": [
+     74,
+     62,
+     5599
+    ],
+    "betaList": [
+     "claude-code-20250219",
+     "oauth-2025-04-20",
+     "interleaved-thinking-2025-05-14",
+     "thinking-token-count-2026-05-13",
+     "context-management-2025-06-27",
+     "prompt-caching-scope-2026-01-05",
+     "per-turn-control-2026-07-01",
+     "effort-2025-11-24",
+     "dangerous-tool-use-2026-09-03",
+     "thinking-display-updates-2026-08-18",
+     "afk-mode-2026-01-31",
+     "extended-cache-ttl-2025-04-11"
+    ]
+   },
+   "claude-opus-5-5": {
+    "samples": 4,
+    "mainPromptLen": 5599,
+    "thinking": {
+     "type": "adaptive",
+     "display": "updates"
+    },
+    "outputConfig": {
+     "effort": "medium"
+    },
+    "maxTokens": 128000,
+    "toolsDigest": "31bf2e21ce4230bb",
+    "toolsCount": 22,
+    "systemBlockLens": [
+     74,
+     62,
+     5599
+    ],
+    "betaList": [
+     "claude-code-20250219",
+     "oauth-2025-04-20",
+     "interleaved-thinking-2025-05-14",
+     "thinking-token-count-2026-05-13",
+     "context-management-2025-06-27",
+     "prompt-caching-scope-2026-01-05",
+     "per-turn-control-2026-07-01",
+     "effort-2025-11-24",
+     "dangerous-tool-use-2026-09-03",
+     "thinking-display-updates-2026-08-18",
+     "afk-mode-2026-01-31",
+     "extended-cache-ttl-2025-04-11"
+    ]
+   },
+   "claude-haiku-4-5": {
+    "samples": 4,
+    "mainPromptLen": 27158,
+    "thinking": {
+     "budget_tokens": 31999,
+     "type": "enabled",
+     "display": "updates"
+    },
+    "outputConfig": null,
+    "maxTokens": 32000,
+    "toolsDigest": "0c1e009d2b0fb814",
+    "toolsCount": 26,
+    "systemBlockLens": [
+     74,
+     62,
+     27158
+    ],
+    "betaList": [
+     "oauth-2025-04-20",
+     "interleaved-thinking-2025-05-14",
+     "thinking-token-count-2026-05-13",
+     "context-management-2025-06-27",
+     "prompt-caching-scope-2026-01-05",
+     "claude-code-20250219",
+     "thinking-display-updates-2026-08-18",
+     "extended-cache-ttl-2025-04-11"
+    ]
+   }
+  },
+  "requestShapes": [
+   {
+    "kind": "main",
+    "occurrences": 8,
+    "betaList": [
+     "claude-code-20250219",
+     "oauth-2025-04-20",
+     "interleaved-thinking-2025-05-14",
+     "thinking-token-count-2026-05-13",
+     "context-management-2025-06-27",
+     "prompt-caching-scope-2026-01-05",
+     "per-turn-control-2026-07-01",
+     "effort-2025-11-24",
+     "dangerous-tool-use-2026-09-03",
+     "thinking-display-updates-2026-08-18",
+     "afk-mode-2026-01-31",
+     "extended-cache-ttl-2025-04-11"
+    ],
+    "topLevelKeys": [
+     "model",
+     "messages",
+     "system",
+     "tools",
+     "metadata",
+     "max_tokens",
+     "thinking",
+     "context_management",
+     "safeguards",
+     "output_config",
+     "stream"
+    ],
+    "maxTokens": 128000,
+    "systemBlockLens": [
+     74,
+     62,
+     5599
+    ],
+    "toolsCount": 22,
+    "outputConfig": {
+     "effort": "medium"
+    },
+    "authScheme": "bearer",
+    "files": [
+     "baseline-sdk-01.json",
+     "baseline-sdk-02.json",
+     "baseline-sdk-03.json",
+     "baseline-sdk-04.json"
+    ]
+   },
+   {
+    "kind": "main",
+    "occurrences": 4,
+    "betaList": [
+     "oauth-2025-04-20",
+     "interleaved-thinking-2025-05-14",
+     "thinking-token-count-2026-05-13",
+     "context-management-2025-06-27",
+     "prompt-caching-scope-2026-01-05",
+     "claude-code-20250219",
+     "thinking-display-updates-2026-08-18",
+     "extended-cache-ttl-2025-04-11"
+    ],
+    "topLevelKeys": [
+     "model",
+     "messages",
+     "system",
+     "tools",
+     "metadata",
+     "max_tokens",
+     "thinking",
+     "context_management",
+     "stream"
+    ],
+    "maxTokens": 32000,
+    "systemBlockLens": [
+     74,
+     62,
+     27158
+    ],
+    "toolsCount": 26,
+    "outputConfig": null,
+    "authScheme": "bearer",
+    "files": [
+     "baseline-sdk-09.json",
+     "baseline-sdk-10.json",
+     "baseline-sdk-11.json",
+     "baseline-sdk-12.json"
+    ]
+   }
+  ],
+  "billingSuffix": {
+   "checked": 12,
+   "matched": 12,
+   "mismatched": 0,
+   "matchRate": "12/12",
+   "headerVersionOk": true,
+   "observedSuffixes": [
+    "b22",
+    "0b9",
+    "d5f",
+    "d39"
+   ],
+   "computedSuffixes": [
+    "b22",
+    "0b9",
+    "d5f",
+    "d39"
+   ],
+   "mismatches": [],
+   "algorithm": "sha256(\"59cf53e54c78\" + firstUserText[4,7,20] + \"2.1.301\").slice(0,3)",
+   "source": "CC 2.1.301 client code (salt/positions present in the shipped JS/binary); same as packages/core/src/fingerprint.ts#ccBuildSuffix"
+  },
+  "identityBlocks": [
+   "You are a Claude agent, built on Anthropic's Claude Agent SDK."
+  ],
+  "mainPromptLengths": [
+   5599,
+   27158
+  ],
+  "evidence": [
+   {
+    "file": "baseline-sdk-01.json",
+    "source": "docs/evidence/cc-2.1.301/baseline-sdk-01.json",
+    "sampledAt": "2026-11-02T05:32:21.213Z",
+    "digest": "d7b4025cc4b69752",
+    "model": "claude-sonnet-5-5",
+    "grade": "sampled",
+    "billing": {
+     "system0IsBillingHeader": true,
+     "headerVersion": "2.1.301",
+     "observedSuffix": "b22",
+     "computedSuffix": "b22",
+     "match": true,
+     "algorithmMatchesVersion": true,
+     "firstUserTextLen": 30,
+     "firstUserTextDigest": "ef7e7ff96d04cdcd",
+     "chars": "yie"
+    }
+   },
+   {
+    "file": "baseline-sdk-02.json",
+    "source": "docs/evidence/cc-2.1.301/baseline-sdk-02.json",
+    "sampledAt": "2026-11-02T05:32:23.019Z",
+    "digest": "c8118551ee3c505d",
+    "model": "claude-sonnet-5-5",
+    "grade": "sampled",
+    "billing": {
+     "system0IsBillingHeader": true,
+     "headerVersion": "2.1.301",
+     "observedSuffix": "0b9",
+     "computedSuffix": "0b9",
+     "match": true,
+     "algorithmMatchesVersion": true,
+     "firstUserTextLen": 63,
+     "firstUserTextDigest": "1d396ec565a279f1",
+     "chars": "azt"
+    }
+   },
+   {
+    "file": "baseline-sdk-03.json",
+    "source": "docs/evidence/cc-2.1.301/baseline-sdk-03.json",
+    "sampledAt": "2026-11-02T05:32:24.834Z",
+    "digest": "f964177d46c74047",
+    "model": "claude-sonnet-5-5",
+    "grade": "sampled",
+    "billing": {
+     "system0IsBillingHeader": true,
+     "headerVersion": "2.1.301",
+     "observedSuffix": "d5f",
+     "computedSuffix": "d5f",
+     "match": true,
+     "algorithmMatchesVersion": true,
+     "firstUserTextLen": 642,
+     "firstUserTextDigest": "530a20d8c5c66c65",
+     "chars": "xxx"
+    }
+   },
+   {
+    "file": "baseline-sdk-04.json",
+    "source": "docs/evidence/cc-2.1.301/baseline-sdk-04.json",
+    "sampledAt": "2026-11-02T05:32:26.676Z",
+    "digest": "ad63cc1bf2432f49",
+    "model": "claude-sonnet-5-5",
+    "grade": "sampled",
+    "billing": {
+     "system0IsBillingHeader": true,
+     "headerVersion": "2.1.301",
+     "observedSuffix": "d39",
+     "computedSuffix": "d39",
+     "match": true,
+     "algorithmMatchesVersion": true,
+     "firstUserTextLen": 38,
+     "firstUserTextDigest": "b0992f5655a4957d",
+     "chars": "用中第"
+    }
+   },
+   {
+    "file": "baseline-sdk-05.json",
+    "source": "docs/evidence/cc-2.1.301/baseline-sdk-05.json",
+    "sampledAt": "2026-11-02T05:32:28.509Z",
+    "digest": "7212f1c1f48e26d2",
+    "model": "claude-opus-5-5",
+    "grade": "sampled",
+    "billing": {
+     "system0IsBillingHeader": true,
+     "headerVersion": "2.1.301",
+     "observedSuffix": "b22",
+     "computedSuffix": "b22",
+     "match": true,
+     "algorithmMatchesVersion": true,
+     "firstUserTextLen": 30,
+     "firstUserTextDigest": "ef7e7ff96d04cdcd",
+     "chars": "yie"
+    }
+   },
+   {
+    "file": "baseline-sdk-06.json",
+    "source": "docs/evidence/cc-2.1.301/baseline-sdk-06.json",
+    "sampledAt": "2026-11-02T05:32:30.320Z",
+    "digest": "fa7054c2e9f93af3",
+    "model": "claude-opus-5-5",
+    "grade": "sampled",
+    "billing": {
+     "system0IsBillingHeader": true,
+     "headerVersion": "2.1.301",
+     "observedSuffix": "0b9",
+     "computedSuffix": "0b9",
+     "match": true,
+     "algorithmMatchesVersion": true,
+     "firstUserTextLen": 63,
+     "firstUserTextDigest": "1d396ec565a279f1",
+     "chars": "azt"
+    }
+   },
+   {
+    "file": "baseline-sdk-07.json",
+    "source": "docs/evidence/cc-2.1.301/baseline-sdk-07.json",
+    "sampledAt": "2026-11-02T05:32:32.195Z",
+    "digest": "2d2d11ee59805289",
+    "model": "claude-opus-5-5",
+    "grade": "sampled",
+    "billing": {
+     "system0IsBillingHeader": true,
+     "headerVersion": "2.1.301",
+     "observedSuffix": "d5f",
+     "computedSuffix": "d5f",
+     "match": true,
+     "algorithmMatchesVersion": true,
+     "firstUserTextLen": 642,
+     "firstUserTextDigest": "530a20d8c5c66c65",
+     "chars": "xxx"
+    }
+   },
+   {
+    "file": "baseline-sdk-08.json",
+    "source": "docs/evidence/cc-2.1.301/baseline-sdk-08.json",
+    "sampledAt": "2026-11-02T05:32:33.975Z",
+    "digest": "6001852b29b47409",
+    "model": "claude-opus-5-5",
+    "grade": "sampled",
+    "billing": {
+     "system0IsBillingHeader": true,
+     "headerVersion": "2.1.301",
+     "observedSuffix": "d39",
+     "computedSuffix": "d39",
+     "match": true,
+     "algorithmMatchesVersion": true,
+     "firstUserTextLen": 38,
+     "firstUserTextDigest": "b0992f5655a4957d",
+     "chars": "用中第"
+    }
+   },
+   {
+    "file": "baseline-sdk-09.json",
+    "source": "docs/evidence/cc-2.1.301/baseline-sdk-09.json",
+    "sampledAt": "2026-11-02T05:32:35.739Z",
+    "digest": "ecefc93f9cd60d01",
+    "model": "claude-haiku-4-5",
+    "grade": "sampled",
+    "billing": {
+     "system0IsBillingHeader": true,
+     "headerVersion": "2.1.301",
+     "observedSuffix": "b22",
+     "computedSuffix": "b22",
+     "match": true,
+     "algorithmMatchesVersion": true,
+     "firstUserTextLen": 30,
+     "firstUserTextDigest": "ef7e7ff96d04cdcd",
+     "chars": "yie"
+    }
+   },
+   {
+    "file": "baseline-sdk-10.json",
+    "source": "docs/evidence/cc-2.1.301/baseline-sdk-10.json",
+    "sampledAt": "2026-11-02T05:32:37.553Z",
+    "digest": "d375d794b3c5d6b2",
+    "model": "claude-haiku-4-5",
+    "grade": "sampled",
+    "billing": {
+     "system0IsBillingHeader": true,
+     "headerVersion": "2.1.301",
+     "observedSuffix": "0b9",
+     "computedSuffix": "0b9",
+     "match": true,
+     "algorithmMatchesVersion": true,
+     "firstUserTextLen": 63,
+     "firstUserTextDigest": "1d396ec565a279f1",
+     "chars": "azt"
+    }
+   },
+   {
+    "file": "baseline-sdk-11.json",
+    "source": "docs/evidence/cc-2.1.301/baseline-sdk-11.json",
+    "sampledAt": "2026-11-02T05:32:39.311Z",
+    "digest": "a13d1e6fe6267ca0",
+    "model": "claude-haiku-4-5",
+    "grade": "sampled",
+    "billing": {
+     "system0IsBillingHeader": true,
+     "headerVersion": "2.1.301",
+     "observedSuffix": "d5f",
+     "computedSuffix": "d5f",
+     "match": true,
+     "algorithmMatchesVersion": true,
+     "firstUserTextLen": 642,
+     "firstUserTextDigest": "530a20d8c5c66c65",
+     "chars": "xxx"
+    }
+   },
+   {
+    "file": "baseline-sdk-12.json",
+    "source": "docs/evidence/cc-2.1.301/baseline-sdk-12.json",
+    "sampledAt": "2026-11-02T05:32:41.094Z",
+    "digest": "8c5d2dda23f8a055",
+    "model": "claude-haiku-4-5",
+    "grade": "sampled",
+    "billing": {
+     "system0IsBillingHeader": true,
+     "headerVersion": "2.1.301",
+     "observedSuffix": "d39",
+     "computedSuffix": "d39",
+     "match": true,
+     "algorithmMatchesVersion": true,
+     "firstUserTextLen": 38,
+     "firstUserTextDigest": "b0992f5655a4957d",
+     "chars": "用中第"
+    }
+   }
+  ]
+ },
+ "cc-2.1.301-restricted": {
+  "samples": 12,
+  "betaSets": [
+   [
+    "claude-code-20250219",
+    "oauth-2025-04-20",
+    "interleaved-thinking-2025-05-14",
+    "thinking-token-count-2026-05-13",
+    "context-management-2025-06-27",
+    "prompt-caching-scope-2026-01-05",
+    "per-turn-control-2026-07-01",
+    "effort-2025-11-24",
+    "dangerous-tool-use-2026-09-03",
+    "thinking-display-updates-2026-08-18",
+    "afk-mode-2026-01-31",
+    "extended-cache-ttl-2025-04-11"
+   ],
+   [
+    "oauth-2025-04-20",
+    "interleaved-thinking-2025-05-14",
+    "thinking-token-count-2026-05-13",
+    "context-management-2025-06-27",
+    "prompt-caching-scope-2026-01-05",
+    "claude-code-20250219",
+    "thinking-display-updates-2026-08-18",
+    "extended-cache-ttl-2025-04-11"
+   ]
+  ],
+  "betaByModel": {
+   "claude-sonnet-5-5": [
+    "claude-code-20250219",
+    "oauth-2025-04-20",
+    "interleaved-thinking-2025-05-14",
+    "thinking-token-count-2026-05-13",
+    "context-management-2025-06-27",
+    "prompt-caching-scope-2026-01-05",
+    "per-turn-control-2026-07-01",
+    "effort-2025-11-24",
+    "dangerous-tool-use-2026-09-03",
+    "thinking-display-updates-2026-08-18",
+    "afk-mode-2026-01-31",
+    "extended-cache-ttl-2025-04-11"
+   ],
+   "claude-opus-5-5": [
+    "claude-code-20250219",
+    "oauth-2025-04-20",
+    "interleaved-thinking-2025-05-14",
+    "thinking-token-count-2026-05-13",
+    "context-management-2025-06-27",
+    "prompt-caching-scope-2026-01-05",
+    "per-turn-control-2026-07-01",
+    "effort-2025-11-24",
+    "dangerous-tool-use-2026-09-03",
+    "thinking-display-updates-2026-08-18",
+    "afk-mode-2026-01-31",
+    "extended-cache-ttl-2025-04-11"
+   ],
+   "claude-haiku-4-5": [
+    "oauth-2025-04-20",
+    "interleaved-thinking-2025-05-14",
+    "thinking-token-count-2026-05-13",
+    "context-management-2025-06-27",
+    "prompt-caching-scope-2026-01-05",
+    "claude-code-20250219",
+    "thinking-display-updates-2026-08-18",
+    "extended-cache-ttl-2025-04-11"
+   ]
+  },
+  "identityBlock": "You are a Claude agent, built on Anthropic's Claude Agent SDK.",
+  "identityVariants": [
+   "You are a Claude agent, built on Anthropic's Claude Agent SDK."
+  ],
+  "mainPromptLen": [
+   3513,
+   14332
+  ],
+  "mainPromptDigests": [
+   "635d9d17f2409f3f",
+   "e69967160b52ae3e"
+  ],
+  "systemBlockLens": [
+   [
+    74,
+    62,
+    3513
+   ],
+   [
+    74,
+    62,
+    14332
+   ]
+  ],
+  "toolsDigest": "f1cdf9a8cdeb2acb",
+  "tools": [
+   "Agent",
+   "CronDelete",
+   "CronList",
+   "DesignSync",
+   "Edit",
+   "EnterWorktree",
+   "ExitWorktree",
+   "Glob",
+   "Grep",
+   "ListAgents",
+   "NotebookEdit",
+   "Read",
+   "ReportFindings",
+   "ScheduleWakeup",
+   "SendMessage",
+   "Skill",
+   "TaskStop",
+   "WebSearch",
+   "Write"
+  ],
+  "topLevelKeys": [
+   "model",
+   "messages",
+   "system",
+   "tools",
+   "metadata",
+   "max_tokens",
+   "thinking",
+   "context_management",
+   "safeguards",
+   "output_config",
+   "stream"
+  ],
+  "thinking": [
+   {
+    "type": "adaptive",
+    "display": "updates"
+   },
+   {
+    "budget_tokens": 31999,
+    "type": "enabled",
+    "display": "updates"
+   }
+  ],
+  "outputConfig": [
+   {
+    "effort": "medium"
+   },
+   null
+  ],
+  "ccFields": [],
+  "byModel": {
+   "claude-sonnet-5-5": {
+    "samples": 4,
+    "mainPromptLen": 3513,
+    "thinking": {
+     "type": "adaptive",
+     "display": "updates"
+    },
+    "outputConfig": {
+     "effort": "medium"
+    },
+    "maxTokens": 128000,
+    "toolsDigest": "f1cdf9a8cdeb2acb",
+    "toolsCount": 19,
+    "systemBlockLens": [
+     74,
+     62,
+     3513
+    ],
+    "betaList": [
+     "claude-code-20250219",
+     "oauth-2025-04-20",
+     "interleaved-thinking-2025-05-14",
+     "thinking-token-count-2026-05-13",
+     "context-management-2025-06-27",
+     "prompt-caching-scope-2026-01-05",
+     "per-turn-control-2026-07-01",
+     "effort-2025-11-24",
+     "dangerous-tool-use-2026-09-03",
+     "thinking-display-updates-2026-08-18",
+     "afk-mode-2026-01-31",
+     "extended-cache-ttl-2025-04-11"
+    ]
+   },
+   "claude-opus-5-5": {
+    "samples": 4,
+    "mainPromptLen": 3513,
+    "thinking": {
+     "type": "adaptive",
+     "display": "updates"
+    },
+    "outputConfig": {
+     "effort": "medium"
+    },
+    "maxTokens": 128000,
+    "toolsDigest": "f1cdf9a8cdeb2acb",
+    "toolsCount": 19,
+    "systemBlockLens": [
+     74,
+     62,
+     3513
+    ],
+    "betaList": [
+     "claude-code-20250219",
+     "oauth-2025-04-20",
+     "interleaved-thinking-2025-05-14",
+     "thinking-token-count-2026-05-13",
+     "context-management-2025-06-27",
+     "prompt-caching-scope-2026-01-05",
+     "per-turn-control-2026-07-01",
+     "effort-2025-11-24",
+     "dangerous-tool-use-2026-09-03",
+     "thinking-display-updates-2026-08-18",
+     "afk-mode-2026-01-31",
+     "extended-cache-ttl-2025-04-11"
+    ]
+   },
+   "claude-haiku-4-5": {
+    "samples": 4,
+    "mainPromptLen": 14332,
+    "thinking": {
+     "budget_tokens": 31999,
+     "type": "enabled",
+     "display": "updates"
+    },
+    "outputConfig": null,
+    "maxTokens": 32000,
+    "toolsDigest": "a902ad4b288fb265",
+    "toolsCount": 23,
+    "systemBlockLens": [
+     74,
+     62,
+     14332
+    ],
+    "betaList": [
+     "oauth-2025-04-20",
+     "interleaved-thinking-2025-05-14",
+     "thinking-token-count-2026-05-13",
+     "context-management-2025-06-27",
+     "prompt-caching-scope-2026-01-05",
+     "claude-code-20250219",
+     "thinking-display-updates-2026-08-18",
+     "extended-cache-ttl-2025-04-11"
+    ]
+   }
+  },
+  "requestShapes": [
+   {
+    "kind": "main",
+    "occurrences": 8,
+    "betaList": [
+     "claude-code-20250219",
+     "oauth-2025-04-20",
+     "interleaved-thinking-2025-05-14",
+     "thinking-token-count-2026-05-13",
+     "context-management-2025-06-27",
+     "prompt-caching-scope-2026-01-05",
+     "per-turn-control-2026-07-01",
+     "effort-2025-11-24",
+     "dangerous-tool-use-2026-09-03",
+     "thinking-display-updates-2026-08-18",
+     "afk-mode-2026-01-31",
+     "extended-cache-ttl-2025-04-11"
+    ],
+    "topLevelKeys": [
+     "model",
+     "messages",
+     "system",
+     "tools",
+     "metadata",
+     "max_tokens",
+     "thinking",
+     "context_management",
+     "safeguards",
+     "output_config",
+     "stream"
+    ],
+    "maxTokens": 128000,
+    "systemBlockLens": [
+     74,
+     62,
+     3513
+    ],
+    "toolsCount": 19,
+    "outputConfig": {
+     "effort": "medium"
+    },
+    "authScheme": "bearer",
+    "files": [
+     "restricted-res-01.json",
+     "restricted-res-02.json",
+     "restricted-res-03.json",
+     "restricted-res-04.json"
+    ]
+   },
+   {
+    "kind": "main",
+    "occurrences": 4,
+    "betaList": [
+     "oauth-2025-04-20",
+     "interleaved-thinking-2025-05-14",
+     "thinking-token-count-2026-05-13",
+     "context-management-2025-06-27",
+     "prompt-caching-scope-2026-01-05",
+     "claude-code-20250219",
+     "thinking-display-updates-2026-08-18",
+     "extended-cache-ttl-2025-04-11"
+    ],
+    "topLevelKeys": [
+     "model",
+     "messages",
+     "system",
+     "tools",
+     "metadata",
+     "max_tokens",
+     "thinking",
+     "context_management",
+     "stream"
+    ],
+    "maxTokens": 32000,
+    "systemBlockLens": [
+     74,
+     62,
+     14332
+    ],
+    "toolsCount": 23,
+    "outputConfig": null,
+    "authScheme": "bearer",
+    "files": [
+     "restricted-res-09.json",
+     "restricted-res-10.json",
+     "restricted-res-11.json",
+     "restricted-res-12.json"
+    ]
+   }
+  ],
+  "billingSuffix": {
+   "checked": 12,
+   "matched": 12,
+   "mismatched": 0,
+   "matchRate": "12/12",
+   "headerVersionOk": true,
+   "observedSuffixes": [
+    "b22",
+    "0b9",
+    "d5f",
+    "d39"
+   ],
+   "computedSuffixes": [
+    "b22",
+    "0b9",
+    "d5f",
+    "d39"
+   ],
+   "mismatches": [],
+   "algorithm": "sha256(\"59cf53e54c78\" + firstUserText[4,7,20] + \"2.1.301\").slice(0,3)",
+   "source": "CC 2.1.301 client code (salt/positions present in the shipped JS/binary); same as packages/core/src/fingerprint.ts#ccBuildSuffix"
+  },
+  "identityBlocks": [
+   "You are a Claude agent, built on Anthropic's Claude Agent SDK."
+  ],
+  "mainPromptLengths": [
+   3513,
+   14332
+  ],
+  "evidence": [
+   {
+    "file": "restricted-res-01.json",
+    "source": "docs/evidence/cc-2.1.301/restricted-res-01.json",
+    "sampledAt": "2026-11-02T05:43:24.714Z",
+    "digest": "545ec3bd344528e5",
+    "model": "claude-sonnet-5-5",
+    "grade": "sampled",
+    "billing": {
+     "system0IsBillingHeader": true,
+     "headerVersion": "2.1.301",
+     "observedSuffix": "b22",
+     "computedSuffix": "b22",
+     "match": true,
+     "algorithmMatchesVersion": true,
+     "firstUserTextLen": 30,
+     "firstUserTextDigest": "ef7e7ff96d04cdcd",
+     "chars": "yie"
+    }
+   },
+   {
+    "file": "restricted-res-02.json",
+    "source": "docs/evidence/cc-2.1.301/restricted-res-02.json",
+    "sampledAt": "2026-11-02T05:43:26.424Z",
+    "digest": "e9dc9e611456051a",
+    "model": "claude-sonnet-5-5",
+    "grade": "sampled",
+    "billing": {
+     "system0IsBillingHeader": true,
+     "headerVersion": "2.1.301",
+     "observedSuffix": "0b9",
+     "computedSuffix": "0b9",
+     "match": true,
+     "algorithmMatchesVersion": true,
+     "firstUserTextLen": 63,
+     "firstUserTextDigest": "1d396ec565a279f1",
+     "chars": "azt"
+    }
+   },
+   {
+    "file": "restricted-res-03.json",
+    "source": "docs/evidence/cc-2.1.301/restricted-res-03.json",
+    "sampledAt": "2026-11-02T05:43:28.165Z",
+    "digest": "c7e6dbbc667244ac",
+    "model": "claude-sonnet-5-5",
+    "grade": "sampled",
+    "billing": {
+     "system0IsBillingHeader": true,
+     "headerVersion": "2.1.301",
+     "observedSuffix": "d5f",
+     "computedSuffix": "d5f",
+     "match": true,
+     "algorithmMatchesVersion": true,
+     "firstUserTextLen": 642,
+     "firstUserTextDigest": "530a20d8c5c66c65",
+     "chars": "xxx"
+    }
+   },
+   {
+    "file": "restricted-res-04.json",
+    "source": "docs/evidence/cc-2.1.301/restricted-res-04.json",
+    "sampledAt": "2026-11-02T05:43:29.845Z",
+    "digest": "80ae4efa179ab50f",
+    "model": "claude-sonnet-5-5",
+    "grade": "sampled",
+    "billing": {
+     "system0IsBillingHeader": true,
+     "headerVersion": "2.1.301",
+     "observedSuffix": "d39",
+     "computedSuffix": "d39",
+     "match": true,
+     "algorithmMatchesVersion": true,
+     "firstUserTextLen": 38,
+     "firstUserTextDigest": "b0992f5655a4957d",
+     "chars": "用中第"
+    }
+   },
+   {
+    "file": "restricted-res-05.json",
+    "source": "docs/evidence/cc-2.1.301/restricted-res-05.json",
+    "sampledAt": "2026-11-02T05:43:32.150Z",
+    "digest": "1414a0e60409c84b",
+    "model": "claude-opus-5-5",
+    "grade": "sampled",
+    "billing": {
+     "system0IsBillingHeader": true,
+     "headerVersion": "2.1.301",
+     "observedSuffix": "b22",
+     "computedSuffix": "b22",
+     "match": true,
+     "algorithmMatchesVersion": true,
+     "firstUserTextLen": 30,
+     "firstUserTextDigest": "ef7e7ff96d04cdcd",
+     "chars": "yie"
+    }
+   },
+   {
+    "file": "restricted-res-06.json",
+    "source": "docs/evidence/cc-2.1.301/restricted-res-06.json",
+    "sampledAt": "2026-11-02T05:43:33.869Z",
+    "digest": "4556129361e8ff7f",
+    "model": "claude-opus-5-5",
+    "grade": "sampled",
+    "billing": {
+     "system0IsBillingHeader": true,
+     "headerVersion": "2.1.301",
+     "observedSuffix": "0b9",
+     "computedSuffix": "0b9",
+     "match": true,
+     "algorithmMatchesVersion": true,
+     "firstUserTextLen": 63,
+     "firstUserTextDigest": "1d396ec565a279f1",
+     "chars": "azt"
+    }
+   },
+   {
+    "file": "restricted-res-07.json",
+    "source": "docs/evidence/cc-2.1.301/restricted-res-07.json",
+    "sampledAt": "2026-11-02T05:43:35.583Z",
+    "digest": "6a4091700326fd9a",
+    "model": "claude-opus-5-5",
+    "grade": "sampled",
+    "billing": {
+     "system0IsBillingHeader": true,
+     "headerVersion": "2.1.301",
+     "observedSuffix": "d5f",
+     "computedSuffix": "d5f",
+     "match": true,
+     "algorithmMatchesVersion": true,
+     "firstUserTextLen": 642,
+     "firstUserTextDigest": "530a20d8c5c66c65",
+     "chars": "xxx"
+    }
+   },
+   {
+    "file": "restricted-res-08.json",
+    "source": "docs/evidence/cc-2.1.301/restricted-res-08.json",
+    "sampledAt": "2026-11-02T05:43:37.299Z",
+    "digest": "d30df95f0a243523",
+    "model": "claude-opus-5-5",
+    "grade": "sampled",
+    "billing": {
+     "system0IsBillingHeader": true,
+     "headerVersion": "2.1.301",
+     "observedSuffix": "d39",
+     "computedSuffix": "d39",
+     "match": true,
+     "algorithmMatchesVersion": true,
+     "firstUserTextLen": 38,
+     "firstUserTextDigest": "b0992f5655a4957d",
+     "chars": "用中第"
+    }
+   },
+   {
+    "file": "restricted-res-09.json",
+    "source": "docs/evidence/cc-2.1.301/restricted-res-09.json",
+    "sampledAt": "2026-11-02T05:43:39.030Z",
+    "digest": "480327c45288d585",
+    "model": "claude-haiku-4-5",
+    "grade": "sampled",
+    "billing": {
+     "system0IsBillingHeader": true,
+     "headerVersion": "2.1.301",
+     "observedSuffix": "b22",
+     "computedSuffix": "b22",
+     "match": true,
+     "algorithmMatchesVersion": true,
+     "firstUserTextLen": 30,
+     "firstUserTextDigest": "ef7e7ff96d04cdcd",
+     "chars": "yie"
+    }
+   },
+   {
+    "file": "restricted-res-10.json",
+    "source": "docs/evidence/cc-2.1.301/restricted-res-10.json",
+    "sampledAt": "2026-11-02T05:43:40.736Z",
+    "digest": "dff81acdfa030844",
+    "model": "claude-haiku-4-5",
+    "grade": "sampled",
+    "billing": {
+     "system0IsBillingHeader": true,
+     "headerVersion": "2.1.301",
+     "observedSuffix": "0b9",
+     "computedSuffix": "0b9",
+     "match": true,
+     "algorithmMatchesVersion": true,
+     "firstUserTextLen": 63,
+     "firstUserTextDigest": "1d396ec565a279f1",
+     "chars": "azt"
+    }
+   },
+   {
+    "file": "restricted-res-11.json",
+    "source": "docs/evidence/cc-2.1.301/restricted-res-11.json",
+    "sampledAt": "2026-11-02T05:43:42.467Z",
+    "digest": "53ed4924a8ffc464",
+    "model": "claude-haiku-4-5",
+    "grade": "sampled",
+    "billing": {
+     "system0IsBillingHeader": true,
+     "headerVersion": "2.1.301",
+     "observedSuffix": "d5f",
+     "computedSuffix": "d5f",
+     "match": true,
+     "algorithmMatchesVersion": true,
+     "firstUserTextLen": 642,
+     "firstUserTextDigest": "530a20d8c5c66c65",
+     "chars": "xxx"
+    }
+   },
+   {
+    "file": "restricted-res-12.json",
+    "source": "docs/evidence/cc-2.1.301/restricted-res-12.json",
+    "sampledAt": "2026-11-02T05:43:44.164Z",
+    "digest": "62ee929d00c4ae4a",
+    "model": "claude-haiku-4-5",
+    "grade": "sampled",
+    "billing": {
+     "system0IsBillingHeader": true,
+     "headerVersion": "2.1.301",
+     "observedSuffix": "d39",
+     "computedSuffix": "d39",
+     "match": true,
+     "algorithmMatchesVersion": true,
+     "firstUserTextLen": 38,
+     "firstUserTextDigest": "b0992f5655a4957d",
+     "chars": "用中第"
+    }
+   }
+  ]
+ },
+ "transport": {
+  "user-agent": [
+   "claude-cli/2.1.301 (external, cli)",
+   "claude-cli/2.1.301 (external, sdk-cli)"
+  ],
+  "x-stainless-runtime-version": "v26.3.0",
+  "x-stainless-package-version": "0.128.0",
+  "x-stainless-runtime": "node",
+  "x-stainless-os": "Linux",
+  "x-stainless-arch": "x64",
+  "x-stainless-lang": "js",
+  "x-stainless-timeout": "600",
+  "x-app": "cli",
+  "anthropic-version": "2023-06-01",
+  "anthropic-dangerous-direct-browser-access": "true",
+  "accept-encoding": "gzip, deflate, br, zstd",
+  "userAgent": "claude-cli/2.1.301 (external, sdk-cli)",
+  "userAgents": [
+   "claude-cli/2.1.301 (external, cli)",
+   "claude-cli/2.1.301 (external, sdk-cli)"
+  ],
+  "userAgentByProfile": {
+   "cli": "claude-cli/2.1.301 (external, cli)",
+   "sdk-cli": "claude-cli/2.1.301 (external, sdk-cli)",
+   "restricted": "claude-cli/2.1.301 (external, sdk-cli)"
+  },
+  "byProfile": {
+   "cli": {
+    "user-agent": "claude-cli/2.1.301 (external, cli)",
+    "x-stainless-runtime-version": "v26.3.0",
+    "x-stainless-package-version": "0.128.0",
+    "x-stainless-runtime": "node",
+    "x-stainless-os": "Linux",
+    "x-stainless-arch": "x64",
+    "x-stainless-lang": "js",
+    "x-stainless-timeout": "600",
+    "x-app": "cli",
+    "anthropic-version": "2023-06-01",
+    "anthropic-dangerous-direct-browser-access": "true",
+    "accept-encoding": "gzip, deflate, br, zstd"
+   },
+   "sdk-cli": {
+    "user-agent": "claude-cli/2.1.301 (external, sdk-cli)",
+    "x-stainless-runtime-version": "v26.3.0",
+    "x-stainless-package-version": "0.128.0",
+    "x-stainless-runtime": "node",
+    "x-stainless-os": "Linux",
+    "x-stainless-arch": "x64",
+    "x-stainless-lang": "js",
+    "x-stainless-timeout": "600",
+    "x-app": "cli",
+    "anthropic-version": "2023-06-01",
+    "anthropic-dangerous-direct-browser-access": "true",
+    "accept-encoding": "gzip, deflate, br, zstd"
+   },
+   "restricted": {
+    "user-agent": "claude-cli/2.1.301 (external, sdk-cli)",
+    "x-stainless-runtime-version": "v26.3.0",
+    "x-stainless-package-version": "0.128.0",
+    "x-stainless-runtime": "node",
+    "x-stainless-os": "Linux",
+    "x-stainless-arch": "x64",
+    "x-stainless-lang": "js",
+    "x-stainless-timeout": "600",
+    "x-app": "cli",
+    "anthropic-version": "2023-06-01",
+    "anthropic-dangerous-direct-browser-access": "true",
+    "accept-encoding": "gzip, deflate, br, zstd"
+   }
+  },
+  "note": "值取自二进制真实发出的请求头（requests[].headers），不是推断；x-stainless-runtime-version 是打包 Node ABI 串，x-stainless-package-version 是 SDK 版本。"
+ },
+ "billingSuffix": {
+  "checked": 36,
+  "matched": 36,
+  "mismatched": 0,
+  "matchRate": "36/36",
+  "headerVersionOk": true,
+  "observedSuffixes": [
+   "b22",
+   "0b9",
+   "d5f",
+   "d39"
+  ],
+  "computedSuffixes": [
+   "b22",
+   "0b9",
+   "d5f",
+   "d39"
+  ],
+  "mismatches": [],
+  "algorithm": "sha256(\"59cf53e54c78\" + firstUserText[4,7,20] + \"2.1.301\").slice(0,3)",
+  "source": "CC 2.1.301 client code; equals packages/core/src/fingerprint.ts#ccBuildSuffix(…, \"2.1.301\")"
+ }
+}

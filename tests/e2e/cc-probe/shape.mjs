@@ -1,6 +1,7 @@
 // Shared "structure only" descriptor for a captured /v1/messages request (cc-probe evidence, spec §0.4).
 // No prompt text beyond a short head, no tokens, no paths.
 import { createHash } from "node:crypto";
+import { billingProbe } from "./billing.mjs";
 
 const textOf = (b) => (typeof b === "string" ? b : b?.type === "text" ? String(b.text ?? "") : "");
 const sha = (s) => createHash("sha256").update(s).digest("hex").slice(0, 16);
@@ -13,7 +14,7 @@ const scrub = (s) => String(s)
   .replace(/\/root\/[A-Za-z0-9_.@+-]+(?:\/[A-Za-z0-9_.@+-]+)*/g, "<home-path>");
 const scrubDeep = (v) => (typeof v === "string" ? scrub(v) : Array.isArray(v) ? v.map(scrubDeep) : v && typeof v === "object" ? Object.fromEntries(Object.entries(v).map(([k, x]) => [k, scrubDeep(x)])) : v);
 
-export function describeMessageRequest(r) {
+export function describeMessageRequest(r, version = process.env.CC_PROBE_VERSION ?? "2.1.312") {
   const b = r.body ?? {};
   const sys = Array.isArray(b.system) ? b.system : b.system !== undefined ? [b.system] : [];
   const sysTexts = sys.map(textOf);
@@ -40,6 +41,7 @@ export function describeMessageRequest(r) {
     output_config: b.output_config ?? null, output_format: b.output_format ? Object.keys(b.output_format) : null,
     stream: b.stream ?? null, max_tokens: b.max_tokens ?? null,
     ccFieldHits: ["cch", "cc_prev_req", "cc_prompt_id", "cc_turn_origin", "cc_session_id"].filter((k) => raw.includes(k)),
+    billing: billingProbe(b, version),
     bodyDigest: sha(raw),
     hasSystem: sys.length > 0,
   });

@@ -62,16 +62,31 @@ test("the exact 2026-11-01 failure: suffix hashed before the reminder was stripp
   assert.equal(sent.messages[0].content[0].text, "hi");
 });
 
-test("unknown outgoing version (pin off, client 2.1.316): the first user text is never edited, the client's suffix travels untouched", () => {
+test("unknown outgoing version (pin off, client 2.1.314, not sampled): the first user text is never edited, the client's suffix travels untouched", () => {
+  core.setSetting("direct_cc_version_pin", "");
+  try {
+    const messages = layouts["one block, short prompt then reminder (the 2026-11-01 failing shape)"];
+    const body = bodyFor("2.1.314", messages, "cli");
+    const r = buildUpstreamRequest(account, { accessToken: "tok" }, "passthrough-anthropic", body, "claude-opus-5-5", headersFor("2.1.314"), "", undefined, { normalizeEntrypoint: true, stripUserEmail: true, canonicalFields: true });
+    const sent = JSON.parse(r.body);
+    assert.equal(billingVersionOf(sent), "2.1.314");
+    assert.equal(billingSuffixOf(sent), ccBuildSuffix(messages, "2.1.314"), "client's own suffix kept");
+    assert.equal(sent.messages[0].content[0].text, `hi\n${reminder}`, "reminder NOT stripped: we cannot recompute a 2.1.314 suffix");
+  } finally {
+    core.setSetting("direct_cc_version_pin", "2.1.312");
+  }
+});
+
+test("verified outgoing version (pin off, client 2.1.316 — WP0 batch 4): the reminder may be stripped and the suffix is recomputed for 2.1.316", () => {
   core.setSetting("direct_cc_version_pin", "");
   try {
     const messages = layouts["one block, short prompt then reminder (the 2026-11-01 failing shape)"];
     const body = bodyFor("2.1.316", messages, "cli");
     const r = buildUpstreamRequest(account, { accessToken: "tok" }, "passthrough-anthropic", body, "claude-opus-5-5", headersFor("2.1.316"), "", undefined, { normalizeEntrypoint: true, stripUserEmail: true, canonicalFields: true });
     const sent = JSON.parse(r.body);
-    assert.equal(billingVersionOf(sent), "2.1.316");
-    assert.equal(billingSuffixOf(sent), ccBuildSuffix(messages, "2.1.316"), "client's own suffix kept");
-    assert.equal(sent.messages[0].content[0].text, `hi\n${reminder}`, "reminder NOT stripped: we cannot recompute a 2.1.316 suffix");
+    assert.equal(billingVersionOf(sent), "2.1.316", "version kept (no cross-version pin)");
+    assert.equal(sent.messages[0].content[0].text, "hi", "reminder stripped: the 2.1.316 algorithm is verified");
+    assert.equal(billingSuffixOf(sent), ccBuildSuffix(sent.messages, "2.1.316"), "suffix recomputed over the OUTGOING messages");
   } finally {
     core.setSetting("direct_cc_version_pin", "2.1.312");
   }
