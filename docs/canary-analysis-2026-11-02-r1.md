@@ -73,3 +73,6 @@
 ### §8.1 处置进展（05:40Z）
 - 已实现（待发布）：翻译器统计 Claude Code 的 `system/api_retry`（attempt / retry_delay_ms / error_status）→ `TurnFacts` → `usage_logs.upstream_retries`（迁移 39）；worker/cloud 两条车道都记；重试 >0 的轮次打 `[ccr-worker] … upstream retried N× … the client saw it as latency` 并计 `ccr_upstream_retry_total{lane}`；`canary-report` 第 4 节加 `retried_turns` / `upstream_retries`，看门狗行加 `retries=`。
 - 下一步（需数据后再定）：对首字前已重试 ≥2 次的轮次，网关是否提前换号（上游可见：会在另一账号重放同一请求，须走三态开关）。
+
+### §8.2 阶段二首小时的 4 条客户可见错误（04:00–04:35Z，mirasim.ai）
+`400 no_forwardable_question` ×1、`409 tool_continuation_after_reset` ×2、`503 team_capacity_exhausted` ×1。三者同源：02:30–03:40Z 的 70 分钟 503 期间，客户端的会话在平台这边没有被服务，Key 轮转回来后客户端接着发"继续工具回合"的请求，平台找不到自己签发过的 tool_use 边界（历史策略 `reset`），只能 409/400；`team_capacity_exhausted` 是 04:12Z 账号瞬时不可调度（并发/临时冷却）时工具回合不能换组织。属于**停机后的余波，不是 V2 新行为的 bug**，但它说明：灰度账号一停，用户不只是当时 503，恢复后还要丢一轮任务重来。另外 04:00–04:01 的 24 条 503 是 Key 轮转前的最后两分钟。
