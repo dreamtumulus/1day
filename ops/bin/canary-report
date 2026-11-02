@@ -39,7 +39,8 @@ for (const a of accts) {
 const ids = accts.map((a) => a.id);
 if (!ids.length) { say("!! canary group has no accounts"); process.exit(2); }
 const ph = ids.map(() => "?").join(",");
-const rows = q(`SELECT api_key_id, group_id, model, endpoint, stream, status_code, error_code, error_scope, mode, cc_shape, duration_ms, first_token_ms, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, usage_estimated, tool_calls, tool_results, upstream_status, stream_truncated, upstream_retries, created_at FROM usage_logs WHERE account_id IN (${ph}) AND created_at >= ? AND created_at < ? ORDER BY created_at`, ...ids, since, until);
+const hasRetries = q("PRAGMA table_info(usage_logs)").some((c) => c.name === "upstream_retries"); // migration 39
+const rows = q(`SELECT api_key_id, group_id, model, endpoint, stream, status_code, error_code, error_scope, mode, cc_shape, duration_ms, first_token_ms, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, usage_estimated, tool_calls, tool_results, upstream_status, stream_truncated, ${hasRetries ? "upstream_retries" : "NULL AS upstream_retries"}, created_at FROM usage_logs WHERE account_id IN (${ph}) AND created_at >= ? AND created_at < ? ORDER BY created_at`, ...ids, since, until);
 say(`== 2. requests on canary accounts in window: ${rows.length}`);
 const split = { canary_group_keys: rows.filter((r) => canaryKeys.includes(r.api_key_id)), other_keys: rows.filter((r) => !canaryKeys.includes(r.api_key_id)) };
 for (const [name, rs] of Object.entries(split)) {
