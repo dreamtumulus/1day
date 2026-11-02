@@ -77,3 +77,28 @@ cd /opt/1dayapi && HOURS=24 node --no-warnings ops/bin/canary-report
 ## 7. 「V2 上线了没？怎么启用？」
 
 V2 的**代码**已在 11-01 16:33Z 全部上线（网关 8400、控制台、迁移 35–37），但每个上游可见的行为都在三态开关后面、默认 `0`，所以线上**行为仍是 V1**，只有灰度组走 `direct_profile_strict`。"正式启用 V2" = 按 §5 的顺序把开关逐个从 `canary` 切到 `1`（控制台「设置」或 `settings` 表），每个开关一天，期间 `canary-report` 必须干净。节点侧 `worker_canonical` 还需先把节点包推到 node 并设 `CC_WORKER_CANONICAL=1`。全部切 `1` 并稳定两周后，R5 删除 V1 旧分支。
+
+## 8. 第二阶段：同一账号从「worker」转「直连」（2026-11-02 03:00Z 自动切换）
+
+**目的**：拿两类数据——(a) 形态数据：各版本×入口在严格 profile 下的判定、直连出站再校验是否失配；(b) 用户体验：同一账号上直连 vs worker 的成功率、p50/p95、首字延迟、截断。
+
+**机制**（不改账号 executor）：灰度账号 executor 仍是 `ccr_worker`。`modeFor` 的规则是：判定为 genuine 的 Claude Code 请求走**直连**（`passthrough-anthropic`），其余走 worker（`ccr-*`）。
+第一阶段所有请求都是 suspect（自定义入口 `mirasim` 被拒 + 未采样版本），所以全走 worker。第二阶段打开 `direct_cc_entrypoint_normalize=canary`：
+灰度组 Key 的自定义入口被放行，`ccProfileFor` 按 CLI identity 落到 `cc-2.1.312-cli`，出站 UA 改写为 `(external, cli)`，于是 **2.1.312 流量变 genuine → 直连**；
+2.1.301/2.1.316/2.1.295/2.1.241 仍无 profile → suspect → worker。同一账号、同一批用户，天然形成直连 vs worker 的对照。
+不把 executor 改成 `direct`：那会让非 CC 形态的请求也直连订阅号，正是 11-01 事故的 `429 "Error"` 形态。
+
+**执行**：`ops/bin/canary-phase-switch`（后台 setsid），`TARGET=2026-11-02T03:00:00Z SETTING=direct_cc_entrypoint_normalize VALUE=canary GUARD_HOURS=2`：
+1. 03:00Z 前先把第一阶段报表存为 `/root/monitor/canary-phase-<ts>-before-direct_cc_entrypoint_normalize.txt`；
+2. 写 settings（网关每请求读 settings，即时生效，不重启）；日志 `PHASE2 ON`；
+3. 之后 2 小时每 5 分钟守护：`upstream_request_rejected ≥ 2`、`cc_profile_mismatch_total > 0`、5xx 占比 > 20%（≥20 条）、账号离开 active，任一出现 → 开关回 `0`，日志 `PHASE2 ROLLBACK <原因>`；
+4. 看门狗行新增 `direct=`/`worker=` 计数；`SINCE/UNTIL` 可让 `canary-report` 只看一个阶段：
+   ```bash
+   SINCE=2026-11-02T00:33:00Z UNTIL=2026-11-02T03:00:00Z node --no-warnings ops/bin/canary-report   # 阶段一（worker）
+   SINCE=2026-11-02T03:00:00Z node --no-warnings ops/bin/canary-report                               # 阶段二（直连+worker 对照）
+   ```
+   取消：`touch /root/monitor/canary-phase-switch.stop`。
+
+**要看的指标**：阶段二里 `mode=passthrough-anthropic` 的占比（预期 ≈ 2.1.312 份额，约 25%）；direct vs worker 的 ok%、p50/p95、ttft；`cc_profile_mismatch_total` 必须 0；`custom_entrypoint_denied{mirasim}` 不再增长；journald `[billing-suffix] mismatch` 0；`upstream_request_rejected` 0。
+
+**已知缺口**：`usage_logs` 没有 `cc_version` / `cc_profile_id` 列，按版本拆用户体验只能靠计数器；下一轮发布加这两列（非上游可见）。

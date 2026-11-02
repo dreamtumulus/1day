@@ -277,6 +277,9 @@ cd /opt/1dayapi && HOURS=24 node --no-warnings ops/bin/canary-report        # �
 `direct_profile_strict` → `cc_client_response_profile` → `key_policy_auto` →（先推节点包、节点 `CC_WORKER_CANONICAL=1`）`worker_canonical` → 7 天健康后 `telemetry_evidence_required` → `canonical_history_import` → R4 `raw_preserve_headers` / strict。
 V2 代码自 2026-11-01 16:33Z 起已在线，开关全 `0` 即 V1 行为；全部 `1` 稳定两周后进 R5 删 V1 分支。
 
+**f2. 阶段切换**：`ops/bin/canary-phase-switch`（`TARGET`/`SETTING`/`VALUE`/`GUARD_HOURS`）到点改一个开关、先存前一阶段报表、之后 2 小时守护自动回滚（`upstream_request_rejected`、`cc_profile_mismatch`、5xx 占比、账号离线）。
+`canary-report` 加 `SINCE`/`UNTIL` 看单个阶段。worker→直连不是改 executor，而是让请求变 genuine（见 plan §8）：executor=`direct` 会把非 CC 形态也直连到订阅号，禁止。
+
 **g. 已知坑**
 - sshd 被暴力登录占满 `MaxStartups` 时表现为 TCP 通、无 banner 即断（2026-11-01 23:13–00:29Z，90 分钟 962 次尝试），网关不受影响；需要时装 fail2ban 或改 `MaxStartups`。
 - 远程命令里写 `pkill -f <脚本名>` 会命中自己的 `bash -c` 会话，用 pid。

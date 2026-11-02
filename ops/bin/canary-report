@@ -2,6 +2,7 @@
 // Canary real-traffic report (docs/canary-real-traffic-plan-2026-11-02.md; 铁律 2 observation record).
 //   ops/bin/canary-report                 # last 24 h, canary group from settings.canary_group_id
 //   HOURS=48 DB_PATH=/opt/1dayapi/data/1dayapi.db ops/bin/canary-report
+//   SINCE=2026-11-02T00:33:00Z UNTIL=2026-11-02T03:00:00Z ops/bin/canary-report    # one phase (e.g. worker vs direct)
 // Read-only. Reads usage_logs for every account in the canary group and prints: request totals by status / error
 // code / mode / endpoint / model / client shape, latency percentiles, an hourly series, the canary group's keys vs
 // other keys (new behaviour vs old behaviour on the same account), account/team state, and the gateway counters that
@@ -22,8 +23,9 @@ const groupId = one("SELECT value FROM settings WHERE key='canary_group_id'")?.v
 if (!groupId) { say("!! no canary_group_id in settings"); process.exit(2); }
 const accts = q("SELECT a.id, a.name, a.status, a.executor, a.error_message last_error, a.updated_at FROM account_groups ag JOIN accounts a ON a.id=ag.account_id WHERE ag.group_id=?", groupId);
 const canaryKeys = q("SELECT id FROM api_keys WHERE group_id=?", groupId).map((r) => r.id);
-const since = new Date(Date.now() - HOURS * 3600_000).toISOString().slice(0, 19); // usage_logs.created_at is ISO "YYYY-MM-DDTHH:MM:SSZ"
-say(`== canary report  group=${groupId}  window=${HOURS}h since ${since}Z  generated ${new Date().toISOString()}`);
+const since = (process.env.SINCE ?? new Date(Date.now() - HOURS * 3600_000).toISOString()).slice(0, 19); // usage_logs.created_at is ISO "YYYY-MM-DDTHH:MM:SSZ"
+const until = (process.env.UNTIL ?? "9999").slice(0, 19); // SINCE/UNTIL (ISO) bound a phase; HOURS is the default window
+say(`== canary report  group=${groupId}  window since ${since}Z until ${until === "9999" ? "now" : until + "Z"}  generated ${new Date().toISOString()}`);
 say("== 1. canary accounts");
 for (const a of accts) {
   const groups = q("SELECT group_id, priority FROM account_groups WHERE account_id=?", a.id).map((g) => `${g.group_id}(p${g.priority})`).join(", ");
@@ -34,7 +36,7 @@ for (const a of accts) {
 const ids = accts.map((a) => a.id);
 if (!ids.length) { say("!! canary group has no accounts"); process.exit(2); }
 const ph = ids.map(() => "?").join(",");
-const rows = q(`SELECT api_key_id, group_id, model, endpoint, stream, status_code, error_code, error_scope, mode, cc_shape, duration_ms, first_token_ms, input_tokens, output_tokens, cache_read_tokens, upstream_status, stream_truncated, created_at FROM usage_logs WHERE account_id IN (${ph}) AND created_at >= ? ORDER BY created_at`, ...ids, since);
+const rows = q(`SELECT api_key_id, group_id, model, endpoint, stream, status_code, error_code, error_scope, mode, cc_shape, duration_ms, first_token_ms, input_tokens, output_tokens, cache_read_tokens, upstream_status, stream_truncated, created_at FROM usage_logs WHERE account_id IN (${ph}) AND created_at >= ? AND created_at < ? ORDER BY created_at`, ...ids, since, until);
 say(`== 2. requests on canary accounts in window: ${rows.length}`);
 const split = { canary_group_keys: rows.filter((r) => canaryKeys.includes(r.api_key_id)), other_keys: rows.filter((r) => !canaryKeys.includes(r.api_key_id)) };
 for (const [name, rs] of Object.entries(split)) {

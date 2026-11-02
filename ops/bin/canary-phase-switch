@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+# Timed canary phase switch with a guard (docs/canary-real-traffic-plan-2026-11-02.md §8).
+#   TARGET=2026-11-02T03:00:00Z SETTING=direct_cc_entrypoint_normalize VALUE=canary GUARD_HOURS=2 ops/bin/canary-phase-switch
+# At TARGET: snapshot a canary-report of the phase so far, set settings[SETTING]=VALUE (gateway reads settings per
+# request, no restart), log "PHASE2 ON". Then for GUARD_HOURS, every 5 min, roll the setting back to ROLLBACK_VALUE
+# (default 0) and log "PHASE2 ROLLBACK <why>" when any of these shows on the canary accounts since the switch:
+#   - upstream_request_rejected (the forged-request 429 "Error" signature) >= 2
+#   - cc_profile_mismatch_total counter > 0 (outbound re-gate refused: normalisation broke the profile)
+#   - 5xx share > 20% over >= 20 requests
+#   - a canary account not `active` (the watchdog has already moved the users' keys back)
+# Never touches accounts or keys; only the one setting. Log: /var/log/1dayapi-canary-traffic.log.
+set -u
+cd /opt/1dayapi || exit 1
+LOG=${LOG:-/var/log/1dayapi-canary-traffic.log}
+DB=${DB_PATH:-/opt/1dayapi/data/1dayapi.db}
+API=${API_BASE:-http://127.0.0.1:8400}
+TARGET=${TARGET:?ISO time}; SETTING=${SETTING:?}; VALUE=${VALUE:?}; ROLLBACK_VALUE=${ROLLBACK_VALUE:-0}; GUARD_HOURS=${GUARD_HOURS:-2}
+SNAP=${SNAP:-/root/monitor/canary-phase-$(date -u +%Y%m%dT%H%M%SZ)-before-$SETTING.txt}
+say() { echo "$(date -u +%FT%TZ) phase-switch[$SETTING]: $*" >> "$LOG"; }
+say "armed: at $TARGET set $SETTING=$VALUE, guard ${GUARD_HOURS}h, snapshot $SNAP (pid $$)"
+now=$(date -u +%s); tgt=$(date -u -d "$TARGET" +%s) || { say "bad TARGET"; exit 2; }
+[ "$tgt" -gt "$now" ] && sleep $((tgt - now))
+[ -e /root/monitor/canary-phase-switch.stop ] && { say "stop file present, aborting before switch"; exit 0; }
+HOURS=$(( (tgt - $(date -u -d "2026-11-02T00:33:00Z" +%s)) / 3600 + 1 )) node --no-warnings ops/bin/canary-report > "$SNAP" 2>&1
+before=$(node --no-warnings -e "import('node:sqlite').then(({DatabaseSync})=>console.log(new DatabaseSync(process.argv[1],{readOnly:true}).prepare('SELECT value FROM settings WHERE key=?').get(process.argv[2])?.value??'(default)'))" "$DB" "$SETTING")
+node --no-warnings -e "import('node:sqlite').then(({DatabaseSync})=>{const db=new DatabaseSync(process.argv[1]);db.prepare('INSERT INTO settings (key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run(process.argv[2],process.argv[3]);})" "$DB" "$SETTING" "$VALUE" || { say "FAILED to set $SETTING"; exit 3; }
+switched_at=$(date -u +%FT%TZ)
+say "PHASE2 ON: $SETTING $before -> $VALUE (snapshot of the phase before: $SNAP)"
+rollback() { node --no-warnings -e "import('node:sqlite').then(({DatabaseSync})=>{const db=new DatabaseSync(process.argv[1]);db.prepare('INSERT INTO settings (key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run(process.argv[2],process.argv[3]);})" "$DB" "$SETTING" "$ROLLBACK_VALUE"; say "PHASE2 ROLLBACK: $SETTING -> $ROLLBACK_VALUE because: $*"; }
+end=$(( $(date -u +%s) + GUARD_HOURS * 3600 ))
+while [ "$(date -u +%s)" -lt "$end" ]; do
+  sleep 300
+  [ -e /root/monitor/canary-phase-switch.stop ] && { say "stop file present, guard ends (setting left as is)"; exit 0; }
+  why=$(node --no-warnings -e "
+    import('node:sqlite').then(async ({DatabaseSync})=>{
+      const db=new DatabaseSync(process.argv[1],{readOnly:true}); const since=process.argv[2];
+      const g=db.prepare(\"SELECT value FROM settings WHERE key='canary_group_id'\").get()?.value?.trim();
+      const accts=db.prepare('SELECT a.id,a.status FROM account_groups ag JOIN accounts a ON a.id=ag.account_id WHERE ag.group_id=?').all(g);
+      const ids=accts.map(a=>a.id); const ph=ids.map(()=>'?').join(',')||'NULL';
+      const s=db.prepare(\`SELECT COUNT(*) n, SUM(status_code>=500) s5, SUM(error_code='upstream_request_rejected') rej, SUM(mode='passthrough-anthropic') direct FROM usage_logs WHERE account_id IN (\${ph}) AND created_at>=?\`).get(...ids,since);
+      const out=[];
+      if (accts.some(a=>a.status!=='active')) out.push('account not active: '+accts.map(a=>a.id.slice(0,8)+'='+a.status).join(','));
+      if ((s.rej??0)>=2) out.push('upstream_request_rejected='+s.rej);
+      if (s.n>=20 && (s.s5??0)/s.n>0.2) out.push('5xx share '+s.s5+'/'+s.n);
+      let c={}; try { c=(await (await fetch(process.argv[3]+'/health',{signal:AbortSignal.timeout(8000)})).json()).counters??{}; } catch {}
+      const mm=Object.entries(c).filter(([k,v])=>k.startsWith('cc_profile_mismatch_total')&&v>0); if (mm.length) out.push('cc_profile_mismatch '+JSON.stringify(mm));
+      console.log(out.join('; ')); console.error('guard: n='+s.n+' direct='+(s.direct??0)+' 5xx='+(s.s5??0)+' rejected='+(s.rej??0));
+    });" "$DB" "$switched_at" "$API" 2>>"$LOG")
+  if [ -n "$why" ]; then rollback "$why"; exit 4; fi
+done
+say "guard over (${GUARD_HOURS}h), $SETTING stays $VALUE; watchdog continues"
