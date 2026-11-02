@@ -1164,7 +1164,19 @@ async function proxyRequest(req: FastifyRequest, reply: FastifyReply, format: Cl
               const out = outgoingProfileCheck(ureq, shape);
               if (!out.sameProfile) {
                 bump("cc_profile_mismatch_total", { in: shape.profileId, out: out.profileId });
-                console.error(`[cc-profile] ${ctx.requestId} key=${caller.apiKeyId} outgoing request is not genuine ${shape.profileId} → ${out.profileId ?? "unknown"} missing=${out.missing.join(",") || "-"}; not forwarded`);
+                // Diagnostic (2026-11-02, mirasim billing_header outbound mismatch we could not reproduce synthetically):
+                // the billing header must be at the very start of system[0] (BILLING_RE is `^`-anchored). Log the
+                // inbound vs outbound system[0] head — billing header carries no secret — so the next occurrence names
+                // exactly which transform moved/dropped it. Capped and scrubbed.
+                const sys0Head = (b: unknown): string => {
+                  try {
+                    const s = (typeof b === "string" ? (JSON.parse(b) as Json) : (b as Json))?.system;
+                    if (Array.isArray(s)) { const t = typeof s[0] === "string" ? s[0] : (s[0] as Json)?.text; return `arr[${s.length}] ${JSON.stringify(String(t ?? "").slice(0, 120))}`; }
+                    if (typeof s === "string") return `str ${JSON.stringify(s.slice(0, 120))}`;
+                    return `<${s === undefined ? "none" : typeof s}>`;
+                  } catch { return "?"; }
+                };
+                console.error(`[cc-profile] ${ctx.requestId} key=${caller.apiKeyId} outgoing request is not genuine ${shape.profileId} → ${out.profileId ?? "unknown"} missing=${out.missing.join(",") || "-"}; IN sys0=${sys0Head(body)} OUT sys0=${sys0Head(ureq.body)}; not forwarded`);
                 fail(ctx, null, 400, "cc_profile_mismatch", `The normalised request no longer matches Claude Code profile ${shape.profileId} (${out.missing.join(", ") || "profile changed"}); it was not forwarded.`, "invalid_request_error");
                 return;
               }
