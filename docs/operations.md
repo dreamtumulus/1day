@@ -223,6 +223,65 @@ usage 行、账户与节点状态），每次一行 JSON 追加到 `/root/monito
 页面每 15 秒自取 `GET /api/admin/nodes/monitor`。旧 bundle 的节点没有 `host` 字段，卡片会显示「尚无心跳指标」，推新 bundle 即可。
 排障入口仍然是 journald（§2）；看板只回答"哪台、哪项不对"，不替代日志。
 
+## 7.3 灰度真实流量：接入、日志、报表、回退（2026-11-02）
+
+铁律 2 的落地流程（`docs/iron-rules.md`、`docs/canary-real-traffic-plan-2026-11-02.md`）。所有脚本在 `/opt/1dayapi/ops/bin/`，以 root 在主服务器运行，只读的除外都会写 DB，先看清再敲。
+
+**a. 前提**
+- settings `canary_group_id` 指向灰度组（现为 `canary-1cf43ccb`「灰度测试」，`is_exclusive=1`）；灰度账号在该组（现为 `claude-9d6edf2c`，team `dcaea0ca…`，executor ccr_worker）。
+- 灰度测试 Key 的明文只在 `/root/monitor/canary-apikey.txt`（0600），脚本直接读，不进任何日志/提示词。
+- 要灰度的开关设为 `canary`（控制台「设置」或 `settings` 表），其余保持 `0`。**开关按 Key 的组判定**（见 iron-rules「开关按谁判定」），所以真实流量必须靠迁 Key。
+
+**b. 接入真实流量**
+```bash
+cd /opt/1dayapi
+node --no-warnings ops/bin/canary-move-keys status                       # 当前灰度组里有哪些 Key、迁移记录
+node --no-warnings ops/bin/canary-move-keys move <key_id> [<key_id>…]    # 迁入：记原组到 /root/monitor/canary-moved-keys.json，补 user_allowed_groups
+node --no-warnings ops/bin/canary-move-keys revert [<key_id>…]           # 回退（不带参数 = 全部未回退的）
+```
+选 Key 的标准：最近 3 小时有流量、原组 default、形态覆盖"真 CC / 自定义 entrypoint / 纯 API / 测活"。找候选：
+`usage_logs` 按 `api_key_id` 聚合近 24h 的 `COUNT(*)`、`SUM(cc_shape='genuine')`、`MAX(created_at)`，联 `api_keys`/`users` 看名字和组。
+迁入后用户的**全部**流量只走灰度组账号，容量以灰度账号为限（单 Max 账号接 2 万请求/天几小时就会 `window_exhausted`），这是预期内的容量问题，不是新行为失败，但要记时间。
+
+**c. 看门狗（必须随真实流量一起开）**
+```bash
+(setsid nohup bash ops/bin/canary-watchdog >/dev/null 2>&1 &)     # INTERVAL=300 默认；日志 /var/log/1dayapi-canary-traffic.log
+touch /root/monitor/canary-watchdog.stop                          # 停（下个周期退出）；重启前 rm 这个文件
+pgrep -af canary-watchdog                                         # 是否在跑（注意 pkill -f 会把自己的 ssh 会话一起杀掉，按 pid kill）
+```
+每行：`<时间> accounts=<账号=状态,…> n= ok= cc_genuine= suspect= stream= 4xx= 5xx= keys= errs=[错误码:次数,…]`。
+灰度账号状态不是 `active` 时写 `REVERT …` 并自动执行 `canary-move-keys revert`，之后继续只记状态。看门狗**不碰账号**（铁律 1：proxy_down 只能人工解除）。
+还没有 systemd/cron 托管：服务器重启后要手动再拉起。
+
+**d. 日志在哪**
+| 层 | 位置 | 内容 |
+|---|---|---|
+| 每请求 | `usage_logs`（`/opt/1dayapi/data/1dayapi.db`） | key / group / account / model / endpoint / stream / status / error_code / error_scope / mode / cc_shape / upstream_status / duration / ttft / tokens / truncated |
+| 每 5 分钟 | `/var/log/1dayapi-canary-traffic.log` | 看门狗汇总行、REVERT 行 |
+| 计数器 | `GET https://api.1dayapi.com/health` → `counters` | `cc_profile_unknown_total{version}`、`custom_entrypoint_denied_total{entrypoint}`、必须为零的 `cc_profile_mismatch_total` / `team_suspended_total` / `native_telemetry_unverified_total` / `org_budget_exhausted_total` |
+| 组织级 | `telemetry_evidence`、`upstream_teams.suspended_until/last_error_code`、`journalctl -u 1dayapi-gateway` grep `cc_profile|org_|organization|disabled|native_telemetry` | 熔断、遥测证据 |
+| 判定器 | `key_policy_events` | 每把 Key 的 auto 层提案与依据（`key_policy_auto=0` 时只记录不生效） |
+| 探针 | `ops/bin/canary-verify`、`node --no-warnings ops/bin/canary-cc-probe` | 三种协议 + 2.1.312 真形态各一条，手工或 cron 每小时 |
+
+**e. 出结论**
+```bash
+cd /opt/1dayapi && HOURS=24 node --no-warnings ops/bin/canary-report        # 只读；HOURS 可改；API_BASE 默认 127.0.0.1:8400
+```
+13 节：账号/团队状态 → 请求数（灰度组 Key vs 其他 Key，成功率、p50/p95、ttft、截断、tokens）→ 状态/错误码 → mode → 端点×stream → 模型 → cc_shape → Key 组 →
+分小时序列 → 最近 20 条错误 → telemetry evidence → key_policy_events → 必须为零的计数器 + `VERDICT`。
+通过标准（≥24h）：VERDICT 干净；`upstream_teams` 无 suspended；journald 无组织级错误；错误率（剔除 `no_available_account`）不高于迁入前 + 2pp；p95 不高于迁入前 1.5 倍；
+`cc_profile_unknown_total` 的版本分布决定是先补 profile 再切 `1` 还是接受降级。报表原文贴进发布记录。
+失败处理：出现任何组织级信号 → `canary-move-keys revert` → 对应开关回 `0`（不用重新发布）→ 写发布记录。不换 IP、不直连。
+
+**f. 「启用 V2」= 开关按顺序切 `1`**（一个开关一天、每步报表干净、切后至少观察 2 小时）：
+`direct_profile_strict` → `cc_client_response_profile` → `key_policy_auto` →（先推节点包、节点 `CC_WORKER_CANONICAL=1`）`worker_canonical` → 7 天健康后 `telemetry_evidence_required` → `canonical_history_import` → R4 `raw_preserve_headers` / strict。
+V2 代码自 2026-11-01 16:33Z 起已在线，开关全 `0` 即 V1 行为；全部 `1` 稳定两周后进 R5 删 V1 分支。
+
+**g. 已知坑**
+- sshd 被暴力登录占满 `MaxStartups` 时表现为 TCP 通、无 banner 即断（2026-11-01 23:13–00:29Z，90 分钟 962 次尝试），网关不受影响；需要时装 fail2ban 或改 `MaxStartups`。
+- 远程命令里写 `pkill -f <脚本名>` 会命中自己的 `bash -c` 会话，用 pid。
+- `usage_logs.created_at` 是 ISO `YYYY-MM-DDTHH:MM:SSZ`，与 SQLite `datetime('now',…)`（空格分隔）比较会错；脚本里用 JS 生成 ISO 再比较。
+
 ## 8. v3 发布要点（已于 2026-10-15 执行完毕，存档备查）
 
 - 发布前在服务器备份 `data/`（**必须包含 `provider-cred.key`**，否则迁移后的账户凭证无法解密）；首次启动 v3 会自动执行迁移 1，旧表保留为 `legacy_v2_*`。

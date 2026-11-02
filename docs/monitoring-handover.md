@@ -31,6 +31,15 @@ ssh -i grok-monitor.key -o IdentitiesOnly=yes -o ConnectTimeout=15 root@89.117.1
 这些账号是因为绑定代理失联被平台冻结的，平台**不会**自动恢复它们（规则：代理不通就停、不换 IP、不直连，只能人工在控制台「解除冻结」或「更换代理 IP」）。
 冻结时间越长损失越大，所以每次报告都要重复提醒，直到这一行归零。
 
+## 2b. 灰度真实流量的看门狗日志（2026-11-02 起，负责人/值班看）
+
+灰度组（铁律 2）在接真实用户流量时，主服务器 `/var/log/1dayapi-canary-traffic.log` 每 5 分钟一行：
+`<时间> accounts=<账号=状态,…> n=<请求数> ok=<200 数> cc_genuine= suspect= stream= 4xx= 5xx= keys= errs=[错误码:次数,…]`。
+- 出现 `REVERT` 行 = 灰度账号离开 `active`，用户 Key 已自动退回原组 → **立刻上报**，附该行和前后各一行。
+- 连续 3 行 `5xx>0` 或 `errs` 里出现 `team_suspended` / `native_telemetry_unverified` / `org_` 开头的码 → 立刻上报。
+- 连续 3 行 `n=0` 而迁入的用户平时有流量 → 黄：可能看门狗停了（`pgrep -af canary-watchdog`）或流量没进来。
+完整报表：`cd /opt/1dayapi && HOURS=24 node --no-warnings ops/bin/canary-report`（只读），流程见 `docs/operations.md §7.3`。
+
 ## 3. 报告长什么样、每行什么意思
 
 ```

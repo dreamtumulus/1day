@@ -30,8 +30,10 @@
 1. 任何**上游可见**的改动——请求头、请求体、UA、计费头、`metadata`、`# Environment`、系统提示词措辞、历史转发量、令牌刷新/探测节奏、代理与设备身份——
    必须放在**三态开关**后面：`0`（老行为）/ `canary`（只对灰度组）/ `1`（全量）。**默认 = 老行为**，不得直接改默认。
 2. 新行为先只对「灰度测试」账号组开启（settings `canary_group_id` 指向 `groups` 里的那一行；Key 属于该组或被选中的账号属于该组才吃到 `canary`）。
-3. 用灰度组的测试 Key 跑测试与真实流量，观察 **≥ 24 小时**：`profile` / `roles` 正常、窗口与错误率无异常、没有任何组织级错误文本
-   （`organization has disabled` / `suspended for this organization`），再切 `1`。观察记录写进发布记录。
+3. 灰度组必须接**真实流量**：把当时有流量的真实用户 Key 迁入灰度组（`ops/bin/canary-move-keys move <key_id>…`，原组自动记录、可一键回退），再加测试 Key 的探针。
+   **只有探针（每小时几条「回复 OK」）不算观察**（2026-11-02 教训：灰度 7.5 小时只跑了探针，等于没灰度）。观察 **≥ 24 小时**（从真实流量接入那一刻计时）：
+   `profile` / `roles` 正常、窗口与错误率无异常、没有任何组织级错误文本（`organization has disabled` / `suspended for this organization`），
+   `ops/bin/canary-report` 的 VERDICT 干净，再切 `1`。观察记录（报表输出）写进发布记录。流程细节见 `docs/operations.md §7.3`。
 4. 没有灰度组、没有观察记录的上游可见改动，一律不得发布。一天最多一轮发布，发布后至少观察 2 小时再做下一件事。
 5. 发布前必须有可一键回滚的 dist 快照（`backups/pre-<name>-<ts>-dist.tgz`），发布记录写明快照名与回滚命令。
 
@@ -52,6 +54,12 @@
   | `telemetry_evidence_required` | native-required 的 Key 开 canonical 会话前要求账号×profile 遥测证据 ≥ secondary（spec §6.4 / WP6） | `0` |
   | `worker_canonical` | 车道 B canonical 进程：节点官方 CC 原生身份 + `--restricted` + caller MCP + 原生 session，客户 system 追加（spec WP2；节点还需 `CC_WORKER_CANONICAL=1`） | `0` |
 - 灰度组：控制台「设置 → 灰度测试账号组」选择；账号加入该组 = 账号页编辑分组；测试 Key = 该组下的 consumer Key。
+- **开关按谁判定**：直连路径的形态判定与出站整形发生在选号之前，`featureFor` 只拿到 **Key 的组**（`proxy.ts` `strictProfile`、`upstream.ts` `UpstreamShaping`）；
+  账号组只在选号之后的分支（CCR 车道、历史策略）参与。因此**把灰度账号加进默认组并不能灰度**——默认组 Key 落到灰度账号上仍走老行为；要让真实流量吃到新行为，
+  必须把用户 **Key** 迁入灰度组。待办：选号后按账号组补判一次（spec §6.1 原文），非上游可见，随下一轮发布。
+- 真实流量工具链（2026-11-02，`ops/bin/`）：`canary-move-keys`（迁入/回退/状态，记录 `/root/monitor/canary-moved-keys.json`）、`canary-watchdog`（每 5 分钟写
+  `/var/log/1dayapi-canary-traffic.log`；灰度账号离开 `active` 即自动把用户 Key 退回原组，不碰账号——铁律 1）、`canary-report`（按灰度账号读 `usage_logs` 出 13 节报表 + VERDICT）、
+  `canary-verify` / `canary-cc-probe`（探针）。
 - 发布核对：`ops/bin/release-verify` 先用灰度 Key（`/root/monitor/canary-apikey.txt`，如有）发请求，再用常规 Key。
 - **出站不变量**：直连请求离开网关前，`system[0]` 计费头的后缀 ≡ `ccBuildSuffix(出站 messages, 版本)`；改体（设备身份、机器环境、删 reminder …）一律在算后缀之前，`alignBillingSuffix` 是最后一步；版本不是 2.1.312（不会算）时不碰首条用户文本（`canEditFirstUserText`）。运行时还有最后一道闸：对不上就原样转发客户 body 并打 `[billing-suffix] mismatch` 日志。
 - 验证：`packages/core/test/canary.test.mjs`、`apps/gateway/test/direct-path-hygiene.test.mjs`（开关开/关两种形态）、`apps/gateway/test/billing-suffix-invariant.test.mjs`。

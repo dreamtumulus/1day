@@ -21,7 +21,16 @@
 
 探针证明：平台 Key 登录的真 CC **不带** `# userEmail`；带的是保留 OAuth 登录态的客户端。`direct_strip_user_email` / `direct_cc_canonical_fields` **保留**（默认 `0` 即零改体），不删代码：删了就没有退路，而开着 `0` 与删除对上游等价。
 
-## 灰度步骤（R1，等灰度账号到位）
+## 灰度实际进度
+
+- 11-01 16:33Z R1 发布，开关全 `0`；17:01Z `direct_profile_strict=canary`，但只有探针流量 → **不算观察**。
+- 11-02 00:33Z 真实流量接入：mirasim.ai/Key-01、RuoMoe/sub、测活-机器人/monitor 三把 Key 迁入灰度组（`ops/bin/canary-move-keys`），看门狗 + `canary-report` 上线；24h 计时从此开始。
+  首 4 分钟：41 请求全 200；全部 `suspect`——`cc_profile_unknown_total` 2.1.301=27 / 2.1.316=6 / 2.1.312=5 / 2.1.295=3 / 2.1.241=1，`custom_entrypoint_denied{mirasim}=15`。
+  结论方向：切 `1` 前先补 2.1.301/2.1.316 profile（Pi/WP0），并给 mirasim 的 Key override `allowedCustomEntrypoints=["mirasim"]`。
+- 发现：直连路径开关按 **Key 组**判定（选号前），账号组不参与 → 待办：选号后按账号组补判（非上游可见，随下一轮发布）。
+- 流程文档：`docs/operations.md §7.3`、`docs/canary-real-traffic-plan-2026-11-02.md`、`docs/monitoring-handover.md §2b`。
+
+## 灰度步骤（R1，原计划，供对照）
 
 1. 控制台「设置」：`canary_group_id` 指向灰度组；灰度账号入组；签一把灰度 Key，放 `/root/monitor/canary-apikey.txt`。
 2. 发布前 `backups/pre-wp1-<ts>-dist.tgz` + DB 快照；按 `operations.md §4` 蓝绿切换；`ops/bin/release-verify`。
