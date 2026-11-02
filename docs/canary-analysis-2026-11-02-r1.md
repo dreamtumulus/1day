@@ -53,3 +53,19 @@
 - 阶段二看：`passthrough-anthropic` 占比（预期 ≈ 2.1.312 份额，约 5%——比原估的 25% 低，因为 2.1.316/301 才是大头）、`cc_profile_mismatch=0`、`[billing-suffix] mismatch=0`、`upstream_request_rejected=0`。
 - 今天的发布（一天一轮）内容建议：`usage_logs` 加 `cc_version`/`cc_profile_id`；`featureFor` 选号后按账号组补判；`canary-report` 加按 Key 视角。
 - Pi：采样 2.1.316、2.1.301 的 profile（WP0 第四批）。
+
+## 8. 用户侧体验：worker 路径暴露的三个问题（2026-11-02 05:30Z 复盘，样本 1515 + 152）
+
+按 Key 看（含选号失败）：mirasim.ai/Key-01 全程 2720 条、**成功 59%**——1044 条 `503 no_available_account` 全部落在 02:30–03:40Z（账号窗口耗尽、看门狗盲区），其余时段 98%+。测活机器人 54 条、67%，同因。这是真实的用户体感，不能只看"落到账号上的请求"。
+
+1. **上游限流被 worker 吞成延迟**（最大的体验差异）。Claude Code 在节点上收到 429/529 会自己退避重试（25s → 36s → 47s → 59s → 74s → 93s → 123s …），日志 `slow turn … system/api_retry ×N`；整轮 71 次重试，集中在 01:40–02:27Z（5h 窗口临近耗尽）。用户看到的是 60–176 秒的首字等待，而不是一个可失败转移的 429。直连路径上网关会立刻拿到 429 → 换号。
+   → 处置：节点把 `api_retry` 事件上报给网关（和 `rate_limit_event` 同通道），网关对 ≥2 次重试的轮次记指标并考虑在首字前切账号；至少先在 `usage_logs` 记 `upstream_retries`，让这段延迟可归因。
+2. **节点 chown 竞争**：`tunnel closed by node: ENOENT … lchown … .claude.json.lock`，2 条 502（02:00:45Z、02:06:24Z）。并发 9 时同账号多个会话同时起，节点给账号目录改属主的遍历撞上 Claude Code 刚删掉的锁文件。已修（`chownTree` 跳过 ENOENT），**需推节点包**（节点 `20261028T024559Z-audit-fixes` 仍是旧包）。
+3. **5h 窗口对 worker 路径不可见**：02:26:58Z 才由 Claude Code 原文 `hit your 5-hour limit` 得知，此前 `window_5h_used` 一直是 0；两条 `502 upstream_stream_error` 就是撞墙那一刻的请求。已修（`rate_limit_event` 解析入库，`3954508`），但该事件只在 `allowed_warning` / `rejected` 时带窗口类型，提前量有限；根治仍靠 1 的 `api_retry` 上报 + usage 探测加密。
+
+无问题的部分：`safeguards_refusal` 14 条是 Opus 5.5 上游安全拒绝（`API Error: Opus 5.5's safeguards flagged this session`），网关正确地 400 给客户、不冷却账号、不换号；`client_closed` 8 条为客户端主动断开（6 条发生在首字前，很可能是等不及 1 的长延迟）；工具调用 1530 次、`usage_estimated=0`、无截断、无 worker 特有错误码。
+
+## 9. 形态数据：仍为零，原因与进度
+
+阶段二开关在线，但 04:00Z 以来的 152 条仍全部 `cc_profile_unknown`（2.1.301 ×50、2.1.316 ×30、2.1.314 ×27、2.1.283 ×21、2.1.305/303/241）——没有 2.1.312 客户端出现。直连样本 = 0，`cc_profile_mismatch` / `[billing-suffix] mismatch` / `upstream_request_rejected` 为零不构成证据。
+进度：2.1.316 与 2.1.301 的官方二进制已拿到（`/home/ubuntu/claude-code-re/<ver>/package/claude`），Pi 正按 `docs/wp0-batch4-brief-2026-11-02.md` 采样 profile（cli / sdk-cli 各 ≥12 样本 + 传输常量 + 计费后缀核对）。采样入库后，2.1.316/301（72% 的 CC 流量）即可判 genuine → 直连，形态校验才有数据。

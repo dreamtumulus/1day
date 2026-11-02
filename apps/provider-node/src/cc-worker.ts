@@ -330,19 +330,38 @@ export class CcWorkerManager {
     this.log(`session pool: max ${this.maxLive} live, idle ttl ${this.idleTtlMs / 1000}s, max ${this.maxTurns} turns, max age ${this.maxAgeMs / 1000}s, mem high-water ${Math.round(this.memHigh * 100)}%`);
   }
 
-  /** chown a tree to the worker user (config dir written by the node as root). */
+  /**
+   * chown a tree to the worker user (config dir written by the node as root). The tree is live while other sessions
+   * of the same account run (canary 2026-11-02, concurrency 9): Claude Code creates and removes `.claude.json.lock`
+   * and friends between our readdir and lchown, so a vanished entry is skipped, not fatal — it took the whole turn
+   * down as `tunnel closed by node: ENOENT … lchown … .claude.json.lock` (2 × 502 on the canary account).
+   */
   private chownTree(p: string, identity = this.runAs): void {
     if (!identity) return;
     const { uid, gid } = identity;
+    const gone = (err: unknown) => (err as NodeJS.ErrnoException)?.code === "ENOENT";
     const walk = (f: string) => {
-      fs.lchownSync(f, uid, gid);
+      try {
+        fs.lchownSync(f, uid, gid);
+      } catch (err) {
+        if (gone(err)) return;
+        throw err;
+      }
       let st: fs.Stats;
       try {
         st = fs.lstatSync(f);
       } catch {
         return;
       }
-      if (st.isDirectory()) for (const c of fs.readdirSync(f)) walk(path.join(f, c));
+      if (!st.isDirectory()) return;
+      let children: string[];
+      try {
+        children = fs.readdirSync(f);
+      } catch (err) {
+        if (gone(err)) return;
+        throw err;
+      }
+      for (const c of children) walk(path.join(f, c));
     };
     walk(p);
   }
