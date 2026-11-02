@@ -65,3 +65,13 @@
 `/api/oauth/usage`（04:55Z）：`five_hour` **仍在计数**——07%（04:12Z 为 1%），重置 09:00Z；`seven_day` 18%。`window_model.five_hour = true`。
 结论：这是 **Ultra 但尚未验证** 的账号（Anthropic：新账号在验证前保留临时 5h 限额；此账号 10-25 才创建），claude.ai 界面没有 "Current session" 条不等于 API 不计数。
 平台现在能自动分辨：一旦 usage 返回 `five_hour: null`，或 worker 的 `rate_limit_event` 连续只报 `seven_day`，`window_model.five_hour` 会翻成 false，调度立刻不再按 5h 处理。
+
+## 8. 待判定：这个 5h 限额是真执行还是显示上的尾巴（2026-11-02 05:06Z 起观测）
+
+操作者假设：账号一直在用，所以 5h 只是官方没摘掉的尾巴。
+已有反证：02:26:58Z 上游原文 `You've hit your 5-hour limit · resets 4:50am` 连拒两条——那一桶（00:33–02:27Z，1515 条）是真打满、真被拒；现在能用是因为 03:50Z 桶复位，新桶（04:00–09:00Z）到 05:06Z 只用了 7%。
+仍可能成立的情形：验证在 02:27Z 之后下发，usage 的 `five_hour` 对象只是还挂着、不再拒绝。
+判定方法：`/root/monitor/canary-window-watch.py`（每 15 分钟经控制台 admin 接口刷 `/api/oauth/usage`，写入 `/var/log/1dayapi-canary-traffic.log` 的 `window-watch:` 行）。
+- 5h 到 ≥95% 后请求仍 200、无 `hit your 5-hour limit` → 尾巴（届时 `window_model.five_hour` 应人工或按下一次 usage `five_hour: null` 翻 false）；
+- 再出现 `hit your 5-hour limit` / `rate_limit_event rejected five_hour` → 真限制，账号属"未验证 Ultra"。
+停：`touch /root/monitor/canary-window-watch.stop`。
