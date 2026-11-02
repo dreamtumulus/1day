@@ -96,7 +96,7 @@ export function AdminTeams() {
             {t(r.status === "active" ? "admin.teams.disable" : "admin.teams.enable")}
           </Button>
           {r.status !== "active" && r.accounts.total === 0 && (
-            <Button size="sm" variant="danger" loading={busy === r.id} title={t("admin.teams.cleanupHint")} onClick={() => void act(r.id, async () => { const x = await adminTeamCleanupNodes(r.id); toast.success(t("admin.teams.cleanupToast", { n: x.data.nodes.length })); })}>
+            <Button size="sm" variant="danger" loading={busy === r.id} title={t("admin.teams.cleanupHint")} onClick={() => void act(r.id, async () => { const x = await adminTeamCleanupNodes(r.id); toast.success(t("admin.teams.cleanupToast", { n: x.nodes.length })); })}>
               {t("admin.teams.cleanup")}
             </Button>
           )}
@@ -157,7 +157,7 @@ function ClaimsModal({ row, onClose }: { row: TeamOverviewRow; onClose: () => vo
     setBusy(true);
     try {
       const r = await adminTeamReleaseClaims(row.id, { ...(keys ? { resourceKeys: keys } : {}), force });
-      toast.success(t("admin.teams.released", { n: r.data.released.length, skipped: r.data.skipped.length }));
+      toast.success(t("admin.teams.released", { n: r.released.length, skipped: r.skipped.length }));
       claims.reload();
     } catch (e) {
       toast.error(e);

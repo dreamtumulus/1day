@@ -885,9 +885,12 @@ export interface TeamClaim {
   boundAccounts: number; reserved: number; lastActivityAt: string | null;
   releasable: boolean; blocker: "bound_accounts" | "live_reservation" | "too_recent" | null;
 }
-export const adminTeamsOverview = () => api.get<{ data: TeamOverviewRow[]; minReleaseDays: number }>("/api/admin/teams/overview");
-export const adminTeamClaims = (id: string) => api.get<{ data: TeamClaim[]; minReleaseDays: number }>(`/api/admin/teams/${id}/claims`);
+// The two reads carry `minReleaseDays` next to `data`, so they must not go through `call()` (which unwraps
+// the envelope and would drop the sibling field — this was the /console/admin/teams white screen, 2026-11-02).
+export const adminTeamsOverview = () => apiFetch<{ data: TeamOverviewRow[]; minReleaseDays: number }>("/api/admin/teams/overview");
+export const adminTeamClaims = (id: string) => apiFetch<{ data: TeamClaim[]; minReleaseDays: number }>(`/api/admin/teams/${id}/claims`);
+// Mutations go through `call()`, i.e. the `{ data }` envelope is already unwrapped here.
 export const adminTeamReleaseClaims = (id: string, body: { resourceKeys?: string[]; reason?: string; force?: boolean }) =>
-  api.post<{ data: { released: string[]; skipped: Array<{ resourceKey: string; blocker: string }>; nodeIds: string[] } }>(`/api/admin/teams/${id}/release-claims`, body);
-export const adminTeamPatch = (id: string, body: { status?: "active" | "disabled"; name?: string }) => api.patch<{ data: { id: string; name: string | null; status: string } }>(`/api/admin/teams/${id}`, body);
-export const adminTeamCleanupNodes = (id: string) => api.post<{ data: { nodes: string[] } }>(`/api/admin/teams/${id}/cleanup-nodes`, {});
+  api.post<{ released: string[]; skipped: Array<{ resourceKey: string; blocker: string }>; nodeIds: string[] }>(`/api/admin/teams/${id}/release-claims`, body);
+export const adminTeamPatch = (id: string, body: { status?: "active" | "disabled"; name?: string }) => api.patch<{ id: string; name: string | null; status: string }>(`/api/admin/teams/${id}`, body);
+export const adminTeamCleanupNodes = (id: string) => api.post<{ nodes: string[] }>(`/api/admin/teams/${id}/cleanup-nodes`, {});
