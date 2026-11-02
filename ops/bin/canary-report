@@ -8,6 +8,7 @@
 // other keys (new behaviour vs old behaviour on the same account), account/team state, and the gateway counters that
 // must stay at zero. Prints no key material.
 import { DatabaseSync } from "node:sqlite";
+import { readFileSync, existsSync } from "node:fs";
 
 const DB_PATH = process.env.DB_PATH ?? "/opt/1dayapi/data/1dayapi.db";
 const HOURS = Number(process.env.HOURS ?? 24);
@@ -23,6 +24,8 @@ const groupId = one("SELECT value FROM settings WHERE key='canary_group_id'")?.v
 if (!groupId) { say("!! no canary_group_id in settings"); process.exit(2); }
 const accts = q("SELECT a.id, a.name, a.status, a.executor, a.error_message last_error, a.updated_at FROM account_groups ag JOIN accounts a ON a.id=ag.account_id WHERE ag.group_id=?", groupId);
 const canaryKeys = q("SELECT id FROM api_keys WHERE group_id=?", groupId).map((r) => r.id);
+const recFile = process.env.MOVED_FILE ?? "/root/monitor/canary-moved-keys.json";
+const rec = existsSync(recFile) ? JSON.parse(readFileSync(recFile, "utf8")) : [];
 const since = (process.env.SINCE ?? new Date(Date.now() - HOURS * 3600_000).toISOString()).slice(0, 19); // usage_logs.created_at is ISO "YYYY-MM-DDTHH:MM:SSZ"
 const until = (process.env.UNTIL ?? "9999").slice(0, 19); // SINCE/UNTIL (ISO) bound a phase; HOURS is the default window
 say(`== canary report  group=${groupId}  window since ${since}Z until ${until === "9999" ? "now" : until + "Z"}  generated ${new Date().toISOString()}`);
@@ -46,6 +49,22 @@ for (const [name, rs] of Object.entries(split)) {
   say(`  ${name.padEnd(12)} n=${rs.length} ok=${ok} (${rs.length ? ((100 * ok) / rs.length).toFixed(1) : "0"}%) p50=${pct(d, 0.5) ?? "-"}ms p95=${pct(d, 0.95) ?? "-"}ms ttft_p50=${pct(ft, 0.5) ?? "-"}ms truncated=${rs.filter((r) => r.stream_truncated).length} in_tok=${rs.reduce((s, r) => s + r.input_tokens, 0)} out_tok=${rs.reduce((s, r) => s + r.output_tokens, 0)} cache_read=${rs.reduce((s, r) => s + r.cache_read_tokens, 0)} cache_write=${rs.reduce((s, r) => s + r.cache_write_tokens, 0)} usage_estimated=${rs.filter((r) => r.usage_estimated).length} tool_calls=${rs.reduce((s, r) => s + r.tool_calls, 0)} tool_results=${rs.reduce((s, r) => s + r.tool_results, 0)}`);
 }
 const agg = (key) => { const m = new Map(); for (const r of rows) { const k = key(r); m.set(k, (m.get(k) ?? 0) + 1); } return [...m].sort((a, b) => b[1] - a[1]).map(([k, n]) => ({ k, n })); };
+// 2a. by the canary group's keys regardless of account: a 503 no_available_account has account_id NULL and is invisible above
+say("== 2a. canary-group keys, any account (selection failures included)");
+{
+  const keyIds = canaryKeys.concat(rec.filter((r) => !r.retired).map((r) => r.key_id)).filter((v, i, a) => a.indexOf(v) === i);
+  if (keyIds.length) {
+    const kph = keyIds.map(() => "?").join(",");
+    const krows = q(`SELECT api_key_id, status_code, error_code, account_id, mode, duration_ms FROM usage_logs WHERE api_key_id IN (${kph}) AND created_at >= ? AND created_at < ?`, ...keyIds, since, until);
+    const names = new Map(q(`SELECT k.id, k.name, u.name user_name FROM api_keys k JOIN users u ON u.id=k.user_id WHERE k.id IN (${kph})`, ...keyIds).map((r) => [r.id, `${r.user_name}/${r.name}`]));
+    for (const id of keyIds) {
+      const rs = krows.filter((r) => r.api_key_id === id); if (!rs.length) continue;
+      const ok = rs.filter((r) => r.status_code === 200).length, noAcct = rs.filter((r) => r.account_id == null).length;
+      const errs = new Map(); for (const r of rs) if (r.status_code !== 200) errs.set(`${r.status_code}:${r.error_code ?? ""}`, (errs.get(`${r.status_code}:${r.error_code ?? ""}`) ?? 0) + 1);
+      say(`  ${(names.get(id) ?? id).padEnd(28)} n=${rs.length} ok=${ok} (${((100 * ok) / rs.length).toFixed(1)}%) no_account=${noAcct} on_canary_acct=${rs.filter((r) => r.account_id && ids.includes(r.account_id)).length} errs=[${[...errs].sort((a, b) => b[1] - a[1]).slice(0, 4).map(([k, n]) => `${k}:${n}`).join(",")}]`);
+    }
+  }
+}
 say("== 3. by status / error_code"); table(agg((r) => `${r.status_code} ${r.error_code ?? ""} ${r.error_scope ?? ""}`.trim()), ["k", "n"]);
 say("== 4. by mode (client experience per path: worker = ccr-*, direct = passthrough-anthropic)");
 for (const m of [...new Set(rows.map((r) => r.mode ?? "-"))]) {
