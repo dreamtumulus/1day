@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import type { TurnFacts } from "./ccr/types.js";
 import type { FastifyReply, FastifyRequest } from "fastify";
 import {
   accountBaseUrl,
@@ -393,6 +394,8 @@ interface Ctx {
   executionSequence: number;
   credentialVersion: number | null;
   streamTruncated: boolean;
+  /** Worker/cloud turn facts (upstream retries inside Claude Code), filled by the executor, recorded with usage. */
+  turnFacts: TurnFacts;
   /** Claude Code shape verdict (docs/gateway.md §2a); null = not a CC-UA request. */
   ccShape: "genuine" | "suspect" | null;
   /** settings cc_client_response_profile (spec WP1 §6): a Claude Code client gets no x-1day-* diagnostic headers. */
@@ -784,6 +787,7 @@ async function proxyRequest(req: FastifyRequest, reply: FastifyReply, format: Cl
     executionSequence: 0,
     credentialVersion: null,
     streamTruncated: false,
+    turnFacts: {},
     ccShape: null,
     hideDiagHeaders: hideDiag,
     trace: { mode: null, nodeId: null, upstreamStatus: null, upstreamMessage: null, failure: null },
@@ -1128,6 +1132,7 @@ async function proxyRequest(req: FastifyRequest, reply: FastifyReply, format: Cl
                 // three-state master switch for this key group / account (铁律 2).
                 canonical: canonicalWorker,
                 groupId: caller.groupId,
+                facts: ctx.turnFacts,
               });
               if (!res) break; // no worker-capable node accepted: infra state, try next account without counting
             } else {
@@ -1143,6 +1148,7 @@ async function proxyRequest(req: FastifyRequest, reply: FastifyReply, format: Cl
                 stickyKey: ccrPoolKey ? `s:${caller.apiKeyId}:${ccrPoolKey}` : null,
                 isolation,
                 signal: ctx.abort.signal,
+                facts: ctx.turnFacts,
               });
             }
           } else {
@@ -1521,6 +1527,7 @@ function logFailure(ctx: Ctx, account: AccountRow | null, status: number, code: 
       streamTruncated: ctx.streamTruncated,
       clientIp: clientIp(ctx.req),
       ccShape: ctx.ccShape,
+      upstreamRetries: ctx.turnFacts.upstreamRetries ?? null,
       errorMessage,
       mode: ctx.trace.mode,
       upstreamStatus: ctx.trace.upstreamStatus,
@@ -1746,6 +1753,7 @@ function settleSuccess(
       toolResults: acc.toolResults,
       clientIp: clientIp(ctx.req),
       ccShape: ctx.ccShape,
+      upstreamRetries: ctx.turnFacts.upstreamRetries ?? null,
       mode: ctx.trace.mode,
       nodeId: account.node_id,
       accountSwitched: ctx.forceCacheBilling,

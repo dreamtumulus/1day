@@ -18,7 +18,7 @@ import { SessionTranslator, callerSystemText, contentText, isSuggestionRequest, 
 import { bump } from "../metrics.js";
 import { randomUUID } from "node:crypto";
 import { buildNativeTranscript, countStrippedThinking } from "./native-session.js";
-import type { EventPayload } from "./types.js";
+import type { EventPayload, TurnFacts } from "./types.js";
 
 type Json = Record<string, any>;
 
@@ -33,6 +33,16 @@ type Json = Record<string, any>;
  * emits a `rate_limit_event` per API call (status / rateLimitType / utilization / resetsAt). Fold it into the account's
  * window columns and window_model so a worker account is no longer blind between usage probes.
  */
+/** Turn end: hand the translator's facts (upstream retries) to proxy.ts via input.facts, log and count the retries. */
+export function noteTurnFacts(input: { facts?: TurnFacts; requestId: string }, translator: SessionTranslator, accountName: string, lane: string): void {
+  const f = translator.turnFacts;
+  if (input.facts) Object.assign(input.facts, f);
+  if (f.upstreamRetries > 0) {
+    bump("ccr_upstream_retry_total", { lane });
+    console.log(`[${lane}] ${input.requestId} upstream retried ${f.upstreamRetries}× on ${accountName} (statuses ${f.retryStatuses.join(",") || "-"}, backoff ${Math.round(f.retryDelayMs / 1000)}s): the client saw it as latency`);
+  }
+}
+
 function noteRateLimit(account: AccountRow, translator: SessionTranslator, requestId: string): void {
   const info = translator.rateLimit;
   if (!info) return;
@@ -85,6 +95,8 @@ export interface CcrWorkerInput {
   canonical?: boolean;
   /** The key's group (three-state switches resolved per key group). */
   groupId?: string | null;
+  /** Filled by the worker at turn end (upstream retries …); proxy.ts records it with the usage row. */
+  facts?: TurnFacts;
 }
 
 /** Gateway-side memory of live node sessions (docs/worker-sessions.md §1), written through to core worker_turn_memory. */
@@ -433,12 +445,13 @@ export async function runCcrWorker(input: CcrWorkerInput): Promise<Response | nu
     await reader.cancel().catch(() => {});
     input.signal?.throwIfAborted();
     if (stalled) noteStalled();
-    else { rememberTurn(translator); noteRateLimit(account, translator, input.requestId); }
+    else { rememberTurn(translator); noteRateLimit(account, translator, input.requestId); noteTurnFacts(input, translator, account.name, "ccr-worker"); }
     logGuard();
     // Slow non-stream turns (customer 524s, 2026-10-22): what did Claude Code emit, and when.
     if (Date.now() - startedAt > SLOW_TURN_LOG_MS) console.log(`[ccr-worker] ${input.requestId} slow turn ${Math.round((Date.now() - startedAt) / 1000)}s on ${account.name}: ${translator.eventTimeline}`);
     if (translator.error) {
       logResult(input.requestId, translator);
+      noteTurnFacts(input, translator, account.name, "ccr-worker");
       return errorResponse(502, `ccr_worker: ${translator.error}`);
     }
     if (!translator.finished && !translator.awaitingTools && !stalled) return errorResponse(502, "ccr_worker: worker exited without a result");
@@ -478,7 +491,7 @@ export async function runCcrWorker(input: CcrWorkerInput): Promise<Response | nu
         }
         if (!stalled) for (const p of lines.end()) await write(translator.push(p));
         if (stalled) noteStalled();
-        else { rememberTurn(translator); noteRateLimit(account, translator, input.requestId); }
+        else { rememberTurn(translator); noteRateLimit(account, translator, input.requestId); noteTurnFacts(input, translator, account.name, "ccr-worker"); }
         logGuard();
         if (Date.now() - startedAt > SLOW_TURN_LOG_MS) console.log(`[ccr-worker] ${input.requestId} slow turn ${Math.round((Date.now() - startedAt) / 1000)}s on ${account.name}: ${translator.eventTimeline}`);
         if (translator.error) {

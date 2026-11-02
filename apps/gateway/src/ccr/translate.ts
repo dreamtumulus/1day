@@ -593,6 +593,8 @@ export class SessionTranslator {
   private upstreamModelUsage: Json | null = null;
   /** Last `rate_limit_event.rate_limit_info` of the turn (Claude Code 2.1.3xx emits one per API call): the worker path's only live window signal. */
   private rateLimitInfo: Json | null = null;
+  /** `system/api_retry` events of the turn: Claude Code retried the upstream call (status, delay). */
+  private readonly apiRetries: Array<{ status: number | null; delayMs: number | null; attempt: number | null }> = [];
   private usageSeen = false;
   private resultUsageSeen = false;
   private usageBaseline: TranslatedUsage | null = null;
@@ -1232,6 +1234,12 @@ export class SessionTranslator {
           this.usageBaseline = null;
           this.sawInit = true;
           if (typeof (p as Json).session_id === "string") this.nativeSessionId = String((p as Json).session_id);
+        } else if ((p as Json).subtype === "api_retry") {
+          // {attempt, max_retries, retry_delay_ms, error_status, error}: the upstream said 429/529/5xx and Claude Code is
+          // backing off on its own. Counted for the usage row (TurnFacts); the client sees only the delay.
+          const j = p as Json;
+          const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : null);
+          this.apiRetries.push({ status: num(j.error_status), delayMs: num(j.retry_delay_ms), attempt: num(j.attempt) });
         }
         break;
       }
@@ -1309,6 +1317,15 @@ export class SessionTranslator {
   /** Last rate_limit_event info of the turn (status / rateLimitType / utilization / resetsAt …); null when none arrived. */
   get rateLimit(): Json | null {
     return this.rateLimitInfo;
+  }
+
+  /** Upstream retries Claude Code performed inside this turn (`system/api_retry`), for TurnFacts. */
+  get turnFacts(): { upstreamRetries: number; retryStatuses: number[]; retryDelayMs: number } {
+    return {
+      upstreamRetries: this.apiRetries.length,
+      retryStatuses: this.apiRetries.map((r) => r.status).filter((s): s is number => s !== null),
+      retryDelayMs: this.apiRetries.reduce((s, r) => s + (r.delayMs ?? 0), 0),
+    };
   }
 
   get hasUsage(): boolean {

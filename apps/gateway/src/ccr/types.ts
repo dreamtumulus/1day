@@ -59,6 +59,18 @@ export interface StreamEventPayload {
   event: { type: string; index?: number; message?: { id?: string; usage?: AnthropicUsage }; delta?: Record<string, unknown>; usage?: AnthropicUsage; content_block?: AnthropicBlock };
 }
 
+/**
+ * Facts about one worker/cloud turn that proxy.ts records with the usage row (canary 2026-11-02 §8.1): Claude Code
+ * retries upstream 429/529s itself (`system/api_retry`, backoff 25s→36s→47s→…), which the client only sees as first-byte
+ * latency; counting them makes that latency attributable and lets the gateway react before the first byte.
+ */
+export interface TurnFacts {
+  upstreamRetries?: number;
+  retryStatuses?: number[];
+  /** Milliseconds spent inside Claude Code's retry backoff before the first upstream byte (sum of retry_delay_ms). */
+  retryDelayMs?: number;
+}
+
 export interface ResultPayload {
   type: "result";
   subtype?: string; // success | error_max_turns | error_during_execution | …

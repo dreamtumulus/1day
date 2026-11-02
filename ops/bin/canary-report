@@ -39,7 +39,7 @@ for (const a of accts) {
 const ids = accts.map((a) => a.id);
 if (!ids.length) { say("!! canary group has no accounts"); process.exit(2); }
 const ph = ids.map(() => "?").join(",");
-const rows = q(`SELECT api_key_id, group_id, model, endpoint, stream, status_code, error_code, error_scope, mode, cc_shape, duration_ms, first_token_ms, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, usage_estimated, tool_calls, tool_results, upstream_status, stream_truncated, created_at FROM usage_logs WHERE account_id IN (${ph}) AND created_at >= ? AND created_at < ? ORDER BY created_at`, ...ids, since, until);
+const rows = q(`SELECT api_key_id, group_id, model, endpoint, stream, status_code, error_code, error_scope, mode, cc_shape, duration_ms, first_token_ms, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, usage_estimated, tool_calls, tool_results, upstream_status, stream_truncated, upstream_retries, created_at FROM usage_logs WHERE account_id IN (${ph}) AND created_at >= ? AND created_at < ? ORDER BY created_at`, ...ids, since, until);
 say(`== 2. requests on canary accounts in window: ${rows.length}`);
 const split = { canary_group_keys: rows.filter((r) => canaryKeys.includes(r.api_key_id)), other_keys: rows.filter((r) => !canaryKeys.includes(r.api_key_id)) };
 for (const [name, rs] of Object.entries(split)) {
@@ -70,7 +70,7 @@ say("== 4. by mode (client experience per path: worker = ccr-*, direct = passthr
 for (const m of [...new Set(rows.map((r) => r.mode ?? "-"))]) {
   const rs = rows.filter((r) => (r.mode ?? "-") === m); const ok = rs.filter((r) => r.status_code === 200).length;
   const d = rs.map((r) => r.duration_ms).filter((x) => x != null); const ft = rs.map((r) => r.first_token_ms).filter((x) => x != null);
-  say(`  ${m.padEnd(28)} n=${rs.length} ok=${ok} (${((100 * ok) / rs.length).toFixed(1)}%) p50=${pct(d, 0.5) ?? "-"}ms p95=${pct(d, 0.95) ?? "-"}ms ttft_p50=${pct(ft, 0.5) ?? "-"}ms truncated=${rs.filter((r) => r.stream_truncated).length} usage_estimated=${rs.filter((r) => r.usage_estimated).length} tool_calls=${rs.reduce((s, r) => s + r.tool_calls, 0)}`);
+  say(`  ${m.padEnd(28)} n=${rs.length} ok=${ok} (${((100 * ok) / rs.length).toFixed(1)}%) p50=${pct(d, 0.5) ?? "-"}ms p95=${pct(d, 0.95) ?? "-"}ms ttft_p50=${pct(ft, 0.5) ?? "-"}ms truncated=${rs.filter((r) => r.stream_truncated).length} usage_estimated=${rs.filter((r) => r.usage_estimated).length} tool_calls=${rs.reduce((s, r) => s + r.tool_calls, 0)} retried_turns=${rs.filter((r) => (r.upstream_retries ?? 0) > 0).length} upstream_retries=${rs.reduce((s, r) => s + (r.upstream_retries ?? 0), 0)}`);
 }
 say("== 5. by endpoint × stream"); table(agg((r) => `${r.endpoint} ${r.stream ? "stream" : "non-stream"}`), ["k", "n"]);
 say("== 6. by model"); table(agg((r) => r.model), ["k", "n"]);

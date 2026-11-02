@@ -7,6 +7,7 @@
 // warm session (turns/idle/error caps, archive on retire); stateless requests
 // still create a fresh session per request and archive it on completion.
 
+import { noteTurnFacts } from "./worker.js";
 import { encryptJson, sha256Hex, nowIso, run, INTERNAL_HEADER, internalToken, accountBaseUrl, getSetting, one, readCredential, writeCredential, type AccountRow, type Credential } from "@1dayapi/core";
 import { wait, StreamDemand } from "../lifecycle.js";
 import { config } from "../config.js";
@@ -14,7 +15,7 @@ import { pinnedTunnelTransport, type IsolationContext } from "../tunnel.js";
 import { CcrClient, CcrHttpError } from "./client.js";
 import { CcrSessionPool, type PoolEntry } from "./session-pool.js";
 import { SessionTranslator, buildSessionEvents, messagesToPrompt } from "./translate.js";
-import type { EventPayload, SessionEvent } from "./types.js";
+import type { EventPayload, SessionEvent, TurnFacts } from "./types.js";
 
 type Json = Record<string, any>;
 
@@ -34,6 +35,8 @@ export interface CcrRunInput {
   stickyKey?: string | null;
   isolation?: IsolationContext;
   signal?: AbortSignal;
+  /** Filled at turn end (upstream retries …); proxy.ts records it with the usage row. */
+  facts?: TurnFacts;
 }
 
 
@@ -236,6 +239,7 @@ export async function runCcr(input: CcrRunInput): Promise<Response> {
       return errorResponse(502, `ccr: ${translator.error}`);
     }
     if (translator.upstreamUsage) console.log(`[ccr] ${input.requestId} upstream modelUsage: ${JSON.stringify(translator.upstreamUsage).slice(0, 400)}`);
+    noteTurnFacts(input, translator, account.name, "ccr");
     finishPool(false);
     return new Response(JSON.stringify(translator.message()), { status: 200, headers: { "content-type": "application/json" } });
   }
@@ -267,6 +271,7 @@ export async function runCcr(input: CcrRunInput): Promise<Response> {
           await write(`event: error\ndata: ${JSON.stringify({ type: "error", error: { type: "api_error", message: `ccr: ${translator.error}` } })}\n\n`);
         } else {
           if (translator.upstreamUsage) console.log(`[ccr] ${input.requestId} upstream modelUsage: ${JSON.stringify(translator.upstreamUsage).slice(0, 400)}`);
+          noteTurnFacts(input, translator, account.name, "ccr");
           finishPool(false);
           await write(translator.end());
         }

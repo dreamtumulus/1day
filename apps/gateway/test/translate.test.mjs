@@ -749,3 +749,14 @@ test("Claude Code's synthetic 'API Error' assistant text is held and becomes the
   const ok = w.push({ type: "assistant", message: { id: "a4", role: "assistant", content: [{ type: "text", text: "The API error handling guide says: retry." }] } });
   assert.match(ok, /text_delta/);
 });
+
+test("system/api_retry events are counted into turnFacts (canary 2026-11-02 §8.1: hidden upstream retries)", () => {
+  const t = new SessionTranslator({ model: "m", simulateTools: false });
+  assert.deepEqual(t.turnFacts, { upstreamRetries: 0, retryStatuses: [], retryDelayMs: 0 });
+  t.push({ type: "system", subtype: "init" });
+  t.push({ type: "system", subtype: "api_retry", attempt: 1, max_retries: 10, retry_delay_ms: 25_000, error_status: 429, error: "rate_limit" });
+  t.push({ type: "system", subtype: "api_retry", attempt: 2, max_retries: 10, retry_delay_ms: 36_000, error_status: 529, error: "overloaded" });
+  t.push({ type: "system", subtype: "api_retry", attempt: 3, max_retries: 10, retry_delay_ms: "n/a", error_status: null });
+  assert.deepEqual(t.turnFacts, { upstreamRetries: 3, retryStatuses: [429, 529], retryDelayMs: 61_000 });
+  assert.match(t.eventTimeline, /system\/api_retry/);
+});

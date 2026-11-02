@@ -39,6 +39,8 @@ export interface SettleInput {
   clientIp?: string | null;
   /** Claude Code shape verdict for CC-UA requests (docs/gateway.md §2a); null = not a CC-UA request. */
   ccShape?: "genuine" | "suspect" | null;
+  /** Worker/cloud lane (migration 39): upstream retries Claude Code performed inside the turn; null = not a CCR turn. */
+  upstreamRetries?: number | null;
   /** Observability (migration 10): why it failed, which path served it, which node. */
   errorMessage?: string | null;
   mode?: string | null;
@@ -119,7 +121,7 @@ export function settlePreparedRequest(p: SettleInput, price: SettlementPricing):
       "cache_write_tokens", "usage_estimated", "total_cost", "rate_multiplier", "actual_cost", "provider_earning",
       "duration_ms", "first_token_ms", "client_ip", "cc_shape", "error_message", "mode", "upstream_status", "node_id",
       "account_switched", "team_id", "proxy_id", "actual_model", "selection_ms", "stream_truncated", "tool_calls",
-      "tool_results", "error_scope", "retryable", "credential_version", "execution_sequence", "created_at",
+      "tool_results", "error_scope", "retryable", "credential_version", "execution_sequence", "upstream_retries", "created_at",
     ];
     const ins = db
       .prepare(
@@ -169,6 +171,7 @@ export function settlePreparedRequest(p: SettleInput, price: SettlementPricing):
         p.retryable === undefined || p.retryable === null ? null : p.retryable ? 1 : 0,
         p.credentialVersion ?? null,
         p.executionSequence ?? null,
+        p.upstreamRetries ?? null,
         now,
       );
     if (Number(ins.changes) === 0) {

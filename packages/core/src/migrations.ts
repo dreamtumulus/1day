@@ -324,6 +324,7 @@ const MIGRATIONS: Array<{ version: number; up: (d: DatabaseSync, log: Log) => vo
   { version: 36, up: migration36 },
   { version: 37, up: migration37 },
   { version: 38, up: migration38 },
+  { version: 39, up: migration39 },
 ];
 
 // 上号员令牌（独立鉴权的上号站点 /onboard）：admin 签发，绑定目标节点；
@@ -1063,4 +1064,10 @@ function migration38(d: DatabaseSync, log: Log): void {
     ["window_model", "TEXT"],
   ]);
   log("migration 38: accounts profile attributes (rate_limit_tier, plan_label, org/billing/seat/subscription), profile_json, usage_json, window_model");
+}
+
+// Canary 2026-11-02 §8.1: upstream retries Claude Code performed inside a worker/cloud turn (hidden first-byte latency).
+function migration39(d: DatabaseSync, log: Log): void {
+  addColumns(d, log, "usage_logs", [["upstream_retries", "INTEGER"]]);
+  log("migration 39: usage_logs.upstream_retries");
 }

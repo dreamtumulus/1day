@@ -69,3 +69,7 @@
 
 阶段二开关在线，但 04:00Z 以来的 152 条仍全部 `cc_profile_unknown`（2.1.301 ×50、2.1.316 ×30、2.1.314 ×27、2.1.283 ×21、2.1.305/303/241）——没有 2.1.312 客户端出现。直连样本 = 0，`cc_profile_mismatch` / `[billing-suffix] mismatch` / `upstream_request_rejected` 为零不构成证据。
 进度：2.1.316 与 2.1.301 的官方二进制已拿到（`/home/ubuntu/claude-code-re/<ver>/package/claude`），Pi 正按 `docs/wp0-batch4-brief-2026-11-02.md` 采样 profile（cli / sdk-cli 各 ≥12 样本 + 传输常量 + 计费后缀核对）。采样入库后，2.1.316/301（72% 的 CC 流量）即可判 genuine → 直连，形态校验才有数据。
+
+### §8.1 处置进展（05:40Z）
+- 已实现（待发布）：翻译器统计 Claude Code 的 `system/api_retry`（attempt / retry_delay_ms / error_status）→ `TurnFacts` → `usage_logs.upstream_retries`（迁移 39）；worker/cloud 两条车道都记；重试 >0 的轮次打 `[ccr-worker] … upstream retried N× … the client saw it as latency` 并计 `ccr_upstream_retry_total{lane}`；`canary-report` 第 4 节加 `retried_turns` / `upstream_retries`，看门狗行加 `retries=`。
+- 下一步（需数据后再定）：对首字前已重试 ≥2 次的轮次，网关是否提前换号（上游可见：会在另一账号重放同一请求，须走三态开关）。
