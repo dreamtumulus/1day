@@ -2,6 +2,8 @@
 // Move real users' API keys into / out of the canary group (铁律 2 real-traffic canary; docs/canary-real-traffic-plan-2026-11-02.md).
 //   node canary-move-keys.mjs move <key_id>...     # records old group in /root/monitor/canary-moved-keys.json
 //   node canary-move-keys.mjs revert [key_id...]   # restore recorded keys (all when none given)
+//   node canary-move-keys.mjs cycle-in         # re-move every recorded key that was reverted (watchdog window rotation)
+//   node canary-move-keys.mjs retire <key_id>  # drop a key from the rotation (stays in its old group)
 //   node canary-move-keys.mjs status
 import { DatabaseSync } from "node:sqlite";
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
@@ -32,6 +34,19 @@ if (cmd === "move") {
     r.reverted_at = now;
     console.log(`reverted ${r.key_id} (${r.user_name}/${r.key_name}) -> ${r.old_group}`);
   }
+  save();
+} else if (cmd === "cycle-in") {
+  for (const r of rec.filter((r) => r.reverted_at && !r.retired)) {
+    const k = db.prepare("SELECT group_id, status FROM api_keys WHERE id=?").get(r.key_id);
+    if (!k || k.status !== "active" || k.group_id !== r.old_group) { console.log(`skip ${r.key_id}: ${k ? `group=${k.group_id} status=${k.status}` : "gone"}`); continue; }
+    db.prepare("INSERT OR IGNORE INTO user_allowed_groups (user_id, group_id) VALUES (?, ?)").run(r.user_id, canary);
+    db.prepare("UPDATE api_keys SET group_id=? WHERE id=?").run(canary, r.key_id);
+    r.cycles = (r.cycles ?? 0) + 1; r.moved_at = now; delete r.reverted_at;
+    console.log(`cycled in ${r.key_id} (${r.user_name}/${r.key_name}) ${r.old_group} -> ${canary} (cycle ${r.cycles})`);
+  }
+  save();
+} else if (cmd === "retire") {
+  for (const r of rec.filter((r) => ids.includes(r.key_id))) { r.retired = now; console.log(`retired ${r.key_id}`); }
   save();
 } else {
   for (const r of rec) console.log(JSON.stringify(r));
