@@ -36,6 +36,10 @@ test("OAuth profile: every field kept, secrets scrubbed, plan label separates Ul
   assert.equal(p.details.account.createdAt, "2026-10-01T00:00:00Z");
   assert.ok(!p.rawJson.includes("SECRET"), "secret-looking keys never reach storage");
   assert.equal(planLabel("default_claude_max_5x", "claude_team", "team_tier_1"), "Team · Max (ex Max 5x) (team_tier_1)");
+  // live 2026-11-02: organization.plan_display_name wins when present
+  assert.equal(planLabel("default_claude_max_20x", "claude_max", null, "max", "Ultra"), "Ultra (ex Max 20x)");
+  assert.equal(planLabel("default_claude_max_5x", "claude_team", "team_tier_1", "team", "Team"), "Team (team_tier_1)");
+  assert.equal(parseOAuthProfile({ account: { email: "u@q.us" }, organization: { rate_limit_tier: "default_claude_max_20x", organization_type: "claude_max", plan_display_name: "Ultra", plan_display_label: "Ultra plan", has_extra_usage_enabled: false } }).planLabel, "Ultra (ex Max 20x)");
   assert.equal(planLabel("default_claude_pro"), "Pro");
   assert.equal(planLabel("default_claude_ultra"), "Ultra");
   assert.equal(planLabel(null, "claude_enterprise"), "Enterprise");

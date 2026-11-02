@@ -4,8 +4,10 @@
 //
 // Observed shape (live, 2026-10-16, a Team seat; 2026-11-02, an Ultra/ex-Max-20x seat):
 //   { account: { uuid, email, full_name, display_name, has_claude_max: false, has_claude_pro: false, created_at },
-//     organization: { uuid, name, organization_type: "claude_team", billing_type: "stripe_subscription",
-//                     rate_limit_tier: "default_claude_max_5x", seat_tier: "team_tier_1", subscription_status: "active", … },
+//     organization: { uuid, name, organization_type: "claude_team" | "claude_max", billing_type: "stripe_subscription",
+//                     rate_limit_tier: "default_claude_max_5x" | "default_claude_max_20x", seat_tier, subscription_status: "active",
+//                     plan_display_name: "Ultra", plan_display_label: "Ultra plan", has_extra_usage_enabled, subscription_created_at,
+//                     claude_code_trial_ends_at, cc_onboarding_flags, … },
 //     application: { uuid, name } }
 // subscriptionType is normalised to the values Claude Code itself writes into
 // .credentials.json (the node materialises it there): max | pro | team | enterprise | free.
@@ -80,8 +82,15 @@ export function scrubProfileJson(v: unknown, depth = 0): unknown {
  *   default_claude_max_20x → "Ultra (ex Max 20x)", default_claude_max_5x → "Max (ex Max 5x)", *ultra* → "Ultra",
  *   *pro* → "Pro", team org → "Team" (+ seat tier), enterprise org → "Enterprise"; otherwise the raw tier.
  */
-export function planLabel(tier: string | null | undefined, orgType?: string | null, seatTier?: string | null, subscriptionType?: string | null): string | null {
+export function planLabel(tier: string | null | undefined, orgType?: string | null, seatTier?: string | null, subscriptionType?: string | null, displayName?: string | null): string | null {
   const t = (tier ?? "").toLowerCase();
+  // Live 2026-11-02: the endpoint now says it outright (`organization.plan_display_name: "Ultra"`); keep the legacy tier hint.
+  if (displayName && displayName.trim()) {
+    const d = displayName.trim();
+    const hint = /ultra/i.test(d) && t.includes("max_20x") ? " (ex Max 20x)" : /^max$/i.test(d) && t.includes("max_5x") ? " (ex Max 5x)" : "";
+    const seat = seatTier && (orgType ?? "").toLowerCase().includes("team") ? ` (${seatTier})` : "";
+    return `${d}${hint}${seat}`;
+  }
   const o = (orgType ?? "").toLowerCase();
   let base: string | null = null;
   if (t.includes("ultra")) base = "Ultra";
@@ -155,7 +164,7 @@ export function parseOAuthProfile(json: unknown): OAuthProfile | null {
     subscriptionType,
     rateLimitTier: tier,
     displayName: str(acc.display_name) ?? str(acc.full_name),
-    planLabel: planLabel(tier, details.organization.organizationType, details.organization.seatTier, subscriptionType),
+    planLabel: planLabel(tier, details.organization.organizationType, details.organization.seatTier, subscriptionType, str(org.plan_display_name)),
     details,
     rawJson: JSON.stringify(scrubProfileJson(json)),
   };
