@@ -53,3 +53,15 @@
 - 测试：`packages/core/test/window-model.test.mjs`（4 项）、`profile.test.mjs` 扩展。
 
 实测（04:12Z，发布前）：灰度账号 profile 仍为 `default_claude_max_20x`（→ 显示 "Ultra (ex Max 20x)"），usage 仍返回 `five_hour`（1%，重置 09:00Z），即 API 侧暂未体现"无 5h"；发布后由 09:00Z 前是否再撞墙、以及 `rate_limit_event` 是否再报 `five_hour` 来定。
+
+## 7. 发布后实测（2026-11-02 04:54Z，`3954508` 已上线，迁移 38 已应用，网关切到 8402）
+
+`/api/oauth/profile` 全文（去凭证）现已入库并可在控制台查看。灰度账号的关键字段：
+- `organization.plan_display_name = "Ultra"`、`plan_display_label = "Ultra plan"`（**上游新字段**，直接说明套餐；代码已改为优先用它，`33625c9`）
+- `rate_limit_tier = default_claude_max_20x`（旧名）、`organization_type = claude_max`、`billing_type = stripe_subscription`、`subscription_status = active`、`has_extra_usage_enabled = false`
+- `account.created_at = 2026-10-25`、`subscription_created_at = 2026-10-25`（账号 8 天新）
+- 其余：`claude_code_trial_*`、`cc_onboarding_flags`、`payment_auth_hosted_invoice_url`、`claude_ai_*_feedback_enabled`、`application = Claude Code`、`enabled_plugins`
+
+`/api/oauth/usage`（04:55Z）：`five_hour` **仍在计数**——07%（04:12Z 为 1%），重置 09:00Z；`seven_day` 18%。`window_model.five_hour = true`。
+结论：这是 **Ultra 但尚未验证** 的账号（Anthropic：新账号在验证前保留临时 5h 限额；此账号 10-25 才创建），claude.ai 界面没有 "Current session" 条不等于 API 不计数。
+平台现在能自动分辨：一旦 usage 返回 `five_hour: null`，或 worker 的 `rate_limit_event` 连续只报 `seven_day`，`window_model.five_hour` 会翻成 false，调度立刻不再按 5h 处理。
