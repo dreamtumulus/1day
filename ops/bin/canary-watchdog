@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# Real-traffic canary watchdog (docs/canary-real-traffic-plan-2026-11-02.md). Every INTERVAL seconds: append the canary
+# accounts' status + last-interval request stats to the log; when a canary account leaves `active` (window_exhausted /
+# error / proxy_down / disabled), revert the moved real-user keys to their old groups so nobody stays on a dead account.
+# Never touches the account itself (铁律 1: proxy_down is lifted by a human only).
+set -u
+LOG=${LOG:-/var/log/1dayapi-canary-traffic.log}
+INTERVAL=${INTERVAL:-300}
+DB=/opt/1dayapi/data/1dayapi.db
+cd /opt/1dayapi || exit 1
+echo "$(date -u +%FT%TZ) watchdog start pid=$$ interval=${INTERVAL}s" >> "$LOG"
+while [ ! -e /root/monitor/canary-watchdog.stop ]; do
+  node --no-warnings ${TICK:-/opt/1dayapi/ops/bin/canary-watch-tick.mjs} "$DB" "$INTERVAL" >> "$LOG" 2>&1
+  if [ $? -eq 3 ]; then
+    node --no-warnings ${MOVER:-/opt/1dayapi/ops/bin/canary-move-keys} revert >> "$LOG" 2>&1
+    echo "$(date -u +%FT%TZ) watchdog: canary account not active -> moved keys reverted; watchdog continues (status only)" >> "$LOG"
+  fi
+  sleep "$INTERVAL"
+done
+echo "$(date -u +%FT%TZ) watchdog stop" >> "$LOG"

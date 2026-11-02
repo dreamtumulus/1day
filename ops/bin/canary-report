@@ -1,0 +1,72 @@
+#!/usr/bin/env node
+// Canary real-traffic report (docs/canary-real-traffic-plan-2026-11-02.md; 铁律 2 observation record).
+//   ops/bin/canary-report                 # last 24 h, canary group from settings.canary_group_id
+//   HOURS=48 DB_PATH=/opt/1dayapi/data/1dayapi.db ops/bin/canary-report
+// Read-only. Reads usage_logs for every account in the canary group and prints: request totals by status / error
+// code / mode / endpoint / model / client shape, latency percentiles, an hourly series, the canary group's keys vs
+// other keys (new behaviour vs old behaviour on the same account), account/team state, and the gateway counters that
+// must stay at zero. Prints no key material.
+import { DatabaseSync } from "node:sqlite";
+
+const DB_PATH = process.env.DB_PATH ?? "/opt/1dayapi/data/1dayapi.db";
+const HOURS = Number(process.env.HOURS ?? 24);
+const API = process.env.API_BASE ?? "http://127.0.0.1:8400";
+const db = new DatabaseSync(DB_PATH, { readOnly: true });
+const q = (sql, ...a) => db.prepare(sql).all(...a);
+const one = (sql, ...a) => db.prepare(sql).get(...a);
+const say = (...s) => console.log(...s);
+const pct = (arr, p) => { if (!arr.length) return null; const s = [...arr].sort((x, y) => x - y); return s[Math.min(s.length - 1, Math.floor(p * s.length))]; };
+const table = (rows, cols) => { for (const r of rows) say("  " + cols.map((c) => String(r[c] ?? "-").padEnd(c === cols[0] ? 28 : 10)).join(" ")); };
+
+const groupId = one("SELECT value FROM settings WHERE key='canary_group_id'")?.value?.trim();
+if (!groupId) { say("!! no canary_group_id in settings"); process.exit(2); }
+const accts = q("SELECT a.id, a.name, a.status, a.executor, a.error_message last_error, a.updated_at FROM account_groups ag JOIN accounts a ON a.id=ag.account_id WHERE ag.group_id=?", groupId);
+const canaryKeys = q("SELECT id FROM api_keys WHERE group_id=?", groupId).map((r) => r.id);
+const since = new Date(Date.now() - HOURS * 3600_000).toISOString().slice(0, 19); // usage_logs.created_at is ISO "YYYY-MM-DDTHH:MM:SSZ"
+say(`== canary report  group=${groupId}  window=${HOURS}h since ${since}Z  generated ${new Date().toISOString()}`);
+say("== 1. canary accounts");
+for (const a of accts) {
+  const groups = q("SELECT group_id, priority FROM account_groups WHERE account_id=?", a.id).map((g) => `${g.group_id}(p${g.priority})`).join(", ");
+  say(`  ${a.id}  ${a.name}  status=${a.status} executor=${a.executor} groups=[${groups}] last_error=${a.last_error ?? "-"}`);
+  const team = one("SELECT t.id, t.suspended_until, t.suspended_reason, t.last_error_code, t.daily_cost_budget FROM upstream_teams t JOIN accounts a ON a.team_id=t.id WHERE a.id=?", a.id);
+  if (team) say(`    team=${team.id} suspended_until=${team.suspended_until ?? "-"} reason=${team.suspended_reason ?? "-"} last_error=${team.last_error_code ?? "-"} cost_budget=${team.daily_cost_budget ?? "-"}`);
+}
+const ids = accts.map((a) => a.id);
+if (!ids.length) { say("!! canary group has no accounts"); process.exit(2); }
+const ph = ids.map(() => "?").join(",");
+const rows = q(`SELECT api_key_id, group_id, model, endpoint, stream, status_code, error_code, error_scope, mode, cc_shape, duration_ms, first_token_ms, input_tokens, output_tokens, cache_read_tokens, upstream_status, stream_truncated, created_at FROM usage_logs WHERE account_id IN (${ph}) AND created_at >= ? ORDER BY created_at`, ...ids, since);
+say(`== 2. requests on canary accounts in window: ${rows.length}`);
+const split = { canary_group_keys: rows.filter((r) => canaryKeys.includes(r.api_key_id)), other_keys: rows.filter((r) => !canaryKeys.includes(r.api_key_id)) };
+for (const [name, rs] of Object.entries(split)) {
+  const ok = rs.filter((r) => r.status_code === 200).length;
+  const d = rs.map((r) => r.duration_ms).filter((x) => x != null);
+  const ft = rs.map((r) => r.first_token_ms).filter((x) => x != null);
+  say(`  ${name.padEnd(12)} n=${rs.length} ok=${ok} (${rs.length ? ((100 * ok) / rs.length).toFixed(1) : "0"}%) p50=${pct(d, 0.5) ?? "-"}ms p95=${pct(d, 0.95) ?? "-"}ms ttft_p50=${pct(ft, 0.5) ?? "-"}ms truncated=${rs.filter((r) => r.stream_truncated).length} in_tok=${rs.reduce((s, r) => s + r.input_tokens, 0)} out_tok=${rs.reduce((s, r) => s + r.output_tokens, 0)} cache_read=${rs.reduce((s, r) => s + r.cache_read_tokens, 0)}`);
+}
+const agg = (key) => { const m = new Map(); for (const r of rows) { const k = key(r); m.set(k, (m.get(k) ?? 0) + 1); } return [...m].sort((a, b) => b[1] - a[1]).map(([k, n]) => ({ k, n })); };
+say("== 3. by status / error_code"); table(agg((r) => `${r.status_code} ${r.error_code ?? ""} ${r.error_scope ?? ""}`.trim()), ["k", "n"]);
+say("== 4. by mode"); table(agg((r) => r.mode ?? "-"), ["k", "n"]);
+say("== 5. by endpoint × stream"); table(agg((r) => `${r.endpoint} ${r.stream ? "stream" : "non-stream"}`), ["k", "n"]);
+say("== 6. by model"); table(agg((r) => r.model), ["k", "n"]);
+say("== 7. by client shape (cc_shape)"); table(agg((r) => r.cc_shape ?? "non-cc"), ["k", "n"]);
+say("== 8. by key group"); table(agg((r) => r.group_id ?? "-"), ["k", "n"]);
+say("== 9. hourly series (n / ok / errors / p95 ms)");
+const hours = new Map();
+for (const r of rows) { const h = r.created_at.slice(0, 13); const e = hours.get(h) ?? { n: 0, ok: 0, err: 0, d: [] }; e.n++; if (r.status_code === 200) e.ok++; else e.err++; if (r.duration_ms != null) e.d.push(r.duration_ms); hours.set(h, e); }
+for (const [h, e] of [...hours].sort()) say(`  ${h}Z  n=${String(e.n).padStart(5)} ok=${String(e.ok).padStart(5)} err=${String(e.err).padStart(4)} p95=${pct(e.d, 0.95) ?? "-"}`);
+say("== 10. errors (last 20)");
+for (const r of rows.filter((r) => r.status_code !== 200).slice(-20)) say(`  ${r.created_at}Z ${r.status_code} ${r.error_code ?? ""} scope=${r.error_scope ?? "-"} mode=${r.mode ?? "-"} upstream=${r.upstream_status ?? "-"} model=${r.model} key=${r.api_key_id.slice(0, 8)}`);
+say("== 11. org-level / telemetry evidence rows");
+for (const t of q("SELECT * FROM telemetry_evidence WHERE account_id IN (" + ph + ") ORDER BY observed_at DESC LIMIT 10", ...ids)) say("  " + JSON.stringify(t));
+say("== 12. key-policy events for canary keys");
+if (canaryKeys.length) for (const e of q("SELECT * FROM key_policy_events WHERE api_key_id IN (" + canaryKeys.map(() => "?").join(",") + ") ORDER BY created_at DESC LIMIT 10", ...canaryKeys)) say("  " + JSON.stringify(e));
+say("== 13. gateway counters that must stay at zero");
+try {
+  const h = await (await fetch(`${API}/health`, { signal: AbortSignal.timeout(8000) })).json();
+  const c = h.counters ?? {};
+  const zero = ["cc_profile_mismatch_total", "team_suspended_total", "native_telemetry_unverified_total", "org_budget_exhausted_total"];
+  let bad = false;
+  for (const [k, v] of Object.entries(c)) { const z = zero.some((z) => k.startsWith(z)); if (z && v) bad = true; say(`  ${z ? (v ? "!! " : "ok ") : "   "}${k} = ${JSON.stringify(v)}`); }
+  if (!Object.keys(c).length) say("  (empty)");
+  say(bad ? "== VERDICT: FAIL (must-be-zero counter non-zero)" : "== VERDICT: counters clean");
+} catch (e) { say(`  (health unreachable: ${e.message})`); }

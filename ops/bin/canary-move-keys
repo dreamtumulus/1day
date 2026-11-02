@@ -1,0 +1,39 @@
+#!/usr/bin/env node
+// Move real users' API keys into / out of the canary group (铁律 2 real-traffic canary; docs/canary-real-traffic-plan-2026-11-02.md).
+//   node canary-move-keys.mjs move <key_id>...     # records old group in /root/monitor/canary-moved-keys.json
+//   node canary-move-keys.mjs revert [key_id...]   # restore recorded keys (all when none given)
+//   node canary-move-keys.mjs status
+import { DatabaseSync } from "node:sqlite";
+import { readFileSync, writeFileSync, existsSync } from "node:fs";
+const DB = process.env.DB_PATH ?? "/opt/1dayapi/data/1dayapi.db";
+const REC = process.env.MOVED_FILE ?? "/root/monitor/canary-moved-keys.json";
+const db = new DatabaseSync(DB);
+const canary = db.prepare("SELECT value FROM settings WHERE key='canary_group_id'").get()?.value?.trim();
+if (!canary) { console.error("no canary_group_id"); process.exit(2); }
+const rec = existsSync(REC) ? JSON.parse(readFileSync(REC, "utf8")) : [];
+const save = () => writeFileSync(REC, JSON.stringify(rec, null, 2), { mode: 0o600 });
+const [cmd, ...ids] = process.argv.slice(2);
+const now = new Date().toISOString();
+if (cmd === "move") {
+  for (const id of ids) {
+    const k = db.prepare("SELECT k.id, k.name, k.group_id, k.user_id, u.name user_name FROM api_keys k JOIN users u ON u.id=k.user_id WHERE k.id=?").get(id);
+    if (!k) { console.log(`skip ${id}: no such key`); continue; }
+    if (k.group_id === canary) { console.log(`skip ${id}: already canary`); continue; }
+    rec.push({ key_id: k.id, key_name: k.name, user_id: k.user_id, user_name: k.user_name, old_group: k.group_id, moved_at: now });
+    db.prepare("INSERT OR IGNORE INTO user_allowed_groups (user_id, group_id) VALUES (?, ?)").run(k.user_id, canary);
+    db.prepare("UPDATE api_keys SET group_id=? WHERE id=?").run(canary, k.id);
+    console.log(`moved ${k.id} (${k.user_name}/${k.name}) ${k.old_group ?? k.group_id} -> ${canary}`);
+  }
+  save();
+} else if (cmd === "revert") {
+  const todo = ids.length ? rec.filter((r) => ids.includes(r.key_id) && !r.reverted_at) : rec.filter((r) => !r.reverted_at);
+  for (const r of todo) {
+    db.prepare("UPDATE api_keys SET group_id=? WHERE id=? AND group_id=?").run(r.old_group, r.key_id, canary);
+    r.reverted_at = now;
+    console.log(`reverted ${r.key_id} (${r.user_name}/${r.key_name}) -> ${r.old_group}`);
+  }
+  save();
+} else {
+  for (const r of rec) console.log(JSON.stringify(r));
+  console.log("keys in canary group now:", JSON.stringify(db.prepare("SELECT k.id, k.name, u.name user_name FROM api_keys k JOIN users u ON u.id=k.user_id WHERE k.group_id=? AND k.status='active'").all(canary)));
+}
