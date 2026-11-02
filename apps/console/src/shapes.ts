@@ -9,7 +9,7 @@ import {
   parseAllowlist,
   parseJsonArray,
   parseJsonMap,
-  type AccountRow, parseKeyPolicy, parseKeyPolicyDoc } from "@1dayapi/core";
+  type AccountRow, parseKeyPolicy, parseKeyPolicyDoc, parseWindowModel, planLabel } from "@1dayapi/core";
 
 // Row -> API shapes (camelCase) shared by the user / provider / admin routes.
 
@@ -188,6 +188,16 @@ export function providerAccountShape(
     payoutRate: a.payout_rate,
     accountEmail: a.account_email,
     subscriptionType: a.subscription_type,
+    // 2026-11-02: full plan identity (tier separates Ultra / Max), org/billing/seat/status, and which windows apply
+    rateLimitTier: a.rate_limit_tier,
+    planLabel: a.plan_label ?? planLabel(a.rate_limit_tier, a.org_type, a.seat_tier, a.subscription_type),
+    orgType: a.org_type,
+    billingType: a.billing_type,
+    seatTier: a.seat_tier,
+    subscriptionStatus: a.subscription_status,
+    windowModel: parseWindowModel(a.window_model),
+    usageCheckedAt: a.usage_checked_at,
+
     concurrency: a.concurrency,
     rpmLimit: a.rpm_limit,
     boundProxyId: a.bound_proxy_id,
@@ -223,6 +233,14 @@ export function accountReadiness(a: AccountRow, now = nowIso()): "logged_in" | "
   return "logged_in";
 }
 
+function safeJson(v: string): unknown {
+  try {
+    return JSON.parse(v);
+  } catch {
+    return null;
+  }
+}
+
 export function adminAccountShape(
   a: AccountRow & { owner_name?: string | null },
   groups: Array<{ groupId: string; name: string; priority: number }>,
@@ -238,7 +256,10 @@ export function adminAccountShape(
     ...(extra?.showTeam?{teamId:a.team_id,teamName:a.team_id?one<{name:string|null}>("SELECT name FROM upstream_teams WHERE id=?",a.team_id)?.name??null:null,
       /** Saved organization profile (onboard_orgs) matching the account's team, when one exists. */
       orgName:a.team_id?one<{name:string}>("SELECT name FROM onboard_orgs WHERE lower(org_uuid)=lower(?) LIMIT 1",a.team_id)?.name??null:null,
-      errorMessage:a.error_message}:{}),
+      errorMessage:a.error_message,
+      /** Secret-free raw /api/oauth/profile and /api/oauth/usage bodies (2026-11-02, admin only). */
+      profile:a.profile_json?safeJson(a.profile_json):null,
+      usageSnapshot:a.usage_json?safeJson(a.usage_json):null}:{}),
     ownerId: a.owner_id,
     ownerName: a.owner_name ?? null,
     priority: a.priority,

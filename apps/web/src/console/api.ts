@@ -450,6 +450,19 @@ export interface ProviderAccount {
   payoutRate: number;
   accountEmail: string | null;
   subscriptionType: string | null;
+  /** 2026-11-02: full plan identity from /api/oauth/profile; tier separates Ultra (ex Max 20x) from Max (ex Max 5x). */
+  rateLimitTier?: string | null;
+  planLabel?: string | null;
+  orgType?: string | null;
+  billingType?: string | null;
+  seatTier?: string | null;
+  subscriptionStatus?: string | null;
+  /** Which usage windows apply (verified Ultra: five_hour=false); null = not observed yet. */
+  windowModel?: { five_hour: boolean | null; seven_day: boolean | null; fable: boolean | null; source: string | null; observed_at: string | null; streak: number } | null;
+  usageCheckedAt?: string | null;
+  /** Secret-free raw profile / usage bodies (admin only). */
+  profile?: unknown;
+  usageSnapshot?: unknown;
   coolingUntil: string | null;
   lastUsedAt: string | null;
   createdAt: string;

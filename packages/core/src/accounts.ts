@@ -6,7 +6,7 @@ import { getModelEntry } from "./models.js";
 import { effectiveBaseUrl, type Executor, type Protocol } from "./platforms.js";
 import { getSetting } from "./settings.js";
 import { isoIn, nowIso } from "./time.js";
-import { modelScope, parseThresholdPercent, windowAllows, windowExhausted, windowReason, type WindowSnapshot } from "./window.js";
+import { modelScope, parseRateLimitEvent, parseThresholdPercent, windowAllows, windowExhausted, windowReason, type WindowSnapshot } from "./window.js";
 import { normalizeTeamId, quarantineActive, recordProxyTeamEvent } from "./teams.js";
 
 export interface ModelCooldown {
@@ -126,6 +126,25 @@ export interface AccountRow {
   window_7d_reset_at: string | null;
   /** Why the window cooldown was set, e.g. "five_hour 97% ≥ 95% until …". */
   window_reason: string | null;
+  /**
+   * Account attributes from `GET /api/oauth/profile` (migration 38, 2026-11-02): the tier string is the only field that
+   * separates Ultra (ex Max 20x) from Max (ex Max 5x); the secret-free full body is kept for the console.
+   */
+  rate_limit_tier: string | null;
+  plan_label: string | null;
+  org_type: string | null;
+  billing_type: string | null;
+  seat_tier: string | null;
+  subscription_status: string | null;
+  profile_json: string | null;
+  /** Last `GET /api/oauth/usage` body (secret-free) and when; the per-window numbers above are derived from it. */
+  usage_json: string | null;
+  usage_checked_at: string | null;
+  /**
+   * Which windows this account is actually subject to, as the sources reported them (JSON `WindowModel`): a verified
+   * Ultra account has no five-hour window (2026-10-30), so it must not be paused or "rested" on a 5h schedule.
+   */
+  window_model: string | null;
   /** Per-account requests-per-minute cap, 0 = unlimited (docs/onboarding.md §6.3). */
   rpm_limit: number;
   /** 1 = raw passthrough (gateway.md §4a): no Claude Code normalisation, fingerprint or identity pinning; the client's request goes to the relay as-is. */
@@ -427,7 +446,7 @@ export function markFailure(id: string, f: FailureKind): void {
       // seven_day gets no post-reset rest (restAfterReset): the rest exists to let the 5-hour window actually
       // reopen, a 7-day limit does not need it (audit 2026-11-01: the Claude Code limit text named the window
       // but it was not passed through, so 7d accounts sat out the extra rest as well).
-      const until = restAfterReset(resetAt, f.window ?? undefined);
+      const until = restFor(id, resetAt, f.window ?? undefined);
       run(
         "UPDATE accounts SET window_exhausted_until = ?, window_reason = ?, updated_at = ? WHERE id = ?",
         until,
@@ -550,14 +569,103 @@ export function proxyDownSummary(): { count: number; oldestSince: string | null 
  * threshold → window cooldown until the reset time (fallback 1h) with a
  * reason; room again → lift the cooldown.
  */
+/** accounts.window_model: which windows the account is subject to, per source; null = not known yet. */
+export interface WindowModel {
+  five_hour: boolean | null;
+  seven_day: boolean | null;
+  fable: boolean | null;
+  /** usage_probe | headers | rate_limit_event */
+  source: string | null;
+  observed_at: string | null;
+  /** How many consecutive observations agreed on five_hour (a single header sample is weak evidence). */
+  streak: number;
+}
+
+export function parseWindowModel(json: string | null | undefined): WindowModel {
+  const base: WindowModel = { five_hour: null, seven_day: null, fable: null, source: null, observed_at: null, streak: 0 };
+  if (!json) return base;
+  try {
+    const j = JSON.parse(json) as Partial<WindowModel>;
+    return { ...base, ...j, streak: Number(j.streak) || 0 };
+  } catch {
+    return base;
+  }
+}
+
+/** Does this account have a five-hour window? false only when the sources have said so (verified Ultra); null = unknown. */
+export function accountHasFiveHour(id: string): boolean | null {
+  const row = one<{ window_model: string | null }>("SELECT window_model FROM accounts WHERE id = ?", id);
+  return parseWindowModel(row?.window_model).five_hour;
+}
+
+/**
+ * Fold a source's window presence into accounts.window_model. The usage probe and a rate_limit_event are authoritative
+ * for what they name; unified headers need 3 agreeing samples before a missing 5h is believed (one response may just
+ * omit a header). A `rate_limit_event` of type five_hour is positive proof the window exists.
+ */
+export function recordWindowPresence(id: string, presence: NonNullable<WindowSnapshot["presence"]>, source: "usage_probe" | "headers" | "rate_limit_event", now = nowIso()): WindowModel {
+  const cur = parseWindowModel(one<{ window_model: string | null }>("SELECT window_model FROM accounts WHERE id = ?", id)?.window_model);
+  const next: WindowModel = { ...cur, source, observed_at: now };
+  if (source === "rate_limit_event") {
+    // the event names one window at a time: it can only confirm presence, never absence
+    if (presence.five_hour) next.five_hour = true;
+    if (presence.seven_day) next.seven_day = true;
+    if (presence.fable) next.fable = true;
+  } else if (source === "usage_probe") {
+    next.five_hour = presence.five_hour;
+    next.seven_day = presence.seven_day;
+    next.fable = presence.fable;
+    next.streak = cur.five_hour === presence.five_hour ? cur.streak + 1 : 1;
+  } else {
+    if (presence.seven_day) next.seven_day = true;
+    if (presence.fable) next.fable = true;
+    if (presence.five_hour) { next.five_hour = true; next.streak = cur.five_hour === true ? cur.streak + 1 : 1; }
+    else if (presence.seven_day) {
+      // 7d reported without 5h: believe "no five-hour window" after 3 consecutive such samples
+      const streak = cur.five_hour === false || cur.five_hour === null ? cur.streak + 1 : 1;
+      next.streak = streak;
+      if (streak >= 3) next.five_hour = false;
+      else if (cur.five_hour === true) next.five_hour = true;
+    }
+  }
+  if (JSON.stringify(next) !== JSON.stringify(cur)) run("UPDATE accounts SET window_model = ? WHERE id = ?", JSON.stringify(next), id);
+  return next;
+}
+
+/** Post-reset rest only applies to a five-hour window; an account known to have none (verified Ultra) reopens at reset. */
+function restFor(id: string, resetAt: string, window: string | null | undefined): string {
+  if (accountHasFiveHour(id) === false) return resetAt;
+  return restAfterReset(resetAt, window);
+}
+
+/** Worker path: Claude Code's per-turn `rate_limit_event` → the same window bookkeeping as unified headers. */
+export function recordRateLimitEvent(id: string, info: unknown): WindowSnapshot | null {
+  const snap = parseRateLimitEvent(info);
+  if (!snap) return null;
+  if (snap.presence) recordWindowPresence(id, snap.presence, "rate_limit_event");
+  if (snap.window === "five_hour" || snap.window === "seven_day" || snap.fable) recordWindowUsage(id, snap);
+  return snap;
+}
+
 export function recordWindowUsage(
   id: string,
   snap: WindowSnapshot,
   thresholdPercent = parseThresholdPercent(getSetting("anthropic_window_threshold_percent")),
 ): void {
   const now = nowIso();
+  if (snap.presence) recordWindowPresence(id, snap.presence, snap.fable && !snap.fiveHour && !snap.sevenDay ? "rate_limit_event" : "headers", now);
+  if (!snap.window && !snap.fiveHour && !snap.sevenDay) {
+    // family-only snapshot (fable / overage): never touch the account-wide window columns
+    if (snap.fable) {
+      const fab = snap.fable;
+      const fabExhausted = windowExhausted(fab.used, thresholdPercent) || fab.status === "rejected";
+      const until = fabExhausted ? (fab.resetAt && fab.resetAt > now ? fab.resetAt : isoIn(WINDOW_FALLBACK_COOLDOWN_MS)) : null;
+      writeModelCooldown(id, "fable", { used: fab.used, resetAt: fab.resetAt, until, reason: until ? `7d_oi ${Math.round(fab.used * 100)}% ≥ ${thresholdPercent}% until ${until}` : null }, now);
+    }
+    return;
+  }
   const exhausted = windowExhausted(snap.used, thresholdPercent);
-  const until = exhausted ? restAfterReset(snap.resetAt && snap.resetAt > now ? snap.resetAt : isoIn(WINDOW_FALLBACK_COOLDOWN_MS), snap.window) : null;
+  const until = exhausted ? restFor(id, snap.resetAt && snap.resetAt > now ? snap.resetAt : isoIn(WINDOW_FALLBACK_COOLDOWN_MS), snap.window) : null;
   run(
     `UPDATE accounts SET window_used = ?, window_reset_at = ?, window_checked_at = ?, window_exhausted_until = ?, window_reason = ?,
        window_5h_used = COALESCE(?, window_5h_used), window_5h_reset_at = COALESCE(?, window_5h_reset_at),

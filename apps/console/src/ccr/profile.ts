@@ -59,15 +59,25 @@ export async function enrichAccountProfile(account: AccountRow): Promise<OAuthPr
     throw new Error("organization identity mismatch");
   }
   if(account.team_id && p.orgName)run("UPDATE upstream_teams SET name=COALESCE(name,?) WHERE id=?",p.orgName,account.team_id);
+  const o = p.details.organization;
   run(
-    `UPDATE accounts SET account_email = COALESCE(?, account_email), subscription_type = COALESCE(?, subscription_type), last_profile_at = ?, updated_at = ? WHERE id = ?`,
+    `UPDATE accounts SET account_email = COALESCE(?, account_email), subscription_type = COALESCE(?, subscription_type),
+       rate_limit_tier = ?, plan_label = ?, org_type = ?, billing_type = ?, seat_tier = ?, subscription_status = ?, profile_json = ?,
+       last_profile_at = ?, updated_at = ? WHERE id = ?`,
     p.email,
     p.subscriptionType,
+    p.rateLimitTier,
+    p.planLabel,
+    o.organizationType,
+    o.billingType,
+    o.seatTier,
+    o.subscriptionStatus,
+    p.rawJson,
     nowIso(),
     nowIso(),
     account.id,
   );
-  console.info(`[profile] ${account.id}: ${p.email ?? "no email"} / ${p.subscriptionType ?? "plan unknown"} (${p.rateLimitTier ?? "no tier"})`);
+  console.info(`[profile] ${account.id}: ${p.email ?? "no email"} / ${p.subscriptionType ?? "plan unknown"} (${p.rateLimitTier ?? "no tier"}; ${p.planLabel ?? "-"}; org=${o.organizationType ?? "-"} billing=${o.billingType ?? "-"} seat=${o.seatTier ?? "-"} status=${o.subscriptionStatus ?? "-"})`);
   return p;
 }
 

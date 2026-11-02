@@ -9,7 +9,7 @@
 // worker-capable node / no_proxy_available / worker_overloaded) — the
 // candidate loop tries the next account without counting a failure.
 
-import { getSetting, sha256Hex, type AccountRow, type Credential, deleteTurnMemory, loadTurnMemory, saveTurnMemory, featureFor, CC_VERSION } from "@1dayapi/core";
+import { getSetting, sha256Hex, type AccountRow, type Credential, deleteTurnMemory, loadTurnMemory, saveTurnMemory, featureFor, CC_VERSION, recordRateLimitEvent } from "@1dayapi/core";
 import { StreamDemand } from "../lifecycle.js";
 import { config } from "../config.js";
 import { TunnelRequestError, openCcWorker, type IsolationContext } from "../tunnel.js";
@@ -28,6 +28,23 @@ type Json = Record<string, any>;
  * external multi-turn history, or a tool round without a live session) — lane B imports nothing in R2 (G3 importer is
  * WP3). The caller's system text is appended; the turn is the client's last user message, raw.
  */
+/**
+ * Worker path window bookkeeping (2026-11-02): no unified rate-limit headers reach the platform here, but Claude Code
+ * emits a `rate_limit_event` per API call (status / rateLimitType / utilization / resetsAt). Fold it into the account's
+ * window columns and window_model so a worker account is no longer blind between usage probes.
+ */
+function noteRateLimit(account: AccountRow, translator: SessionTranslator, requestId: string): void {
+  const info = translator.rateLimit;
+  if (!info) return;
+  try {
+    const snap = recordRateLimitEvent(account.id, info);
+    const status = String((info as Json).status ?? "-");
+    if (status !== "allowed" || (snap?.used ?? 0) >= 0.9) console.log(`[ccr-worker] ${requestId} rate_limit_event on ${account.name}: ${status} ${String((info as Json).rateLimitType ?? "-")} ${snap ? Math.round(snap.used * 100) + "%" : ""} reset=${snap?.resetAt ?? "-"}`);
+  } catch (err) {
+    console.warn(`[ccr-worker] ${requestId} rate_limit_event bookkeeping failed: ${(err as Error).message}`);
+  }
+}
+
 export function canonicalTurn(body: Json, planMode: "fresh" | "continue" | "tool_result", hasLiveSession: boolean, allowHistoryImport = false): { appendSystemPrompt: string; content: Json[] | null; importHistory: Json[] | null; error: { code: string; message: string } | null } {
   const msgs: Json[] = Array.isArray(body.messages) ? body.messages : [];
   const appendSystemPrompt = callerSystemText(body);
@@ -416,7 +433,7 @@ export async function runCcrWorker(input: CcrWorkerInput): Promise<Response | nu
     await reader.cancel().catch(() => {});
     input.signal?.throwIfAborted();
     if (stalled) noteStalled();
-    else rememberTurn(translator);
+    else { rememberTurn(translator); noteRateLimit(account, translator, input.requestId); }
     logGuard();
     // Slow non-stream turns (customer 524s, 2026-10-22): what did Claude Code emit, and when.
     if (Date.now() - startedAt > SLOW_TURN_LOG_MS) console.log(`[ccr-worker] ${input.requestId} slow turn ${Math.round((Date.now() - startedAt) / 1000)}s on ${account.name}: ${translator.eventTimeline}`);
@@ -461,7 +478,7 @@ export async function runCcrWorker(input: CcrWorkerInput): Promise<Response | nu
         }
         if (!stalled) for (const p of lines.end()) await write(translator.push(p));
         if (stalled) noteStalled();
-        else rememberTurn(translator);
+        else { rememberTurn(translator); noteRateLimit(account, translator, input.requestId); }
         logGuard();
         if (Date.now() - startedAt > SLOW_TURN_LOG_MS) console.log(`[ccr-worker] ${input.requestId} slow turn ${Math.round((Date.now() - startedAt) / 1000)}s on ${account.name}: ${translator.eventTimeline}`);
         if (translator.error) {

@@ -482,9 +482,14 @@ export function AdminAccounts() {
         )}
         <div className="mt-1 flex flex-wrap gap-1 pl-[22px] [&_span]:!px-2 [&_span]:!text-[10.5px]">
           {a.type === "oauth" ? (
-            <Badge tone={a.subscriptionType ? "primary" : "neutral"}>{a.subscriptionType ?? t("admin.accounts.planUnknown")}</Badge>
+            <Badge tone={a.subscriptionType || a.planLabel ? "primary" : "neutral"} title={a.rateLimitTier ?? undefined}>{a.planLabel ?? a.subscriptionType ?? t("admin.accounts.planUnknown")}</Badge>
           ) : (
             <Badge tone={a.type === "apikey" ? "primary" : "info"}>{t(`type.${a.type}`)}</Badge>
+          )}
+          {hasWindow(a) && a.windowModel?.five_hour === false && (
+            <Badge tone="success" title={t("admin.accounts.noFiveHourHint", { source: a.windowModel.source ?? "-", when: a.windowModel.observed_at ? rel(a.windowModel.observed_at) : "-" })}>
+              {t("admin.accounts.noFiveHour")}
+            </Badge>
           )}
           {a.executor !== "direct" && (
             <Badge tone="info" title={t("admin.accounts.executorHint")}>
@@ -650,13 +655,17 @@ export function AdminAccounts() {
       const probed = a.windowCheckedAt ? t("admin.accounts.windowChecked", { when: rel(a.windowCheckedAt) }) : t("admin.accounts.windowNotProbed");
       return (
         <div className="space-y-1.5">
-          <MeterRow
-            label="5H"
-            value={a.window5hUsed}
-            text={fmtPct(a.window5hUsed)}
-            ring={<ResetRing value={a.window5hUsed} resetAt={a.window5hResetAt} title={a.window5hResetAt ? rel(a.window5hResetAt) : undefined} />}
-            title={probed}
-          />
+          {a.windowModel?.five_hour === false ? (
+            <MeterRow label="5H" value={null} text={t("admin.accounts.noFiveHour")} title={t("admin.accounts.noFiveHourHint", { source: a.windowModel.source ?? "-", when: a.windowModel.observed_at ? rel(a.windowModel.observed_at) : "-" })} />
+          ) : (
+            <MeterRow
+              label="5H"
+              value={a.window5hUsed}
+              text={fmtPct(a.window5hUsed)}
+              ring={<ResetRing value={a.window5hUsed} resetAt={a.window5hResetAt} title={a.window5hResetAt ? rel(a.window5hResetAt) : undefined} />}
+              title={probed}
+            />
+          )}
           <MeterRow
             label="7D"
             value={a.window7dUsed}
@@ -1394,6 +1403,7 @@ function ReviewModal({
   onDone: () => void;
 }) {
   const { t } = useCT();
+  const rel = useRelTime();
   const toast = useToast();
   const [groupIds, setGroupIds] = useState<string[]>([]);
   const [priority, setPriority] = useState("50");
@@ -1468,8 +1478,29 @@ function ReviewModal({
               ...(account.baseUrl ? ([[t("admin.accounts.baseUrl"), <span className="break-all font-mono text-[12.5px]">{account.baseUrl}</span>]] as Array<[string, JSX.Element]>) : []),
               ...(account.accountEmail ? ([[t("admin.accounts.email"), account.accountEmail]] as Array<[string, string]>) : []),
               [t("admin.accounts.models"), account.models.length ? <span className="font-mono text-[12.5px]">{account.models.join(", ")}</span> : t("common.all")],
+              ...(hasWindow(account)
+                ? ([
+                    [t("admin.accounts.plan"), <span>{account.planLabel ?? account.subscriptionType ?? t("admin.accounts.planUnknown")}{account.rateLimitTier ? <span className="ml-1 font-mono text-[11.5px] text-on-surface-faint">{account.rateLimitTier}</span> : null}</span>],
+                    [t("admin.accounts.orgType"), <span className="font-mono text-[12.5px]">{[account.orgType, account.billingType, account.seatTier, account.subscriptionStatus].filter(Boolean).join(" · ") || "—"}</span>],
+                    [
+                      t("admin.accounts.windowModel"),
+                      <span>
+                        {account.windowModel?.five_hour == null ? t("admin.accounts.windowModelUnknown") : account.windowModel.five_hour ? t("admin.accounts.windowModel5h7d") : t("admin.accounts.windowModel7dOnly")}
+                        {account.windowModel?.source ? <span className="ml-1 text-[11.5px] text-on-surface-faint">({account.windowModel.source}{account.windowModel.observed_at ? `, ${rel(account.windowModel.observed_at)}` : ""})</span> : null}
+                      </span>,
+                    ],
+                    [t("admin.accounts.profileChecked"), <span>{account.lastProfileAt ? rel(account.lastProfileAt) : "—"} / {account.usageCheckedAt ? rel(account.usageCheckedAt) : "—"}</span>],
+                  ] as Array<[string, JSX.Element]>)
+                : []),
             ]}
           />
+          {hasWindow(account) && (account.profile || account.usageSnapshot) ? (
+            <details className="rounded-md border border-outline-variant/40 px-3 py-2 text-[12px]">
+              <summary className="cursor-pointer select-none text-on-surface-faint">{t("admin.accounts.rawProfile")}</summary>
+              {account.profile ? <pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-all font-mono text-[11px]">{JSON.stringify(account.profile, null, 2)}</pre> : null}
+              {account.usageSnapshot ? <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap break-all font-mono text-[11px]">{JSON.stringify(account.usageSnapshot, null, 2)}</pre> : null}
+            </details>
+          ) : null}
           <Field label={t("admin.accounts.groups")} hint={t("admin.accounts.groupsHint")}>
             <ChipSelect value={groupIds} onChange={setGroupIds} options={groups.map((g) => ({ value: g.id, label: `${g.name} ×${g.rateMultiplier}` }))} />
           </Field>

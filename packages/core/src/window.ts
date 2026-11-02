@@ -21,6 +21,12 @@ export interface WindowSnapshot {
    * selectAnthropicFableWindowLimit), the account stays schedulable for the rest.
    */
   fable?: WindowPoint | null;
+  /**
+   * Which windows the source actually reported (2026-11-02): `GET /api/oauth/usage` returns `five_hour: null` and
+   * unified headers carry no `-5h-` fields on a verified Ultra account (no five-hour window since 2026-10-30), while
+   * Pro / Max / Team / unverified Ultra report both. Recorded into accounts.window_model.
+   */
+  presence?: { five_hour: boolean; seven_day: boolean; fable: boolean };
 }
 
 /** Model-family scope of a request for per-scope cooldowns; null = account-wide only. */
@@ -159,7 +165,43 @@ export function parseUsageSnapshot(json: unknown): WindowSnapshot | null {
   snap.fiveHour = points.find(([n]) => n === "five_hour")?.[1] ?? null;
   snap.sevenDay = points.find(([n]) => n === "seven_day")?.[1] ?? null;
   snap.fable = fable;
+  const j = json as Record<string, unknown>;
+  const has = (k: string) => !!j[k] && typeof j[k] === "object";
+  snap.presence = { five_hour: has("five_hour"), seven_day: has("seven_day"), fable: USAGE_FABLE_KEYS.some(has) };
   return snap;
+}
+
+/**
+ * Claude Code's per-turn `rate_limit_event` (stream-json, 2.1.3xx): `rate_limit_info` = { status: allowed |
+ * allowed_warning | rejected, rateLimitType?: five_hour | seven_day | seven_day_opus | seven_day_sonnet |
+ * seven_day_overage_included | overage, utilization?: 0..1, resetsAt?: epoch seconds, surpassedThreshold?, isUsingOverage?,
+ * overageStatus?, overageDisabledReason? }. It is the worker path's only live window signal (no unified headers reach the
+ * platform there), so it is folded into the same WindowSnapshot shape. Returns null when the event names no window.
+ */
+export interface RateLimitEventInfo {
+  status?: string;
+  rateLimitType?: string;
+  utilization?: number;
+  resetsAt?: number | string;
+  surpassedThreshold?: boolean;
+  isUsingOverage?: boolean;
+  overageStatus?: string;
+  overageDisabledReason?: string;
+}
+export function parseRateLimitEvent(info: unknown): WindowSnapshot | null {
+  if (!info || typeof info !== "object") return null;
+  const e = info as RateLimitEventInfo;
+  const type = typeof e.rateLimitType === "string" ? e.rateLimitType : null;
+  const status = typeof e.status === "string" ? e.status.toLowerCase() : null;
+  if (!type && status !== "rejected") return null;
+  let used = toFraction(e.utilization) ?? (status === "rejected" ? 1 : 0);
+  if (e.surpassedThreshold === true || status === "rejected") used = Math.max(used, 1);
+  const point: WindowPoint = { used, resetAt: toIso(e.resetsAt), status };
+  if (type === "five_hour") return { used, resetAt: point.resetAt, window: "five_hour", fiveHour: point, sevenDay: null, fable: null, presence: { five_hour: true, seven_day: false, fable: false } };
+  if (type === "seven_day") return { used, resetAt: point.resetAt, window: "seven_day", fiveHour: null, sevenDay: point, fable: null, presence: { five_hour: false, seven_day: true, fable: false } };
+  if (type === "seven_day_overage_included" || type === "seven_day_fable") return { used: 0, resetAt: null, window: null, fiveHour: null, sevenDay: null, fable: point };
+  // seven_day_opus / seven_day_sonnet / overage: model-family or overage budgets — reported, never account-binding here.
+  return { used: 0, resetAt: null, window: type, fiveHour: null, sevenDay: null, fable: null };
 }
 
 type HeaderSource = { get(name: string): string | null } | Record<string, string | string[] | undefined>;
@@ -200,6 +242,7 @@ export function parseUnifiedRateLimitHeaders(h: HeaderSource): WindowSnapshot | 
   snap.fiveHour = fiveHour;
   snap.sevenDay = sevenDay;
   snap.fable = fable;
+  snap.presence = { five_hour: !!fiveHour, seven_day: !!sevenDay, fable: !!fable };
   if (fable && !fable.resetAt) fable.resetAt = toIso(headerGet(h, "anthropic-ratelimit-unified-reset"));
   return snap;
 }

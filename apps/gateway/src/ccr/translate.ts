@@ -591,6 +591,8 @@ export class SessionTranslator {
   private usage: TranslatedUsage = { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 };
   /** Authoritative upstream meter (result.modelUsage, camelCase incl. costUSD) — platform ledger, never client-billed (§7.1). */
   private upstreamModelUsage: Json | null = null;
+  /** Last `rate_limit_event.rate_limit_info` of the turn (Claude Code 2.1.3xx emits one per API call): the worker path's only live window signal. */
+  private rateLimitInfo: Json | null = null;
   private usageSeen = false;
   private resultUsageSeen = false;
   private usageBaseline: TranslatedUsage | null = null;
@@ -1046,6 +1048,11 @@ export class SessionTranslator {
           this.note(`stream_event/${et}${detail}`);
         }
       } else if (pt === "system") this.note(`system/${String(pj.subtype ?? "-")}`);
+      else if (pt === "rate_limit_event") {
+        const info = pj.rate_limit_info as Json | undefined;
+        if (info && typeof info === "object") this.rateLimitInfo = info;
+        this.note(`rate_limit_event/${String(info?.status ?? "-")}${info?.rateLimitType ? ":" + String(info.rateLimitType) : ""}`);
+      }
       else if (pt === "assistant" || pt === "user") this.note(`${pt}:${String((pj.message as Json | undefined)?.stop_reason ?? "-")}`);
       else this.note(pt);
     }
@@ -1297,6 +1304,11 @@ export class SessionTranslator {
   /** Full upstream modelUsage (camelCase, costUSD) for the platform ledger; null when the result carried none. */
   get upstreamUsage(): Json | null {
     return this.upstreamModelUsage;
+  }
+
+  /** Last rate_limit_event info of the turn (status / rateLimitType / utilization / resetsAt …); null when none arrived. */
+  get rateLimit(): Json | null {
+    return this.rateLimitInfo;
   }
 
   get hasUsage(): boolean {

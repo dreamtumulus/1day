@@ -323,6 +323,7 @@ const MIGRATIONS: Array<{ version: number; up: (d: DatabaseSync, log: Log) => vo
   { version: 35, up: migration35 },
   { version: 36, up: migration36 },
   { version: 37, up: migration37 },
+  { version: 38, up: migration38 },
 ];
 
 // 上号员令牌（独立鉴权的上号站点 /onboard）：admin 签发，绑定目标节点；
@@ -1044,4 +1045,22 @@ function migration37(d: DatabaseSync, log: Log): void {
   const cols = (d.prepare("PRAGMA table_info(usage_logs)").all() as Array<{ name: string }>).map((r) => r.name);
   if (cols.includes("team_id") && cols.includes("created_at")) d.exec("CREATE INDEX IF NOT EXISTS idx_usage_team_time ON usage_logs(team_id, created_at)");
   log("migration 37: upstream_teams budgets / suspension fields; idx_usage_team_time");
+}
+
+// Account attributes (operator 2026-11-02): everything `GET /api/oauth/profile` says (tier separates Ultra / Max), the last
+// usage probe body, and which windows the account is actually subject to (verified Ultra: no five-hour window).
+function migration38(d: DatabaseSync, log: Log): void {
+  addColumns(d, log, "accounts", [
+    ["rate_limit_tier", "TEXT"],
+    ["plan_label", "TEXT"],
+    ["org_type", "TEXT"],
+    ["billing_type", "TEXT"],
+    ["seat_tier", "TEXT"],
+    ["subscription_status", "TEXT"],
+    ["profile_json", "TEXT"],
+    ["usage_json", "TEXT"],
+    ["usage_checked_at", "TEXT"],
+    ["window_model", "TEXT"],
+  ]);
+  log("migration 38: accounts profile attributes (rate_limit_tier, plan_label, org/billing/seat/subscription), profile_json, usage_json, window_model");
 }
