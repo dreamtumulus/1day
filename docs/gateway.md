@@ -470,6 +470,12 @@ HMAC-SHA256(`PROOF_SECRET`, `upstream_host:sha256(body)`)，不是硬件证明�
 
 单元测试 `apps/gateway/test/translate.test.mjs`（`pnpm --filter @1dayapi/gateway test`）；端到端 `tests/e2e/ccr.test.mjs`。
 
+## 10b. worker 轮次抓样（2026-11-03）
+
+`settings.worker_capture_sample` / `worker_capture_keys` / `worker_capture_keep_days`（默认 0 / 空 / 7）：worker 路径按比例或按 Key 把
+「客户请求 → 发给节点的内容 → 返回」记成 `data/captures/worker-<日>.ndjson`，`ops/bin/worker-capture-review` 出报表与样本。详见
+`worker-sessions.md` 2026-11-03 条目。只记 worker（ccr-*）车道；直连路径不抓。
+
 ## 11. 环境变量
 
 | 变量 | 默认 | 说明 |

@@ -95,6 +95,12 @@ export const SETTING_DEFAULTS = {
   // "1" = 超出基线的 cache_creation 按普通输入计（1.0×，不收 1.25× 写入溢价），cache_read 仍按读价（0.1×）让利给客户；
   // "0" = 原样透传上游口径（写 1.25× / 读 0.1×）。2026-10-17 用户拍板默认 1。
   ccr_cache_write_as_input: "1",
+  // worker 路径抓样（2026-11-03，gateway ccr/capture.ts）：按比例把「客户请求 → 发给节点的内容 → 返回」记成 NDJSON
+  // （<DATA_DIR>/captures/worker-<日期>.ndjson），用 ops/bin/worker-capture-review 看 worker 回的是不是用户要的东西。
+  // worker_capture_sample：0 = 关；0.05 = 5%；1 = 全部。worker_capture_keys：逗号分隔的 api_keys.id（或前缀），这些 Key 100% 抓。
+  worker_capture_sample: "0",
+  worker_capture_keys: "",
+  worker_capture_keep_days: "7",
   // 缓存重建返还（docs/data-model.md §3 cache_refunds，用户 2026-10-21 定）：粘性会话被迫换账号的请求
   // （usage_logs.account_switched=1）多付的缓存费（实付 − 全部提示词按缓存读价的理论价）按百分比返还：
   // 先冲减授信已用（消耗的是授信就还到授信），余下加到预付余额；console 定时任务每 interval 秒跑一轮。

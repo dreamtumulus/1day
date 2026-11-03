@@ -19,6 +19,7 @@ import { bump } from "../metrics.js";
 import { randomUUID } from "node:crypto";
 import { buildNativeTranscript, countStrippedThinking } from "./native-session.js";
 import type { EventPayload, TurnFacts } from "./types.js";
+import { TurnCapture, captureWanted } from "./capture.js";
 
 type Json = Record<string, any>;
 
@@ -95,6 +96,9 @@ export interface CcrWorkerInput {
   canonical?: boolean;
   /** The key's group (three-state switches resolved per key group). */
   groupId?: string | null;
+  /** Caller identity for the sampled turn capture (ccr/capture.ts); optional, diagnostics only. */
+  apiKeyId?: string | null;
+  userId?: string | null;
   /** Filled by the worker at turn end (upstream retries …); proxy.ts records it with the usage row. */
   facts?: TurnFacts;
 }
@@ -320,6 +324,10 @@ export async function runCcrWorker(input: CcrWorkerInput): Promise<Response | nu
     }
     sessionMemory.remember(reuseKey, { hashes: plan.hashes, assistantFold: fold, turn: plan.mode === "fresh" ? 1 : (plan.expectedTurn ?? 0) + 1, usage: translator.cumulativeUsage, tails: blockTails(persistentBlocks), ...(native ? { native } : {}) });
   };
+  // Sampled turn capture (docs/worker-sessions.md 2026-11-03): request half now, response half at every exit below.
+  const capture = captureWanted(input.apiKeyId, input.requestId)
+    ? new TurnCapture({ requestId: input.requestId, apiKeyId: input.apiKeyId, userId: input.userId, groupId: input.groupId, account: { id: account.id, name: account.name }, clientModel: input.clientModel, upstreamModel: input.upstreamModel, stream, canonical, persistent, nativeTools, body, systemText: canonical ? callerSystemText(body) : systemPrompt, plan, sent: canonical ? canon?.content : content, maxTokens, stopSequences, thinking: { thinkingWanted, thinkingBudget, effort } })
+    : null;
   const translator = new SessionTranslator({
     model: input.clientModel,
     simulateTools: hasTools && !nativeTools,
@@ -438,6 +446,7 @@ export async function runCcrWorker(input: CcrWorkerInput): Promise<Response | nu
     } catch (err) {
       input.signal?.removeEventListener("abort", onAbort);
       await reader.cancel().catch(() => {});
+      capture?.finish(translator, { status: input.signal?.aborted ? 499 : 502, error: input.signal?.aborted ? "client_closed" : (err as Error).message });
       if (input.signal?.aborted) throw input.signal.reason;
       return errorResponse(502, `ccr_worker: ${(err as Error).message}`);
     }
@@ -452,12 +461,17 @@ export async function runCcrWorker(input: CcrWorkerInput): Promise<Response | nu
     if (translator.error) {
       logResult(input.requestId, translator);
       noteTurnFacts(input, translator, account.name, "ccr-worker");
+      capture?.finish(translator, { status: 502 });
       return errorResponse(502, `ccr_worker: ${translator.error}`);
     }
-    if (!translator.finished && !translator.awaitingTools && !stalled) return errorResponse(502, "ccr_worker: worker exited without a result");
+    if (!translator.finished && !translator.awaitingTools && !stalled) {
+      capture?.finish(translator, { status: 502, error: "worker exited without a result" });
+      return errorResponse(502, "ccr_worker: worker exited without a result");
+    }
     if (translator.awaitingTools) console.log(`[ccr-worker] ${input.requestId} parked on ${translator.awaitingTools.length} native tool call(s)`);
     if (translator.cutShort) console.log(`[ccr-worker] ${input.requestId} cut short: ${translator.stopReasonOut} (session cancelled)`);
     if (translator.upstreamUsage) console.log(`[ccr-worker] ${input.requestId} upstream modelUsage: ${JSON.stringify(translator.upstreamUsage).slice(0, 400)}`);
+    capture?.finish(translator, { status: 200, stalled });
     return new Response(JSON.stringify(translator.message()), { status: 200, headers: { "content-type": "application/json" } });
   }
 
@@ -512,6 +526,7 @@ export async function runCcrWorker(input: CcrWorkerInput): Promise<Response | nu
       } finally {
         input.signal?.removeEventListener("abort", onAbort);
         await reader.cancel().catch(() => {});
+        capture?.finish(translator, { status: translator.error ? 502 : 200, error: input.signal?.aborted ? "client_closed" : (!translator.finished && !translator.awaitingTools && !stalled ? "worker exited without a result" : null), stalled });
         demand.close(controller);
       }
       })();

@@ -1132,6 +1132,8 @@ async function proxyRequest(req: FastifyRequest, reply: FastifyReply, format: Cl
                 // three-state master switch for this key group / account (铁律 2).
                 canonical: canonicalWorker,
                 groupId: caller.groupId,
+                apiKeyId: caller.apiKeyId,
+                userId: caller.userId,
                 facts: ctx.turnFacts,
               });
               if (!res) break; // no worker-capable node accepted: infra state, try next account without counting

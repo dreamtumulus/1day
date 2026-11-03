@@ -256,6 +256,17 @@ Claude Code 2.1.300 已具备做持久会话所需的全部开关（worker-01 �
   `[user]\n[tool_result for …]` 块只按结果 id 哈希、其它文本去掉 system-reminder 再哈希。gateway 单测 103。
   **统计口径**：`journalctl --since "HH:MM"` 按服务器本地时间（CEST）解析，之前几轮"切换后"统计混进了两小时旧进程日志；以后按 `_PID=<MainPID>` 过滤。
 
+- 2026-11-03 **worker 轮次抓样（用户："要看用户请求 → worker → 返回的是不是用户要的东西"）**：节点上的会话目录在会话结束即删，平台此前没有任何
+  地方保存 worker 路径的请求/响应正文。网关 `ccr/capture.ts`：按 `settings.worker_capture_sample`（0 / 比例 / 1，按 requestId 哈希确定性采样）或
+  `worker_capture_keys`（逗号分隔的 Key id/前缀，100% 抓）把每轮记成一行 NDJSON 到 `<DATA_DIR>/captures/worker-<UTC 日>.ndjson`（0600，
+  `worker_capture_keep_days` 后删）：请求侧 = 调用方 system 头部、消息数/角色序列、工具名、max_tokens/stop/thinking、最后 4 条消息（每块截 3k）、
+  最后一条用户文本；计划 = fresh/continue/tool_result 及原因；发给节点的折叠块数/字数/首尾；响应侧 = 状态、stop_reason、内容块（文本截 6k）、
+  guardHits、cutShort、停泊/交接、usage、result、上游重试、耗时。四个出口（非流式正常/错误、流式 finally）都记，`finish` 幂等、不抛。
+  `ops/bin/worker-capture-review [--hours 24] [--key <id>] [--flag <name>] [--show N]`：按轮打标——transcript_continuation（回复里出现
+  `[user]`/`[assistant]`/`[tool_result …]` 或 ```tool_call 围栏）、guard_hit、empty_response、identity_leak、unknown_tool、language_mismatch、
+  cut_short、fresh_replay（长对话全量重放）、tool_round_handover、error；`--show` 打印「USER> / ASSISTANT> / TOOL_USE>」对照给人看。
+  测试 `worker-capture.test.mjs`。默认关（sample=0），开关在控制台「设置」或 settings 表，网关每请求读取、即时生效。
+
 
 ## 8. canonical 模式（2026-11-01，spec WP2，`worker_canonical` 三态 + 节点 `CC_WORKER_CANONICAL=1` → capability `canonical_v1`）
 

@@ -1,0 +1,97 @@
+#!/usr/bin/env node
+// Review sampled worker turns (gateway ccr/capture.ts): what the customer asked, what went to the node, what came back,
+// and which turns look wrong. Pure read of <DATA_DIR>/captures/worker-*.ndjson.
+//   worker-capture-review [--hours 24] [--dir /opt/1dayapi/data/captures] [--key <api_key_id prefix>] [--user <id prefix>]
+//                         [--flag <name>] [--show N] [--all] [--json]
+// Flags (per turn):
+//   transcript_continuation  response text carries [user]/[assistant]/[tool_result …] headings or a ```tool_call fence → model continued the transcript
+//   guard_hit                the transcript guard had to cut/convert something (translator.guardHits)
+//   empty_response           200 with no text and no tool_use
+//   identity_leak            response mentions Claude Code / Agent SDK / Anthropic as its own identity
+//   unknown_tool             tool_use name not among the request's tools
+//   language_mismatch        user wrote CJK, answer has none (or the reverse)
+//   cut_short                stop_reason max_tokens / stop_sequence with the client's cap ≥ 1024 → answer truncated by the cap
+//   fresh_replay             fresh plan on a long history (prefix/echo/no_memory miss): whole conversation re-sent, cold start
+//   tool_round_handover      tool_use turn handed over without parked calls (next request restarts a process)
+//   error                    non-200 (worker/infra error, client closed)
+import { readdirSync, readFileSync, statSync } from "node:fs";
+import { join } from "node:path";
+
+const args = process.argv.slice(2);
+const opt = (name, def) => { const i = args.indexOf(name); return i >= 0 ? args[i + 1] : def; };
+const has = (name) => args.includes(name);
+const dir = opt("--dir", process.env.CAPTURE_DIR ?? "/opt/1dayapi/data/captures");
+const hours = Number(opt("--hours", "24"));
+const keyPrefix = opt("--key", null);
+const userPrefix = opt("--user", null);
+const onlyFlag = opt("--flag", null);
+const show = Number(opt("--show", "0"));
+const since = Date.now() - hours * 3600_000;
+
+const files = readdirSync(dir).filter((f) => /^worker-\d{4}-\d{2}-\d{2}\.ndjson$/.test(f)).sort();
+const rows = [];
+for (const f of files) {
+  if (statSync(join(dir, f)).mtimeMs < since) continue;
+  for (const line of readFileSync(join(dir, f), "utf8").split("\n")) {
+    if (!line.trim()) continue;
+    try { rows.push(JSON.parse(line)); } catch { /* partial line */ }
+  }
+}
+const turns = rows.filter((r) => Date.parse(r.ts) >= since && (!keyPrefix || String(r.apiKeyId ?? "").startsWith(keyPrefix)) && (!userPrefix || String(r.userId ?? "").startsWith(userPrefix)));
+
+const CJK = /[぀-ヿ㐀-鿿가-힯]/;
+const TRANSCRIPT = /(^|\n)\s*\[(user|assistant|tool_result for |tool_use )/i;
+const IDENTITY = /(I am|I'm|this is|built on|powered by)[^.\n]{0,40}(Claude Code|Claude Agent SDK|Agent SDK)/i;
+function flagsOf(r) {
+  const f = [];
+  const resp = r.response ?? {};
+  const texts = (resp.content ?? []).filter((b) => b.type === "text").map((b) => b.text ?? "").join("\n");
+  const toolUses = (resp.content ?? []).filter((b) => b.type === "tool_use");
+  if (resp.status !== 200) f.push("error");
+  if (TRANSCRIPT.test(texts) || /```tool_call/.test(texts)) f.push("transcript_continuation");
+  if ((resp.guardHits ?? []).length) f.push("guard_hit");
+  if (resp.status === 200 && !resp.textChars && !toolUses.length && !resp.awaitingTools) f.push("empty_response");
+  if (IDENTITY.test(texts)) f.push("identity_leak");
+  const known = new Set(r.request?.tools ?? []);
+  if (known.size && toolUses.some((t) => !known.has(t.name))) f.push("unknown_tool");
+  const q = r.request?.lastUserText ?? "";
+  if (q.length > 20 && texts.length > 40 && CJK.test(q) !== CJK.test(texts)) f.push("language_mismatch");
+  if (resp.cutShort && (resp.stopReason === "max_tokens" || resp.stopReason === "stop_sequence") && (r.request?.maxTokens ?? 0) >= 1024 && resp.stopReason === "max_tokens") f.push("cut_short");
+  if (r.plan?.mode === "fresh" && (r.request?.messages ?? 0) > 6 && /^(prefix@|echo|no_memory|no_tail|expired)/.test(r.plan?.reason ?? "")) f.push("fresh_replay");
+  if (resp.stalled) f.push("tool_round_handover");
+  return f;
+}
+const flagged = turns.map((r) => ({ r, flags: flagsOf(r) }));
+const picked = onlyFlag ? flagged.filter((x) => x.flags.includes(onlyFlag)) : flagged;
+
+if (has("--json")) { console.log(JSON.stringify(picked.map((x) => ({ ...x.r, flags: x.flags })))); process.exit(0); }
+
+const counts = {};
+for (const x of flagged) for (const fl of x.flags) counts[fl] = (counts[fl] ?? 0) + 1;
+const byPlan = {};
+for (const x of flagged) { const k = `${x.r.plan?.mode}${x.r.plan?.reason ? ":" + String(x.r.plan.reason).replace(/@.*/, "@") : ""}`; byPlan[k] = (byPlan[k] ?? 0) + 1; }
+console.log(`== worker capture review  dir=${dir}  last ${hours}h  turns=${turns.length}  files=${files.length}${keyPrefix ? `  key=${keyPrefix}` : ""}${userPrefix ? `  user=${userPrefix}` : ""}`);
+console.log(`   clean=${flagged.filter((x) => !x.flags.length).length}  flagged=${flagged.filter((x) => x.flags.length).length}`);
+console.log("== flags");
+for (const [k, v] of Object.entries(counts).sort((a, b) => b[1] - a[1])) console.log(`   ${k.padEnd(24)} ${v}`);
+console.log("== plan mix");
+for (const [k, v] of Object.entries(byPlan).sort((a, b) => b[1] - a[1])) console.log(`   ${k.padEnd(24)} ${v}`);
+const stop = {};
+for (const x of flagged) { const k = x.r.response?.stopReason ?? "-"; stop[k] = (stop[k] ?? 0) + 1; }
+console.log("== stop_reason:", Object.entries(stop).map(([k, v]) => `${k}=${v}`).join("  "));
+
+if (show > 0) {
+  const list = (onlyFlag ? picked : picked.filter((x) => x.flags.length)).slice(-show);
+  for (const { r, flags } of list.length ? list : picked.slice(-show)) {
+    const resp = r.response ?? {};
+    console.log(`\n---- ${r.ts} ${r.requestId} key=${String(r.apiKeyId).slice(0, 8)} acct=${r.account?.name} model=${r.model?.client} ${r.stream ? "stream" : "sync"} plan=${r.plan?.mode}${r.plan?.reason ? "/" + r.plan.reason : ""} msgs=${r.request?.messages} tools=${(r.request?.tools ?? []).length} max=${r.request?.maxTokens} → ${resp.status} ${resp.stopReason ?? ""} ${resp.durationMs}ms flags=[${flags.join(",")}]`);
+    console.log(`  USER> ${String(r.request?.lastUserText ?? "").replace(/\s+/g, " ").slice(0, 600)}`);
+    for (const b of resp.content ?? []) {
+      if (b.type === "text") console.log(`  ASSISTANT> ${String(b.text).replace(/\s+/g, " ").slice(0, 900)}`);
+      else if (b.type === "tool_use") console.log(`  TOOL_USE> ${b.name} ${String(b.input).slice(0, 300)}`);
+      else console.log(`  ${b.type.toUpperCase()}>`);
+    }
+    if (resp.error) console.log(`  ERROR> ${resp.error}`);
+    if ((resp.guardHits ?? []).length) console.log(`  GUARD> ${resp.guardHits.join(",")}`);
+  }
+}
