@@ -13,6 +13,7 @@
 | `GET /health` | `{status, service, time}` |
 | `GET /v1/models` | 注册表中启用的模型 ∩ 调用者 Key 所在分组白名单；`{object:"list", data:[{id, object, type, created, owned_by, display_name}]}`；带 `anthropic-version` 头时错误用 Anthropic 信封 |
 | `GET /v1/models/pricing` | 公开价目（`publicPricing()`，无需鉴权） |
+| `GET /v1/balance` | 用 API Key 自查余额（2026-11-03）：`{object:"balance", balance_usd, credit_limit_usd, credit_used_usd, available_usd, key:{id, name, quota_usd(null=不限), used_usd, remaining_usd(null=不限), expires_at}, group:{id, name, rate_multiplier}}`；`available_usd = 授信额度 − 本期已用 + 预付余额`，即推理准入用的数；只做 §2 的 1–4，余额为 0 也能查 |
 | `POST /v1/chat/completions` | OpenAI Chat 协议 |
 | `POST /v1/messages` | Anthropic Messages 协议（必须带 `max_tokens`） |
 | `POST /v1/messages/count_tokens` | 本地估算 `{input_tokens}`（字符 /4），不调上游、不计费 |
@@ -32,7 +33,7 @@
 7. 注册表无此模型或已下架 → 404 `model_not_found`（v2 中"未知模型 0 计费"由此消除）。
 8. 分组白名单不允许 → 403 `model_not_allowed`。
 
-`/v1/models`、`count_tokens` 只做 1–4。
+`/v1/models`、`/v1/balance`、`count_tokens` 只做 1–4。
 
 鉴权通过后的准入拒绝（5–8：余额 / 配额 / 缺参数 / 模型不存在 / 白名单）自 2026-10-16 起也各写一条零费用 `usage_logs`
 （`error_code`、`error_message`、`account_id` NULL、`mode` NULL），错误日志页因此能看到"请求到了但没放行"的那部分；1–4 没有可归属的用户，不落行。

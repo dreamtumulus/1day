@@ -14,6 +14,12 @@ export interface CallerContext {
   balanceUsd: number;
   /** limit − used + prepaid balance (docs/data-model.md §4); admission requires > 0. */
   availableUsd: number;
+  creditLimitUsd: number;
+  creditUsedUsd: number;
+  /** Per-key quota (0 = unlimited) and what it has used so far. */
+  keyQuotaUsd: number;
+  keyUsedUsd: number;
+  keyExpiresAt: string | null;
   groupId: string;
   groupName: string;
   rateMultiplier: number;
@@ -163,6 +169,11 @@ export function authenticate(
     role: r.role,
     balanceUsd: r.balance_usd,
     availableUsd: r.credit_limit_usd - r.credit_used_usd + r.balance_usd,
+    creditLimitUsd: r.credit_limit_usd,
+    creditUsedUsd: r.credit_used_usd,
+    keyQuotaUsd: r.quota_usd,
+    keyUsedUsd: r.used_usd,
+    keyExpiresAt: r.expires_at,
     groupId: r.group_id,
     groupName: r.group_name,
     rateMultiplier: r.rate_multiplier ?? 1,

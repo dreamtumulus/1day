@@ -24,6 +24,32 @@ async function handleModels(req: FastifyRequest, reply: FastifyReply): Promise<u
   };
 }
 
+// GET /v1/balance — self-service balance / credit / key-quota lookup by API key (docs/gateway.md §1).
+// Same auth as /v1/models (steps 1–4 only): an exhausted account can still see why it is refused.
+const usd = (n: number): number => Math.round(n * 1e8) / 1e8;
+export async function handleBalance(req: FastifyRequest, reply: FastifyReply): Promise<unknown> {
+  const format = req.headers["anthropic-version"] ? "anthropic" : "openai-chat";
+  const caller = authenticate(req, reply, format, false);
+  if (!caller) return reply;
+  const quota = caller.keyQuotaUsd > 0 ? caller.keyQuotaUsd : null;
+  return {
+    object: "balance",
+    balance_usd: usd(caller.balanceUsd),
+    credit_limit_usd: usd(caller.creditLimitUsd),
+    credit_used_usd: usd(caller.creditUsedUsd),
+    available_usd: usd(caller.availableUsd),
+    key: {
+      id: caller.apiKeyId,
+      name: caller.apiKeyName,
+      quota_usd: quota,
+      used_usd: usd(caller.keyUsedUsd),
+      remaining_usd: quota === null ? null : usd(Math.max(0, quota - caller.keyUsedUsd)),
+      expires_at: caller.keyExpiresAt,
+    },
+    group: { id: caller.groupId, name: caller.groupName, rate_multiplier: caller.rateMultiplier },
+  };
+}
+
 // Claude Code calls this; answer locally with an estimate (no upstream cost). Same yardstick as billing
 // (`estimateRequestTokens`): text at chars/4 of the values only, images / documents at a flat per-block cost —
 // not the base64 byte length, which over-counted a single large image as hundreds of thousands of tokens and
@@ -56,6 +82,7 @@ export function registerRoutes(app: FastifyInstance): void {
   for (const p of ["", "/v1"]) {
     app.get(`${p}/models`, handleModels);
     app.get(`${p}/models/pricing`, async () => ({ object: "list", data: publicPricing() }));
+    app.get(`${p}/balance`, handleBalance);
     app.post(`${p}/chat/completions`, (req, reply) => proxy(req, reply, "openai-chat", "/v1/chat/completions"));
     app.post(`${p}/messages`, (req, reply) => proxy(req, reply, "anthropic", "/v1/messages"));
     app.post(`${p}/messages/count_tokens`, handleCountTokens);
