@@ -15,7 +15,8 @@ import { getSetting } from "./settings.js";
 //
 // Fields:
 // historyPolicy — what the gateway does with a request that carries prior turns this platform never served:
-//   reset (default via settings history_policy_default) / passthrough / reject (409 history_unknown).
+//   reset (default via settings history_policy_default; passthrough when the effective workerMode is canonical and
+//   no layer names a historyPolicy, 2026-11-05) / passthrough / reject (409 history_unknown).
 // directOnly — the key never falls back to the worker path (400 direct_only instead).
 // probeIntercept — liveness probes are answered from pool state (docs/gateway.md §2c). Default on.
 // teamAffinity — which organization a NEW conversation joins when several have capacity: null = capacity,
@@ -177,12 +178,19 @@ export function effectiveKeyPolicy(doc: KeyPolicyDoc, groupId?: string | null, a
   const base: KeyPolicy = { ...DEFAULT_KEY_POLICY, allowedCustomEntrypoints: [], historyPolicy: defaultHistoryPolicy(groupId) };
   const layers: KeyPolicyLayer[] = autoActive ? [doc.auto, doc.override] : [doc.override];
   const out: KeyPolicy = { ...base };
+  let historyNamed = false;
   for (const layer of layers) {
     for (const k of KEY_POLICY_FIELDS) {
       const v = layer[k];
-      if (v !== undefined) (out as unknown as Record<string, unknown>)[k] = Array.isArray(v) ? [...v] : v;
+      if (v === undefined) continue;
+      if (k === "historyPolicy") historyNamed = true;
+      (out as unknown as Record<string, unknown>)[k] = Array.isArray(v) ? [...v] : v;
     }
   }
+  // Canonical worker (2026-11-05): the `reset` default guards the legacy fold (a foreign transcript folded into one
+  // user message makes models "continue the transcript"); canonical imports history as a native transcript, so a
+  // canonical key that names no historyPolicy forwards its history whole. A named reset/reject still wins.
+  if (!historyNamed && out.workerMode === "canonical") out.historyPolicy = "passthrough";
   return out;
 }
 
