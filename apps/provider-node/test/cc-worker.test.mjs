@@ -190,7 +190,7 @@ assert.equal(defaultMaxConcurrency(600 * 1_048_576), 1, "floor 1");
   assert.ok(out.includes('"prompt_chars":20'), "text block carried the folded prompt");
 }
 
-// ---- isolation: private scratch cwd/HOME per session, removed afterwards; no tools, no transcript ----
+// ---- isolation: private scratch HOME per session (removed afterwards); fixed, empty cwd per account (kept, 2026-11-05) ----
 {
   const { manager, frames, dataDir } = setup();
   manager.handleOpen(openMsg("s-iso"));
@@ -198,11 +198,14 @@ assert.equal(defaultMaxConcurrency(600 * 1_048_576), 1, "floor 1");
   const out = stdoutOf(frames, "s-iso");
   const init = JSON.parse(out.split("\n").find((l) => l.includes('"subtype":"init"')));
   const sessionsDir = path.join(dataDir, "cc-sessions");
-  assert.ok(init.cwd.startsWith(sessionsDir), `worker cwd is a per-session scratch dir: ${init.cwd}`);
-  assert.equal(init.home, init.cwd, "HOME points at the scratch dir too");
+  assert.ok(init.home.startsWith(sessionsDir + path.sep) && !init.home.startsWith(path.join(sessionsDir, "cwd")), `HOME is a per-session scratch dir: ${init.home}`);
+  // Claude Code writes the cwd into its system prompt: one fixed dir per account keeps the prefix cache-stable across sessions.
+  assert.equal(init.cwd, path.join(sessionsDir, "cwd", "acct-acct-1"), `worker cwd is the account's fixed dir: ${init.cwd}`);
+  assert.notEqual(init.home, init.cwd, "HOME stays per session while cwd is shared per account");
   assert.ok(init.argv.includes("--tools") && init.argv.includes("--no-session-persistence"), `isolation flags passed: ${init.argv.join(" ")}`);
-  await waitFor(() => !fs.existsSync(init.cwd));
-  assert.ok(!fs.existsSync(init.cwd), "scratch dir removed after the session");
+  await waitFor(() => !fs.existsSync(init.home));
+  assert.ok(!fs.existsSync(init.home), "scratch HOME removed after the session");
+  assert.ok(fs.existsSync(init.cwd) && fs.readdirSync(init.cwd).length === 0, "fixed cwd kept and still empty");
   assert.equal(manager.runAs, null, "tests do not run as root: no privilege drop");
 }
 
@@ -236,7 +239,7 @@ assert.equal(defaultMaxConcurrency(600 * 1_048_576), 1, "floor 1");
   const init = JSON.parse(out.split("\n").find((l) => l.includes('"subtype":"init"')));
   assert.ok(init.argv.includes("--system-prompt-file"), `system prompt flag passed: ${init.argv.join(" ")}`);
   assert.equal(init.systemPrompt, "You are a terse assistant.");
-  await waitFor(() => !fs.existsSync(init.cwd));
+  await waitFor(() => !fs.existsSync(init.home));
 }
 
 // ---- device identity: fresh config dir seeded from the platform's deviceId; identities reported as a heartbeat delta ----

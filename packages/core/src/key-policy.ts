@@ -92,6 +92,12 @@ export function defaultHistoryPolicy(groupId?: string | null): HistoryPolicy {
   return valid(d) ? d : "reset";
 }
 
+/** The workerMode a key gets when neither layer names one: settings `worker_mode_default` (legacy), 2026-11-05. */
+export function defaultWorkerMode(): WorkerMode {
+  const d = getSetting("worker_mode_default").trim();
+  return (WORKER_MODES as readonly string[]).includes(d) ? (d as WorkerMode) : "legacy";
+}
+
 const ENTRYPOINT_RE = /^[a-z][a-z0-9_-]{0,39}$/;
 
 function oneOf<T extends string>(list: readonly T[], v: unknown): T | undefined {
@@ -175,7 +181,7 @@ export function keyPolicyAutoActive(groupId?: string | null): boolean {
 
 /** Effective policy: override ?? (auto when in force) ?? system default (historyPolicy default per group). */
 export function effectiveKeyPolicy(doc: KeyPolicyDoc, groupId?: string | null, autoActive = keyPolicyAutoActive(groupId)): KeyPolicy {
-  const base: KeyPolicy = { ...DEFAULT_KEY_POLICY, allowedCustomEntrypoints: [], historyPolicy: defaultHistoryPolicy(groupId) };
+  const base: KeyPolicy = { ...DEFAULT_KEY_POLICY, allowedCustomEntrypoints: [], historyPolicy: defaultHistoryPolicy(groupId), workerMode: defaultWorkerMode() };
   const layers: KeyPolicyLayer[] = autoActive ? [doc.auto, doc.override] : [doc.override];
   const out: KeyPolicy = { ...base };
   let historyNamed = false;

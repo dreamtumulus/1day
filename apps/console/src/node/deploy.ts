@@ -216,12 +216,14 @@ EOF
 if [ "$(id -u)" -eq 0 ]; then
   echo "Environment=CC_WORKER_MACHINE_IDENTITY=1" >> "$UNIT"
 fi
+# Canonical worker (spec WP2; default for every key since 2026-11-05): the node declares canonical_v1 only with this env.
+echo "Environment=CC_WORKER_CANONICAL=1" >> "$UNIT"
 if ! $SYSCTL daemon-reload || ! $SYSCTL enable --now 1dayapi-node; then
   echo "[deploy] WARN: systemd unavailable; starting node with nohup"
   if [ "$(id -u)" -eq 0 ]; then
-    CC_WORKER_MACHINE_IDENTITY=1 nohup "$HOME/.bun/bin/bun" "$APP_DIR/node-bundle.js" >> "$APP_DIR/node.log" 2>&1 &
+    CC_WORKER_MACHINE_IDENTITY=1 CC_WORKER_CANONICAL=1 nohup "$HOME/.bun/bin/bun" "$APP_DIR/node-bundle.js" >> "$APP_DIR/node.log" 2>&1 &
   else
-    nohup "$HOME/.bun/bin/bun" "$APP_DIR/node-bundle.js" >> "$APP_DIR/node.log" 2>&1 &
+    CC_WORKER_CANONICAL=1 nohup "$HOME/.bun/bin/bun" "$APP_DIR/node-bundle.js" >> "$APP_DIR/node.log" 2>&1 &
   fi
 else
   if [ "$(id -u)" -ne 0 ]; then

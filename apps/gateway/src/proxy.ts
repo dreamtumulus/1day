@@ -108,7 +108,7 @@ import { bump } from "./metrics.js";
 // Canonical worker turns the legacy worker takes over (2026-11-05, probe toolround-import): a tool round no live native
 // session holds / an external history canonical may not import, or canonical needing the persistent pool. The legacy
 // fold carries any history, so these are a hand-over, not a 409.
-const CANONICAL_FALLBACK_CODES = new Set(["history_import_unsupported", "canonical_requires_persistent_session"]);
+const CANONICAL_FALLBACK_CODES = new Set(["history_import_unsupported", "canonical_requires_persistent_session", "canonical_node_unavailable"]);
 import { AnthropicToResponsesStream, ResponsesUnsupported, anthropicMessageToResponses, responsesToAnthropic, strictUnsupportedParams } from "./adapters/responses.js";
 import { UsageAccumulator, collectText, estimateRequestTokens } from "./usage.js";
 import { orderByMerklePrefix, rememberMerklePrefix } from "./merkle-affinity.js";

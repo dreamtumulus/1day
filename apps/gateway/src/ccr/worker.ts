@@ -384,6 +384,9 @@ export async function runCcrWorker(input: CcrWorkerInput): Promise<Response | nu
     return null;
   });
   if (canonical) bump("canonical_worker_open_total", { profile: `cc-${CC_VERSION}-restricted`, result: opened ? "accepted" : "no_node" });
+  // No node may take a canonical open for this account (its node lacks canonical_v1, or is away): the legacy worker on
+  // the same account serves the turn (proxy.ts CANONICAL_FALLBACK_CODES, 2026-11-05 canonical-by-default rollout).
+  if (!opened && canonical) throw new TunnelRequestError("canonical_node_unavailable", `No canonical-capable node is available for ${account.name}`);
   if (!opened) return null;
 
   console.log(`[ccr-worker] ${input.requestId} on ${account.name} (${canonical ? "canonical, " : ""}session ${opened.sessionId}${reuseKey ? `, ${plan.mode} ${reuseKey.slice(0, 8)}${plan.mode === "continue" ? ` turn ${(plan.expectedTurn ?? 0) + 1}` : plan.reason ? ` (${plan.reason}, ${fullBlocks.length} blocks${ephemeral ? `, ${ephemeral} system` : ""})` : ""}` : oneShot ? ", one-shot suggestion" : ""})`);

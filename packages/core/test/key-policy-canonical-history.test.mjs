@@ -24,3 +24,14 @@ test("canonical workerMode defaults historyPolicy to passthrough; a named policy
   assert.equal(parseKeyPolicy(autoDoc).historyPolicy, "passthrough");
   setSetting("key_policy_auto", "0");
 });
+
+test("worker_mode_default setting supplies the base workerMode; layers still win", () => {
+  setSetting("worker_mode_default", "canonical");
+  assert.equal(parseKeyPolicy(null).workerMode, "canonical");
+  assert.equal(parseKeyPolicy(null).historyPolicy, "passthrough", "canonical default carries the passthrough default");
+  assert.equal(parseKeyPolicy(JSON.stringify({ auto: {}, override: { workerMode: "legacy" } })).workerMode, "legacy");
+  setSetting("worker_mode_default", "bogus");
+  assert.equal(parseKeyPolicy(null).workerMode, "legacy", "unknown value falls back to legacy");
+  setSetting("worker_mode_default", "legacy");
+  assert.equal(parseKeyPolicy(null).historyPolicy, "reset");
+});

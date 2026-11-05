@@ -64,6 +64,9 @@ export const SETTING_DEFAULTS = {
   // Key 没显式配置 historyPolicy 时的默认值（reset | reject | passthrough）；history_policy_canary 非空时灰度组的 Key 用它。
   history_policy_default: "reset",
   history_policy_canary: "",
+  // Key 没显式配置 workerMode 时的默认值（legacy | canonical）。2026-11-05 用户定：全部 Key 默认 canonical（真 CC 直连不受影响）；
+  // 账号所在节点没有 canonical_v1 能力时，网关把该轮交给同账号的 legacy worker（canonical_node_unavailable 回落）。
+  worker_mode_default: "legacy",
   // ---- canonical 实施（docs/canonical-implementation-spec-2026-11-01.md WP1 / WP5 / WP8），全部三态，默认老行为 ----
   // 车道 A profile 严格模式：开 → 直连不再跨版本 pin（忽略 direct_cc_version_pin，客户版本必须有已采样 profile，否则按
   // cc_shape_policy 当 suspect 处理，missing=cc_profile_unknown）；归一化之后再过一遍形态 gate 并断言 profile 不变，

@@ -931,6 +931,13 @@ export class CcWorkerManager {
       fs.mkdirSync(workDir, { recursive: true, mode: 0o700 });
       this.chownTree(workDir, identity);
       session.workDir = workDir;
+      // Fixed cwd per account (and isolation scope), 2026-11-05: Claude Code writes the working directory into its system
+      // prompt, so a per-session cwd made every session's 16–34k system prefix a fresh cache write (magpie reached the same
+      // conclusion). The dir stays empty and is never removed; HOME/TMPDIR and the session's own files stay per session above.
+      fs.mkdirSync(path.join(this.sessionsDir, "cwd"), { recursive: true, mode: 0o711 });
+      const cwdDir = path.join(this.sessionsDir, "cwd", scope + "acct-" + msg.accountId.replace(/[^A-Za-z0-9_-]/g, "_"));
+      fs.mkdirSync(cwdDir, { recursive: true, mode: 0o700 });
+      this.chownTree(cwdDir, identity);
       // The prompt goes over stdin: argv is world-readable (/proc/<pid>/cmdline)
       // and capped at 128 KiB per argument on Linux. With image blocks the input
       // is one stream-json user message (Messages-style content) instead of text.
@@ -976,9 +983,9 @@ export class CcWorkerManager {
       // (G3: written in Claude Code's own jsonl shape under projects/<cwd-hash>/<id>.jsonl, then resumed).
       let resumeId: string | null = canonical && msg.nativeSession?.action === "resume" ? msg.nativeSession.id : null;
       if (canonical && Array.isArray(msg.historyImport) && msg.historyImport.length > 0 && nativeSessionId) {
-        const projDir = path.join(configDir, "projects", workDir.replace(/[^a-zA-Z0-9]/g, "-"));
+        const projDir = path.join(configDir, "projects", cwdDir.replace(/[^a-zA-Z0-9]/g, "-"));
         fs.mkdirSync(projDir, { recursive: true, mode: 0o700 });
-        const lines = msg.historyImport.map((l) => JSON.stringify({ ...l, sessionId: nativeSessionId, cwd: workDir }));
+        const lines = msg.historyImport.map((l) => JSON.stringify({ ...l, sessionId: nativeSessionId, cwd: cwdDir }));
         fs.writeFileSync(path.join(projDir, `${nativeSessionId}.jsonl`), lines.join("\n") + "\n", { mode: 0o600 });
         this.chownTree(projDir, identity);
         resumeId = nativeSessionId;
@@ -1091,7 +1098,7 @@ export class CcWorkerManager {
       const child = spawn(this.machineRuntime?.launcher ?? this.claudeBin, this.machineRuntime ? [this.claudeBin, ...args] : args, {
         stdio: ["pipe", "pipe", "pipe"],
         detached: true, // own process group so the whole tree (MCP children, shells) can be killed
-        cwd: workDir,
+        cwd: cwdDir,
         ...(!this.machineRuntime && identity ? { uid: identity.uid, gid: identity.gid } : {}),
         env: {
           ...env,
