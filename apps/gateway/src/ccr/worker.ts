@@ -60,7 +60,15 @@ export function canonicalTurn(body: Json, planMode: "fresh" | "continue" | "tool
   const msgs: Json[] = Array.isArray(body.messages) ? body.messages : [];
   const appendSystemPrompt = callerSystemText(body);
   const last = msgs[msgs.length - 1];
-  const raw: Json[] = typeof last?.content === "string" ? [{ type: "text", text: last.content }] : Array.isArray(last?.content) ? last.content.filter((b: Json) => b && typeof b === "object" && b.type !== "tool_result") : [];
+  // Canonical sends the caller's live turn raw to the native process, which forwards it upstream as-is. The caller's
+  // own cache_control markers must not ride along (legacy drops them too, translate.ts): Claude Code sets its own, and
+  // the upstream rejects a caller `ttl` and more than 4 marked blocks in total (2026-11-05: 8 × 400 → 502 on the pilot key).
+  const stripCacheControl = (b: Json): Json => {
+    if (!b || typeof b !== "object" || !("cache_control" in b)) return b;
+    const { cache_control: _dropped, ...rest } = b;
+    return rest;
+  };
+  const raw: Json[] = typeof last?.content === "string" ? [{ type: "text", text: last.content }] : Array.isArray(last?.content) ? last.content.filter((b: Json) => b && typeof b === "object" && b.type !== "tool_result").map(stripCacheControl) : [];
   const hasToolResult = Array.isArray(last?.content) && last.content.some((b: Json) => b?.type === "tool_result");
   // G3 import (settings canonical_history_import): everything before the live turn becomes a native transcript; the
   // live turn must be a plain user message (a tool round nobody holds cannot be resumed into a generation).
