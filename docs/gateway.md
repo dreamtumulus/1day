@@ -108,7 +108,7 @@ tools 字母序且无 `strict`、有 `thinking` / `context_management`。beta �
 | `probeIntercept` | `true`（默认）/ `false` | 测活接管（§2c）：探测请求由平台按号池状态直接回复，不占用账号 |
 | `allowedCustomEntrypoints` | `[]`（默认）/ 入口名列表 | 2026-11-01（spec §6.2）：该 Key 允许的自定义 Claude Code UA 入口（如 `mirasim`），放行并改写成 `(external, cli)` 直连；与全局开关 `direct_cc_entrypoint_normalize` 独立 |
 | `telemetryPolicy` | `passthrough-isolated`（系统默认）/ `native-required` | 2026-11-01：真 CC 请求走哪条车道——直连（车道 A，无账号侧遥测）还是节点官方 CC（车道 B，WP2 落地后生效；落地前该字段只记录） |
-| `workerMode` | `legacy`（系统默认）/ `canonical` | 非直连请求用现有 worker（折叠历史、替换系统提示词）还是 canonical 原生会话（WP2） |
+| `workerMode` | `legacy` / `canonical`；两层都没写时取设置 `worker_mode_default`（代码默认 `legacy`，**生产自 2026-11-05 为 `canonical`**） | 非直连请求用旧 worker（折叠历史、替换系统提示词）还是 canonical 原生会话（WP2）。有效值为 canonical 且两层都没写 `historyPolicy` 时，historyPolicy 默认 `passthrough`（原生 transcript 导入不需要 reset 保护）。账号所在节点没有 `canonical_v1` 能力或节点不在时，该轮回落到同账号的旧 worker（`canonical_node_unavailable`）；进行中的工具轮次冷导入不了也回落（`history_import_unsupported`，2.1.312 探针结论） |
 | `parameterPolicy` | `warn`（系统默认）/ `strict` | 路径无法实现的参数：写 `x-1day-ignored-params`，还是 400 `unsupported_parameter`（WP4） |
 | `responseMode` | `keepalive`（系统默认）/ `strict` | 长非流式请求是否提前 200 + 心跳（WP5） |
 

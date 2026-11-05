@@ -21,6 +21,17 @@
 
 探针证明：平台 Key 登录的真 CC **不带** `# userEmail`；带的是保留 OAuth 登录态的客户端。`direct_strip_user_email` / `direct_cc_canonical_fields` **保留**（默认 `0` 即零改体），不删代码：删了就没有退路，而开着 `0` 与删除对上游等价。
 
+## 2026-11-05 进展：canonical 成为默认
+
+- 节点：worker-01 / worker-02 跑含 canonical 代码的新包并 `CC_WORKER_CANONICAL=1`（声明 `canonical_v1`）；`gateway worker_canonical=1`、`canonical_history_import=1`、
+  **`worker_mode_default=canonical`**（b249c1c）。真 Claude Code 直连不变。mirasim 节点（217.216.46.202）未部署：deploy_meta 没存凭据、主服务器 SSH 不通，需用户提供访问；其账号上的 canonical 轮次由 `canonical_node_unavailable` 回落到同账号 legacy。
+- 保险三道：工具轮次冷导入不了→legacy（7ef512a，2.1.312 探针 `tests/e2e/cc-probe/toolround-import.mjs`）；无 canonical 节点→legacy（b249c1c）；上游 400 是请求的错→400 一次回客户、不换号不换 team（8989617）。
+- 历史：canonical 默认 `historyPolicy=passthrough`（8ca1df8）；passthrough 换 team 带整段历史（`advanceConversationGeneration`，reset_reason `…:carried`）；旧 `reset_active` 边界不再裁切 passthrough key。
+- 实证：测试BOOK（真 CC 2.1.318）15:45–16:02Z 主会话 turn 1→5 全部续在同一原生会话上（工具轮次 live 续），0×502/0 重置；侧请求（CC 每工具轮次附带的 sonnet/Fable 小请求）各自新进程+导入 1 行。
+- 缓存：节点 cwd 改为每账号固定目录（b249c1c，包 d017e9f2），系统前缀跨会话可命中；canonical 计费基线仍用 `ccr_cache_baseline_worker=700`（真 CC 前缀 ~16k+，少减多收）→ 待按模式分开。
+- 计量：`cc_entrypoint=sdk-cli` 烧 5h 窗 ≈1.7× 于非 sdk 标签（X-36）。决定走真交互 TUI 模式（`docs/interactive-worker-plan-2026-11-05.md`），不改标签。
+- 回滚钮：`worker_mode_default=legacy`（即时）；`worker_canonical=0`；节点包备份 `/root/node-bundle.bak-*.js`。
+
 ## 灰度实际进度
 
 - 11-01 16:33Z R1 发布，开关全 `0`；17:01Z `direct_profile_strict=canary`，但只有探针流量 → **不算观察**。

@@ -299,7 +299,9 @@ cache_read 16608–16777，云端约 28K，几乎全是 Claude Code 系统提示
   `ccrUnsupportedReason(body, {images: executor === "ccr_worker"})` 只对 worker 账号放行图片；`document` 仍拒。
 - **worker 隔离（2026-10-16，事故驱动）**：此前 worker 以 root、cwd=`/`、HOME=`/root`、工具无限制运行，客户终端用户让 Claude"建文件/跑命令"就真的
   写进了节点的 `/root`（并能读节点配置），不同客户会话还共享同一目录。现在：每个会话一个私有 scratch 目录
-  `<workerRoot>/cc-sessions/<sessionId>`（0700，作为 cwd、HOME、TMPDIR，会话结束即删除，节点启动时清扫残留）；以非特权用户 `ccworker` 运行
+  `<workerRoot>/cc-sessions/<sessionId>`（0700，作为 HOME、TMPDIR 与会话文件目录，会话结束即删除，节点启动时清扫残留）；**cwd 自 2026-11-05 起
+  为每账号固定的空目录** `<workerRoot>/cc-sessions/cwd/<scope>acct-<accountId>`（0700、归该账号身份、不删除）——Claude Code 把 cwd 写进
+  system prompt，每会话一个 cwd 会让同账号每个新会话的 16–34k 系统前缀都重写一次缓存（magpie 同一结论）；原生会话的 transcript 导入/恢复用同一 cwd。以非特权用户 `ccworker` 运行
   （env `CC_WORKER_USER`，节点为 root 且用户存在时生效；凭据目录按会话 chown 给该用户）。**workerRoot**：降权时默认
   `/var/lib/1dayapi-cc-worker`（env `CC_WORKER_ROOT` 可改），因为节点自己的数据目录在 `/root/.config/...` 下、`/root` 为 0700，
   `ccworker` 根本进不去 —— 首次上线即因此 `EACCES mkdir` 全线 502，改到 `/var/lib` 后恢复；不降权时仍用 `<dataDir>`。
