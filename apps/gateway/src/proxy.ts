@@ -104,6 +104,10 @@ import {
 } from "./upstream.js";
 import { wait, responseBytes } from "./lifecycle.js";
 import { bump } from "./metrics.js";
+// Canonical worker turns the legacy worker takes over (2026-11-05, probe toolround-import): a tool round no live native
+// session holds / an external history canonical may not import, or canonical needing the persistent pool. The legacy
+// fold carries any history, so these are a hand-over, not a 409.
+const CANONICAL_FALLBACK_CODES = new Set(["history_import_unsupported", "canonical_requires_persistent_session"]);
 import { AnthropicToResponsesStream, ResponsesUnsupported, anthropicMessageToResponses, responsesToAnthropic, strictUnsupportedParams } from "./adapters/responses.js";
 import { UsageAccumulator, collectText, estimateRequestTokens } from "./usage.js";
 import { orderByMerklePrefix, rememberMerklePrefix } from "./merkle-affinity.js";
@@ -1117,7 +1121,7 @@ async function proxyRequest(req: FastifyRequest, reply: FastifyReply, format: Cl
                   break;
                 }
               }
-              res = await runCcrWorker({
+              const workerInput = {
                 account,
                 cred,
                 body: ccrReq,
@@ -1128,14 +1132,25 @@ async function proxyRequest(req: FastifyRequest, reply: FastifyReply, format: Cl
                 stickyKey: sKey,
                 isolation,
                 signal: ctx.abort.signal,
-                // Canonical worker (spec WP2): the key's effective workerMode (override ?? judge ?? legacy) AND the
-                // three-state master switch for this key group / account (铁律 2).
-                canonical: canonicalWorker,
                 groupId: caller.groupId,
                 apiKeyId: caller.apiKeyId,
                 userId: caller.userId,
                 facts: ctx.turnFacts,
-              });
+              };
+              try {
+                // Canonical worker (spec WP2): the key's effective workerMode (override ?? judge ?? legacy) AND the
+                // three-state master switch for this key group / account (铁律 2).
+                res = await runCcrWorker({ ...workerInput, canonical: canonicalWorker });
+              } catch (err) {
+                // Canonical fallback (2026-11-05): canonicalTurn refuses before any node session is opened, so the same
+                // account can serve this turn on the legacy worker. The 2.1.312 probe showed a tool round cannot be cold-
+                // imported into a new native session (the binary marks the pending tool_use interrupted), so hand it over.
+                if (canonicalWorker && err instanceof TunnelRequestError && CANONICAL_FALLBACK_CODES.has(err.nodeCode)) {
+                  bump("canonical_fallback_legacy_total", { code: err.nodeCode });
+                  console.log(`[proxy] ${ctx.requestId} canonical cannot carry this turn (${err.nodeCode}) on ${account.name}: legacy worker takes it`);
+                  res = await runCcrWorker({ ...workerInput, canonical: false });
+                } else throw err;
+              }
               if (!res) break; // no worker-capable node accepted: infra state, try next account without counting
             } else {
               res = await runCcr({

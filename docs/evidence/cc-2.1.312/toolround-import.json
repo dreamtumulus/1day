@@ -1,0 +1,1219 @@
+{
+ "gate": "toolround-import",
+ "sampledAt": "2026-11-05T13:27:40.948Z",
+ "variants": [
+  {
+   "variant": "A",
+   "importedLines": 4,
+   "exitCode": 0,
+   "requests": 1,
+   "roleSeq": [
+    "user:string",
+    "system:",
+    "assistant:text+tool_use",
+    "user:tool_result",
+    "assistant:text+tool_use",
+    "user:tool_result",
+    "assistant:text",
+    "user:text",
+    "system:text"
+   ],
+   "toolBlocks": [
+    {
+     "i": 2,
+     "role": "assistant",
+     "type": "tool_use",
+     "id": "toolu_tr_01",
+     "is_error": null,
+     "head": "mcp__caller__Bash"
+    },
+    {
+     "i": 3,
+     "role": "user",
+     "type": "tool_result",
+     "id": "toolu_tr_01",
+     "is_error": null,
+     "head": "TR-RESULT-1: README.md src"
+    },
+    {
+     "i": 4,
+     "role": "assistant",
+     "type": "tool_use",
+     "id": "toolu_tr_02",
+     "is_error": null,
+     "head": "mcp__caller__Read"
+    },
+    {
+     "i": 5,
+     "role": "user",
+     "type": "tool_result",
+     "id": "toolu_tr_02",
+     "is_error": true,
+     "head": "[Tool call interrupted: the session ended before this call's result was recorded, so its outcome is "
+    }
+   ],
+   "perLive": [
+    {
+     "id": "toolu_tr_02",
+     "results": 1,
+     "interrupted": 1,
+     "heads": [
+      "[Tool call interrupted: the session ended before this call's result was recorded, so its outcome is "
+     ]
+    }
+   ],
+   "liveMarksPresent": [
+    {
+     "k": "TR-RESULT-2-LIVE",
+     "n": 0
+    }
+   ],
+   "pairingProblems": [],
+   "apiValid": true,
+   "noSyntheticNoResponse": false,
+   "transcriptAfter": [
+    {
+     "type": "user",
+     "role": "user",
+     "blocks": [
+      "string"
+     ]
+    },
+    {
+     "type": "assistant",
+     "role": "assistant",
+     "blocks": [
+      "text",
+      "tool_use:toolu_tr_01"
+     ]
+    },
+    {
+     "type": "user",
+     "role": "user",
+     "blocks": [
+      "tool_result:toolu_tr_01=TR-RESULT-1: README.md src"
+     ]
+    },
+    {
+     "type": "assistant",
+     "role": "assistant",
+     "blocks": [
+      "text",
+      "tool_use:toolu_tr_02"
+     ]
+    },
+    {
+     "type": "atis-latch",
+     "role": null,
+     "blocks": [
+      "atis-latch"
+     ]
+    },
+    {
+     "type": "tools-used",
+     "role": null,
+     "blocks": [
+      "tools-used"
+     ]
+    },
+    {
+     "type": "queue-operation",
+     "role": null,
+     "blocks": [
+      "queue-operation"
+     ]
+    },
+    {
+     "type": "queue-operation",
+     "role": null,
+     "blocks": [
+      "queue-operation"
+     ]
+    },
+    {
+     "type": "user",
+     "role": "user",
+     "blocks": [
+      "tool_result:toolu_tr_02:ERR=[Tool call interrupted: the session ended before t"
+     ]
+    },
+    {
+     "type": "assistant",
+     "role": "assistant",
+     "blocks": [
+      "text"
+     ]
+    },
+    {
+     "type": "user",
+     "role": "user",
+     "blocks": [
+      "tool_result:toolu_tr_02=TR-RESULT-2-LIVE: # Project readme"
+     ]
+    },
+    {
+     "type": "attachment",
+     "role": null,
+     "blocks": [
+      "attachment"
+     ]
+    },
+    {
+     "type": "attachment",
+     "role": null,
+     "blocks": [
+      "attachment"
+     ]
+    },
+    {
+     "type": "attachment",
+     "role": null,
+     "blocks": [
+      "attachment"
+     ]
+    },
+    {
+     "type": "attachment",
+     "role": null,
+     "blocks": [
+      "attachment"
+     ]
+    },
+    {
+     "type": "attachment",
+     "role": null,
+     "blocks": [
+      "attachment"
+     ]
+    },
+    {
+     "type": "attachment",
+     "role": null,
+     "blocks": [
+      "attachment"
+     ]
+    },
+    {
+     "type": "attachment",
+     "role": null,
+     "blocks": [
+      "attachment"
+     ]
+    },
+    {
+     "type": "attachment",
+     "role": null,
+     "blocks": [
+      "attachment"
+     ]
+    },
+    {
+     "type": "api-request-shape",
+     "role": null,
+     "blocks": [
+      "api-request-shape"
+     ]
+    },
+    {
+     "type": "api-request-blob",
+     "role": "system",
+     "blocks": []
+    },
+    {
+     "type": "api-request-blob",
+     "role": "user",
+     "blocks": [
+      "text"
+     ]
+    },
+    {
+     "type": "api-request-blob",
+     "role": "system",
+     "blocks": [
+      "text"
+     ]
+    },
+    {
+     "type": "api-request",
+     "role": null,
+     "blocks": [
+      "api-request"
+     ]
+    },
+    {
+     "type": "assistant",
+     "role": "assistant",
+     "blocks": [
+      "text"
+     ]
+    },
+    {
+     "type": "attachment",
+     "role": null,
+     "blocks": [
+      "attachment"
+     ]
+    },
+    {
+     "type": "last-prompt",
+     "role": null,
+     "blocks": [
+      "last-prompt"
+     ]
+    },
+    {
+     "type": "mode",
+     "role": null,
+     "blocks": [
+      "mode"
+     ]
+    },
+    {
+     "type": "atis-latch",
+     "role": null,
+     "blocks": [
+      "atis-latch"
+     ]
+    },
+    {
+     "type": "cost-state",
+     "role": null,
+     "blocks": [
+      "cost-state"
+     ]
+    }
+   ],
+   "stderrTail": [],
+   "pass": false
+  },
+  {
+   "variant": "A2",
+   "importedLines": 4,
+   "exitCode": 0,
+   "requests": 1,
+   "roleSeq": [
+    "user:string",
+    "system:",
+    "assistant:text+tool_use",
+    "user:tool_result",
+    "assistant:text+tool_use+tool_use",
+    "user:tool_result+tool_result",
+    "assistant:text",
+    "user:text",
+    "system:text"
+   ],
+   "toolBlocks": [
+    {
+     "i": 2,
+     "role": "assistant",
+     "type": "tool_use",
+     "id": "toolu_tr_01",
+     "is_error": null,
+     "head": "mcp__caller__Bash"
+    },
+    {
+     "i": 3,
+     "role": "user",
+     "type": "tool_result",
+     "id": "toolu_tr_01",
+     "is_error": null,
+     "head": "TR-RESULT-1: README.md src"
+    },
+    {
+     "i": 4,
+     "role": "assistant",
+     "type": "tool_use",
+     "id": "toolu_tr_02a",
+     "is_error": null,
+     "head": "mcp__caller__Read"
+    },
+    {
+     "i": 4,
+     "role": "assistant",
+     "type": "tool_use",
+     "id": "toolu_tr_02b",
+     "is_error": null,
+     "head": "mcp__caller__Read"
+    },
+    {
+     "i": 5,
+     "role": "user",
+     "type": "tool_result",
+     "id": "toolu_tr_02a",
+     "is_error": true,
+     "head": "[Tool call interrupted: the session ended before this call's result was recorded, so its outcome is "
+    },
+    {
+     "i": 5,
+     "role": "user",
+     "type": "tool_result",
+     "id": "toolu_tr_02b",
+     "is_error": true,
+     "head": "[Tool call interrupted: the session ended before this call's result was recorded, so its outcome is "
+    }
+   ],
+   "perLive": [
+    {
+     "id": "toolu_tr_02a",
+     "results": 1,
+     "interrupted": 1,
+     "heads": [
+      "[Tool call interrupted: the session ended before this call's result was recorded, so its outcome is "
+     ]
+    },
+    {
+     "id": "toolu_tr_02b",
+     "results": 1,
+     "interrupted": 1,
+     "heads": [
+      "[Tool call interrupted: the session ended before this call's result was recorded, so its outcome is "
+     ]
+    }
+   ],
+   "liveMarksPresent": [
+    {
+     "k": "TR-RESULT-2A-LIVE",
+     "n": 0
+    },
+    {
+     "k": "TR-RESULT-2B-LIVE",
+     "n": 0
+    }
+   ],
+   "pairingProblems": [],
+   "apiValid": true,
+   "noSyntheticNoResponse": false,
+   "transcriptAfter": [
+    {
+     "type": "user",
+     "role": "user",
+     "blocks": [
+      "string"
+     ]
+    },
+    {
+     "type": "assistant",
+     "role": "assistant",
+     "blocks": [
+      "text",
+      "tool_use:toolu_tr_01"
+     ]
+    },
+    {
+     "type": "user",
+     "role": "user",
+     "blocks": [
+      "tool_result:toolu_tr_01=TR-RESULT-1: README.md src"
+     ]
+    },
+    {
+     "type": "assistant",
+     "role": "assistant",
+     "blocks": [
+      "text",
+      "tool_use:toolu_tr_02a",
+      "tool_use:toolu_tr_02b"
+     ]
+    },
+    {
+     "type": "atis-latch",
+     "role": null,
+     "blocks": [
+      "atis-latch"
+     ]
+    },
+    {
+     "type": "tools-used",
+     "role": null,
+     "blocks": [
+      "tools-used"
+     ]
+    },
+    {
+     "type": "queue-operation",
+     "role": null,
+     "blocks": [
+      "queue-operation"
+     ]
+    },
+    {
+     "type": "queue-operation",
+     "role": null,
+     "blocks": [
+      "queue-operation"
+     ]
+    },
+    {
+     "type": "user",
+     "role": "user",
+     "blocks": [
+      "tool_result:toolu_tr_02a:ERR=[Tool call interrupted: the session ended before t"
+     ]
+    },
+    {
+     "type": "user",
+     "role": "user",
+     "blocks": [
+      "tool_result:toolu_tr_02b:ERR=[Tool call interrupted: the session ended before t"
+     ]
+    },
+    {
+     "type": "assistant",
+     "role": "assistant",
+     "blocks": [
+      "text"
+     ]
+    },
+    {
+     "type": "user",
+     "role": "user",
+     "blocks": [
+      "tool_result:toolu_tr_02a=TR-RESULT-2A-LIVE",
+      "tool_result:toolu_tr_02b=TR-RESULT-2B-LIVE"
+     ]
+    },
+    {
+     "type": "attachment",
+     "role": null,
+     "blocks": [
+      "attachment"
+     ]
+    },
+    {
+     "type": "attachment",
+     "role": null,
+     "blocks": [
+      "attachment"
+     ]
+    },
+    {
+     "type": "attachment",
+     "role": null,
+     "blocks": [
+      "attachment"
+     ]
+    },
+    {
+     "type": "attachment",
+     "role": null,
+     "blocks": [
+      "attachment"
+     ]
+    },
+    {
+     "type": "attachment",
+     "role": null,
+     "blocks": [
+      "attachment"
+     ]
+    },
+    {
+     "type": "attachment",
+     "role": null,
+     "blocks": [
+      "attachment"
+     ]
+    },
+    {
+     "type": "attachment",
+     "role": null,
+     "blocks": [
+      "attachment"
+     ]
+    },
+    {
+     "type": "attachment",
+     "role": null,
+     "blocks": [
+      "attachment"
+     ]
+    },
+    {
+     "type": "api-request-shape",
+     "role": null,
+     "blocks": [
+      "api-request-shape"
+     ]
+    },
+    {
+     "type": "api-request-blob",
+     "role": "system",
+     "blocks": []
+    },
+    {
+     "type": "api-request-blob",
+     "role": "user",
+     "blocks": [
+      "text"
+     ]
+    },
+    {
+     "type": "api-request-blob",
+     "role": "system",
+     "blocks": [
+      "text"
+     ]
+    },
+    {
+     "type": "api-request",
+     "role": null,
+     "blocks": [
+      "api-request"
+     ]
+    },
+    {
+     "type": "assistant",
+     "role": "assistant",
+     "blocks": [
+      "text"
+     ]
+    },
+    {
+     "type": "attachment",
+     "role": null,
+     "blocks": [
+      "attachment"
+     ]
+    },
+    {
+     "type": "last-prompt",
+     "role": null,
+     "blocks": [
+      "last-prompt"
+     ]
+    },
+    {
+     "type": "mode",
+     "role": null,
+     "blocks": [
+      "mode"
+     ]
+    },
+    {
+     "type": "atis-latch",
+     "role": null,
+     "blocks": [
+      "atis-latch"
+     ]
+    },
+    {
+     "type": "cost-state",
+     "role": null,
+     "blocks": [
+      "cost-state"
+     ]
+    }
+   ],
+   "stderrTail": [],
+   "pass": false
+  },
+  {
+   "variant": "B",
+   "importedLines": 5,
+   "exitCode": 0,
+   "requests": 1,
+   "roleSeq": [
+    "user:string",
+    "system:",
+    "assistant:text+tool_use",
+    "user:tool_result",
+    "assistant:text+tool_use",
+    "user:tool_result",
+    "assistant:text",
+    "user:text+text",
+    "system:text"
+   ],
+   "toolBlocks": [
+    {
+     "i": 2,
+     "role": "assistant",
+     "type": "tool_use",
+     "id": "toolu_tr_01",
+     "is_error": null,
+     "head": "mcp__caller__Bash"
+    },
+    {
+     "i": 3,
+     "role": "user",
+     "type": "tool_result",
+     "id": "toolu_tr_01",
+     "is_error": null,
+     "head": "TR-RESULT-1: README.md src"
+    },
+    {
+     "i": 4,
+     "role": "assistant",
+     "type": "tool_use",
+     "id": "toolu_tr_02",
+     "is_error": null,
+     "head": "mcp__caller__Read"
+    },
+    {
+     "i": 5,
+     "role": "user",
+     "type": "tool_result",
+     "id": "toolu_tr_02",
+     "is_error": null,
+     "head": "TR-RESULT-2-LIVE: # Project readme"
+    }
+   ],
+   "perLive": [
+    {
+     "id": "toolu_tr_02",
+     "results": 1,
+     "interrupted": 0,
+     "heads": [
+      "TR-RESULT-2-LIVE: # Project readme"
+     ]
+    }
+   ],
+   "liveMarksPresent": [
+    {
+     "k": "TR-RESULT-2-LIVE",
+     "n": 1
+    },
+    {
+     "k": "TR-CONTINUE",
+     "n": 1
+    }
+   ],
+   "pairingProblems": [],
+   "apiValid": true,
+   "noSyntheticNoResponse": false,
+   "transcriptAfter": [
+    {
+     "type": "user",
+     "role": "user",
+     "blocks": [
+      "string"
+     ]
+    },
+    {
+     "type": "assistant",
+     "role": "assistant",
+     "blocks": [
+      "text",
+      "tool_use:toolu_tr_01"
+     ]
+    },
+    {
+     "type": "user",
+     "role": "user",
+     "blocks": [
+      "tool_result:toolu_tr_01=TR-RESULT-1: README.md src"
+     ]
+    },
+    {
+     "type": "assistant",
+     "role": "assistant",
+     "blocks": [
+      "text",
+      "tool_use:toolu_tr_02"
+     ]
+    },
+    {
+     "type": "user",
+     "role": "user",
+     "blocks": [
+      "tool_result:toolu_tr_02=TR-RESULT-2-LIVE: # Project readme"
+     ]
+    },
+    {
+     "type": "atis-latch",
+     "role": null,
+     "blocks": [
+      "atis-latch"
+     ]
+    },
+    {
+     "type": "tools-used",
+     "role": null,
+     "blocks": [
+      "tools-used"
+     ]
+    },
+    {
+     "type": "queue-operation",
+     "role": null,
+     "blocks": [
+      "queue-operation"
+     ]
+    },
+    {
+     "type": "queue-operation",
+     "role": null,
+     "blocks": [
+      "queue-operation"
+     ]
+    },
+    {
+     "type": "assistant",
+     "role": "assistant",
+     "blocks": [
+      "text"
+     ]
+    },
+    {
+     "type": "user",
+     "role": "user",
+     "blocks": [
+      "text"
+     ]
+    },
+    {
+     "type": "attachment",
+     "role": null,
+     "blocks": [
+      "attachment"
+     ]
+    },
+    {
+     "type": "attachment",
+     "role": null,
+     "blocks": [
+      "attachment"
+     ]
+    },
+    {
+     "type": "attachment",
+     "role": null,
+     "blocks": [
+      "attachment"
+     ]
+    },
+    {
+     "type": "attachment",
+     "role": null,
+     "blocks": [
+      "attachment"
+     ]
+    },
+    {
+     "type": "attachment",
+     "role": null,
+     "blocks": [
+      "attachment"
+     ]
+    },
+    {
+     "type": "attachment",
+     "role": null,
+     "blocks": [
+      "attachment"
+     ]
+    },
+    {
+     "type": "attachment",
+     "role": null,
+     "blocks": [
+      "attachment"
+     ]
+    },
+    {
+     "type": "attachment",
+     "role": null,
+     "blocks": [
+      "attachment"
+     ]
+    },
+    {
+     "type": "api-request-shape",
+     "role": null,
+     "blocks": [
+      "api-request-shape"
+     ]
+    },
+    {
+     "type": "api-request-blob",
+     "role": "system",
+     "blocks": []
+    },
+    {
+     "type": "api-request-blob",
+     "role": "user",
+     "blocks": [
+      "text",
+      "text"
+     ]
+    },
+    {
+     "type": "api-request-blob",
+     "role": "system",
+     "blocks": [
+      "text"
+     ]
+    },
+    {
+     "type": "api-request",
+     "role": null,
+     "blocks": [
+      "api-request"
+     ]
+    },
+    {
+     "type": "assistant",
+     "role": "assistant",
+     "blocks": [
+      "text"
+     ]
+    },
+    {
+     "type": "attachment",
+     "role": null,
+     "blocks": [
+      "attachment"
+     ]
+    },
+    {
+     "type": "last-prompt",
+     "role": null,
+     "blocks": [
+      "last-prompt"
+     ]
+    },
+    {
+     "type": "mode",
+     "role": null,
+     "blocks": [
+      "mode"
+     ]
+    },
+    {
+     "type": "atis-latch",
+     "role": null,
+     "blocks": [
+      "atis-latch"
+     ]
+    },
+    {
+     "type": "cost-state",
+     "role": null,
+     "blocks": [
+      "cost-state"
+     ]
+    }
+   ],
+   "stderrTail": [],
+   "pass": false
+  },
+  {
+   "variant": "B2",
+   "importedLines": 5,
+   "exitCode": 0,
+   "requests": 1,
+   "roleSeq": [
+    "user:string",
+    "system:",
+    "assistant:text+tool_use",
+    "user:tool_result",
+    "assistant:text+tool_use+tool_use",
+    "user:tool_result+tool_result",
+    "assistant:text",
+    "user:text+text",
+    "system:text"
+   ],
+   "toolBlocks": [
+    {
+     "i": 2,
+     "role": "assistant",
+     "type": "tool_use",
+     "id": "toolu_tr_01",
+     "is_error": null,
+     "head": "mcp__caller__Bash"
+    },
+    {
+     "i": 3,
+     "role": "user",
+     "type": "tool_result",
+     "id": "toolu_tr_01",
+     "is_error": null,
+     "head": "TR-RESULT-1: README.md src"
+    },
+    {
+     "i": 4,
+     "role": "assistant",
+     "type": "tool_use",
+     "id": "toolu_tr_02a",
+     "is_error": null,
+     "head": "mcp__caller__Read"
+    },
+    {
+     "i": 4,
+     "role": "assistant",
+     "type": "tool_use",
+     "id": "toolu_tr_02b",
+     "is_error": null,
+     "head": "mcp__caller__Read"
+    },
+    {
+     "i": 5,
+     "role": "user",
+     "type": "tool_result",
+     "id": "toolu_tr_02a",
+     "is_error": null,
+     "head": "TR-RESULT-2A-LIVE"
+    },
+    {
+     "i": 5,
+     "role": "user",
+     "type": "tool_result",
+     "id": "toolu_tr_02b",
+     "is_error": null,
+     "head": "TR-RESULT-2B-LIVE"
+    }
+   ],
+   "perLive": [
+    {
+     "id": "toolu_tr_02a",
+     "results": 1,
+     "interrupted": 0,
+     "heads": [
+      "TR-RESULT-2A-LIVE"
+     ]
+    },
+    {
+     "id": "toolu_tr_02b",
+     "results": 1,
+     "interrupted": 0,
+     "heads": [
+      "TR-RESULT-2B-LIVE"
+     ]
+    }
+   ],
+   "liveMarksPresent": [
+    {
+     "k": "TR-RESULT-2A-LIVE",
+     "n": 1
+    },
+    {
+     "k": "TR-RESULT-2B-LIVE",
+     "n": 1
+    },
+    {
+     "k": "TR-CONTINUE",
+     "n": 1
+    }
+   ],
+   "pairingProblems": [],
+   "apiValid": true,
+   "noSyntheticNoResponse": false,
+   "transcriptAfter": [
+    {
+     "type": "user",
+     "role": "user",
+     "blocks": [
+      "string"
+     ]
+    },
+    {
+     "type": "assistant",
+     "role": "assistant",
+     "blocks": [
+      "text",
+      "tool_use:toolu_tr_01"
+     ]
+    },
+    {
+     "type": "user",
+     "role": "user",
+     "blocks": [
+      "tool_result:toolu_tr_01=TR-RESULT-1: README.md src"
+     ]
+    },
+    {
+     "type": "assistant",
+     "role": "assistant",
+     "blocks": [
+      "text",
+      "tool_use:toolu_tr_02a",
+      "tool_use:toolu_tr_02b"
+     ]
+    },
+    {
+     "type": "user",
+     "role": "user",
+     "blocks": [
+      "tool_result:toolu_tr_02a=TR-RESULT-2A-LIVE",
+      "tool_result:toolu_tr_02b=TR-RESULT-2B-LIVE"
+     ]
+    },
+    {
+     "type": "atis-latch",
+     "role": null,
+     "blocks": [
+      "atis-latch"
+     ]
+    },
+    {
+     "type": "tools-used",
+     "role": null,
+     "blocks": [
+      "tools-used"
+     ]
+    },
+    {
+     "type": "queue-operation",
+     "role": null,
+     "blocks": [
+      "queue-operation"
+     ]
+    },
+    {
+     "type": "queue-operation",
+     "role": null,
+     "blocks": [
+      "queue-operation"
+     ]
+    },
+    {
+     "type": "assistant",
+     "role": "assistant",
+     "blocks": [
+      "text"
+     ]
+    },
+    {
+     "type": "user",
+     "role": "user",
+     "blocks": [
+      "text"
+     ]
+    },
+    {
+     "type": "attachment",
+     "role": null,
+     "blocks": [
+      "attachment"
+     ]
+    },
+    {
+     "type": "attachment",
+     "role": null,
+     "blocks": [
+      "attachment"
+     ]
+    },
+    {
+     "type": "attachment",
+     "role": null,
+     "blocks": [
+      "attachment"
+     ]
+    },
+    {
+     "type": "attachment",
+     "role": null,
+     "blocks": [
+      "attachment"
+     ]
+    },
+    {
+     "type": "attachment",
+     "role": null,
+     "blocks": [
+      "attachment"
+     ]
+    },
+    {
+     "type": "attachment",
+     "role": null,
+     "blocks": [
+      "attachment"
+     ]
+    },
+    {
+     "type": "attachment",
+     "role": null,
+     "blocks": [
+      "attachment"
+     ]
+    },
+    {
+     "type": "attachment",
+     "role": null,
+     "blocks": [
+      "attachment"
+     ]
+    },
+    {
+     "type": "api-request-shape",
+     "role": null,
+     "blocks": [
+      "api-request-shape"
+     ]
+    },
+    {
+     "type": "api-request-blob",
+     "role": "system",
+     "blocks": []
+    },
+    {
+     "type": "api-request-blob",
+     "role": "user",
+     "blocks": [
+      "text",
+      "text"
+     ]
+    },
+    {
+     "type": "api-request-blob",
+     "role": "system",
+     "blocks": [
+      "text"
+     ]
+    },
+    {
+     "type": "api-request",
+     "role": null,
+     "blocks": [
+      "api-request"
+     ]
+    },
+    {
+     "type": "assistant",
+     "role": "assistant",
+     "blocks": [
+      "text"
+     ]
+    },
+    {
+     "type": "attachment",
+     "role": null,
+     "blocks": [
+      "attachment"
+     ]
+    },
+    {
+     "type": "last-prompt",
+     "role": null,
+     "blocks": [
+      "last-prompt"
+     ]
+    },
+    {
+     "type": "mode",
+     "role": null,
+     "blocks": [
+      "mode"
+     ]
+    },
+    {
+     "type": "atis-latch",
+     "role": null,
+     "blocks": [
+      "atis-latch"
+     ]
+    },
+    {
+     "type": "cost-state",
+     "role": null,
+     "blocks": [
+      "cost-state"
+     ]
+    }
+   ],
+   "stderrTail": [],
+   "pass": false
+  }
+ ]
+}

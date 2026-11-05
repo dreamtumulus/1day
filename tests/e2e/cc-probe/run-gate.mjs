@@ -75,7 +75,8 @@ switch (gate) {
   case "session-append": appendFile = join(home, "caller-system.txt"); writeFileSync(appendFile, "CALLER-SYSTEM-MARKER-7f3a: always answer in uppercase."); args = [...common, "--session-id", SESSION, "--append-system-prompt-file", appendFile, PROMPT]; break; // T8 step 1: session created WITH the append file
   case "resume-streamjson": args = [...common, "--resume", SESSION, "--input-format", "stream-json"]; stdinLines = [
     // T7: the whole next turn arrives on stdin (node canonical continuation shape), not as a positional prompt
-    JSON.stringify({ type: "user", message: { role: "user", content: [{ type: "text", text: process.env.CC_PROBE_STDIN_TEXT ?? "T7-TURN2: what did I ask before?" }] } }),
+    // CC_PROBE_STDIN_JSON (toolround-import): raw content blocks for the stdin turn (e.g. tool_result) instead of one text block
+    JSON.stringify({ type: "user", message: { role: "user", content: process.env.CC_PROBE_STDIN_JSON ? JSON.parse(process.env.CC_PROBE_STDIN_JSON) : [{ type: "text", text: process.env.CC_PROBE_STDIN_TEXT ?? "T7-TURN2: what did I ask before?" }] } }),
   ]; break; // G4/WP3 step 2: resume + stream-json stdin
   case "resume-streamjson-append": appendFile = join(home, "caller-system.txt"); writeFileSync(appendFile, process.env.CC_PROBE_APPEND_TEXT ?? "CALLER-SYSTEM-MARKER-7f3a: always answer in uppercase."); args = [...common, "--resume", SESSION, "--append-system-prompt-file", appendFile, "--input-format", "stream-json"]; stdinLines = [
     // T11: imported (snapshot-less) transcript resumed with a turn-time append — does the append reach the main prompt?
