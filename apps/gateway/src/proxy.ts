@@ -21,6 +21,7 @@ import {
   conversationLeaseHeld,
   bindConversationTeam,
   resetConversationGeneration,
+  advanceConversationGeneration,
   saveConversationBoundary,
   type ConversationRow,
   one,
@@ -620,17 +621,27 @@ function unlockScope(scope?: ConversationScope): void {
   scope.released = true;
 }
 
-async function switchTeam(scope: ConversationScope, nextTeam: string, format: ClientFormat, reason: string): Promise<void> {
+async function switchTeam(scope: ConversationScope, nextTeam: string, format: ClientFormat, reason: string, carryHistory = false): Promise<void> {
   const previous = scopeContext(scope);
   const generation = scope.row.generation;
   await lockScope(scope);
   // Another request won the reset. Follow that winner; never overwrite its generation.
   if (scope.row.generation !== generation) { scope.boundary = undefined; return; }
   assertScope(scope);
-  const question = latestQuestion(scope.originalBody, format);
-  scope.row = resetConversationGeneration(scope.row.id, scope.token, scope.row.generation, nextTeam, question.anchor, question.prefix, reason);
-  scope.boundary = saveBranchBoundary(scope.row.id, scope.token, scope.row.generation, scope.branch, question.anchor, question.prefix);
-  scope.justReset = true;
+  if (carryHistory) {
+    // historyPolicy `passthrough` (2026-11-05, 测试BOOK: 13 team switches in an hour each cut the conversation to
+    // its latest question): the key asked for its history to be forwarded as-is, so the new organization gets
+    // the whole transcript — canonical imports it, the legacy fold carries it — and no boundary is written.
+    scope.row = advanceConversationGeneration(scope.row.id, scope.token, scope.row.generation, nextTeam, `${reason}:carried`);
+    scope.boundary = undefined;
+    scope.justReset = false;
+    console.log(`[proxy] conv ${scope.row.id.slice(0, 8)} -> team ${nextTeam.slice(0, 8)} (${reason}), history carried (passthrough)`);
+  } else {
+    const question = latestQuestion(scope.originalBody, format);
+    scope.row = resetConversationGeneration(scope.row.id, scope.token, scope.row.generation, nextTeam, question.anchor, question.prefix, reason);
+    scope.boundary = saveBranchBoundary(scope.row.id, scope.token, scope.row.generation, scope.branch, question.anchor, question.prefix);
+    scope.justReset = true;
+  }
   unlockScope(scope);
   if (previous) {
     retireCcrConversation(previous);
@@ -700,6 +711,10 @@ async function proxyRequest(req: FastifyRequest, reply: FastifyReply, format: Cl
         // message is. A tool round (assistant tool_use + user tool_result) is answerable only with its
         // chain intact; cutting it to "the latest question" here is what used to end a session mid-task.
         body = prepared.body;
+        resetHistoryIntact = true;
+      } else if (caller.policy.historyPolicy === "passthrough") {
+        // passthrough (2026-11-05): a boundary this generation does not recognise (a row reset before the key's
+        // policy changed, or by an earlier team switch) is not a reason to cut — the whole history is forwarded.
         resetHistoryIntact = true;
       } else if (question.message) {
         // No boundary this generation recognizes: a new conversation starts at the latest question.
@@ -933,7 +948,7 @@ async function proxyRequest(req: FastifyRequest, reply: FastifyReply, format: Cl
         if (scope.row.team_id !== current) return proxyRequest(req, reply, format, endpoint, caller, scope);
       } else {
         const next = teams.find((a) => !scope.triedTeams.has(accountTeamId(a)!));
-        if (next) { await switchTeam(scope, accountTeamId(next)!, format, "team_pool_exhausted"); return proxyRequest(req, reply, format, endpoint, caller, scope); }
+        if (next) { await switchTeam(scope, accountTeamId(next)!, format, "team_pool_exhausted", caller.policy.historyPolicy === "passthrough"); return proxyRequest(req, reply, format, endpoint, caller, scope); }
       }
     }
   }
@@ -1425,7 +1440,7 @@ async function proxyRequest(req: FastifyRequest, reply: FastifyReply, format: Cl
     if (next) {
       // Heartbeats may have committed HTTP headers, but no model output was delivered.
       // Reuse the existing response state rather than opening a second SSE response.
-      await switchTeam(scope, accountTeamId(next)!, format, "team_pool_exhausted");
+      await switchTeam(scope, accountTeamId(next)!, format, "team_pool_exhausted", caller.policy.historyPolicy === "passthrough");
       return proxyRequest(req, reply, format, endpoint, caller, scope);
     }
   }

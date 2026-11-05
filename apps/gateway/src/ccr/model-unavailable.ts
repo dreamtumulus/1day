@@ -41,13 +41,30 @@ export function promptTooLongMessage(message: string): string {
  */
 const SAFEGUARDS_RE = /safeguards flagged this|can't help with this\. Start a new session|anthropic\.com\/legal\/aup/i;
 
-export type CcRequestError = { code: "prompt_too_long" | "safeguards_refusal"; message: string };
+/**
+ * An upstream HTTP 400 that Claude Code rendered as "API Error: 400 …" (e.g. a caller's `cache_control.ttl`
+ * ordering, "A maximum of 4 blocks with cache_control"). The request shape is the problem: on 2026-11-05 one
+ * such 400 was retried through 12 accounts of a team (each opening a native session that went dirty, 47 s),
+ * exhausted the team, and the team switch then cut the conversation to its latest question. Account-scoped
+ * 400 texts (billing / organization) keep failing over.
+ */
+const UPSTREAM_INVALID_REQUEST_RE = /API Error:\s*400\b/i;
+const ACCOUNT_SCOPED_400_RE = /credit balance|billing|organization has been disabled|organization .{0,40}disabled/i;
+
+export type CcRequestError = { code: "prompt_too_long" | "safeguards_refusal" | "upstream_invalid_request"; message: string };
 
 /** Worker-path failures that belong to the request: answered once as 400, no failover, no cooldown. */
 export function classifyCcRequestError(message: string): CcRequestError | null {
   if (PROMPT_TOO_LONG_RE.test(message)) return { code: "prompt_too_long", message: promptTooLongMessage(message) };
   if (SAFEGUARDS_RE.test(message)) return { code: "safeguards_refusal", message: refusalMessage(message) };
+  if (UPSTREAM_INVALID_REQUEST_RE.test(message) && !ACCOUNT_SCOPED_400_RE.test(message)) return { code: "upstream_invalid_request", message: invalidRequestMessage(message) };
   return null;
+}
+
+/** Client-facing form of an upstream 400: Anthropic's own sentence, without the worker / "API Error: 400" prefix. */
+function invalidRequestMessage(message: string): string {
+  const stripped = message.replace(/^[\s\S]*?API Error:\s*400\s*/i, "");
+  return `Upstream rejected the request: ${stripped.replace(/\s+/g, " ").trim().slice(0, 600)}`;
 }
 
 function refusalMessage(message: string): string {

@@ -105,6 +105,20 @@ export function saveConversationBoundary(id: string, token: string, generation: 
   });
 }
 
+/**
+ * A new generation on another team that keeps the client's history (historyPolicy `passthrough`, 2026-11-05):
+ * no reset boundary is written, so the next request's whole transcript is forwarded to the new organization.
+ */
+export function advanceConversationGeneration(id: string, token: string, generation: number, teamId: string, reason: string): ConversationRow {
+  return tx(() => {
+    locked(id, token, generation);
+    const now = nowIso();
+    run("UPDATE conversations SET generation = generation + 1, team_id = ?, reset_active = 0, reset_anchor = NULL, reset_prefix = NULL, updated_at = ? WHERE id = ?", teamId, now, id);
+    run("INSERT INTO conversation_generations (conversation_id, generation, team_id, reset_reason, created_at) VALUES (?, ?, ?, ?, ?)", id, generation + 1, teamId, reason, now);
+    return getConversation(id)!;
+  });
+}
+
 /** The caller commits the new generation before opening any new-team transport. */
 export function resetConversationGeneration(id: string, token: string, generation: number, teamId: string, anchor: string | null, prefix: string | null, reason: string): ConversationRow {
   return tx(() => {

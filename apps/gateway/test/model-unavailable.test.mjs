@@ -34,3 +34,17 @@ test("safety-classifier refusals are request errors; ordinary failures are not",
   assert.equal(classifyCcRequestError("You've hit your session limit · resets 8:50am"), null);
   assert.equal(classifyCcRequestError("Failed to authenticate: OAuth token revoked"), null);
 });
+
+test("upstream 400 rendered by Claude Code is a request error (no failover); account-scoped 400s are not", async () => {
+  const { classifyCcRequestError } = await import("../dist/ccr/model-unavailable.js");
+  const ttl = "ccr_worker: API Error: 400 messages.1.content.0.cache_control.ttl: a ttl='1h' cache_control block must not come after a ttl='5m' cache_control block. Note that blocks are processed in order.";
+  const r = classifyCcRequestError(ttl);
+  assert.equal(r?.code, "upstream_invalid_request");
+  assert.ok(r.message.startsWith("Upstream rejected the request: messages.1.content.0.cache_control.ttl"));
+  assert.equal(r.message.includes("ccr_worker"), false);
+  assert.equal(classifyCcRequestError("stream: ccr_worker: API Error: 400 A maximum of 4 blocks with cache_control may be provided. Found 5.")?.code, "upstream_invalid_request");
+  assert.equal(classifyCcRequestError("ccr_worker: API Error: 400 Your credit balance is too low to access the Anthropic API."), null);
+  assert.equal(classifyCcRequestError("ccr_worker: API Error: 429 rate limited"), null);
+  assert.equal(classifyCcRequestError("ccr_worker: API Error: 529 overloaded"), null);
+  assert.equal(classifyCcRequestError("ccr_worker: fetch failed"), null);
+});
