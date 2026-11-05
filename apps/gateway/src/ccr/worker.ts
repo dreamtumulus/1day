@@ -104,7 +104,7 @@ export interface CcrWorkerInput {
 }
 
 /** Gateway-side memory of live node sessions (docs/worker-sessions.md §1), written through to core worker_turn_memory. */
-export const sessionMemory = new SessionMemory(undefined, undefined, {
+export const sessionMemory = new SessionMemory(config.ccrPoolIdleMs, undefined, {
   load: (key, now) => loadTurnMemory<TurnMemory>(key, now),
   save: (key, entry) => saveTurnMemory(key, entry, entry.expiresAt),
   delete: (key) => deleteTurnMemory(key),
