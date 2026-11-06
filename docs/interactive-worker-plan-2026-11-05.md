@@ -1,5 +1,8 @@
 # 交互式（TUI）worker 方案 —— canonical 的下一步（2026-11-05）
 
+> **状态：搁置（2026-11-06 用户决定）**——"等于在窗口里看对话，暂时不用"。I0 第一轮已跑，结论见文末；工具轮次 / 续轮 / resume 未验证。
+> 后果已知：worker 继续以 `-p`（`sdk-cli`）运行，按 X-36 的实测以 ≈1.7× 速度消耗订阅窗口；入口标签同样不改。
+
 > 决定（X-36）：worker 节点从 `claude -p`（入口标签 `sdk-cli`）改为驱动 **真正的交互式 Claude Code**（入口 `cli`），
 > 不改写任何标签。目标版本 `v1.1`（与本方案一起打 tag）。参照实现：yetone/magpie 的 Claude 订阅桥（`internal/claudetui`、
 > `internal/gateway/claude_subscription.go`），它默认即交互模式、从不回落 `-p`。
@@ -71,3 +74,11 @@ gateway ──(cc_worker.open / turn / tool_result)──▶ node bridge ──�
 - 不改 `CLAUDE_CODE_ENTRYPOINT`、不伪造 UA/billing 头。
 - 不预载脚本进 Bun 钩 fetch、不改写请求体（`safeguards` 等）。
 - 不回放工具轮次（2.1.312 探针结论不变）。
+
+## I0 第一轮结果（2026-11-06，主服务器，2.1.312，fake upstream，零真实流量）
+
+- pty 里启动交互式 Claude Code（预写 `.claude.json` 的 `hasCompletedOnboarding` 与 `projects[cwd].hasTrustDialogAccepted`）：约 3 s 出现输入框，无弹窗；键入 + 回车 → 回答渲染 → 会话 jsonl 落盘。
+- 捕获 3 个请求，UA 全部 `claude-cli/2.1.312 (external, cli)`：REQ0 启动额度探测（`user:"quota"`，`max_tokens=1`）；REQ1 会话起标题侧请求（第一轮）；REQ2 主轮——billing `cc_version=2.1.312.6b4; cc_entrypoint=cli`，13 个内建工具，adaptive thinking，beta 含 `mid-conversation-tool-changes` / `per-turn-control` / `dangerous-tool-use` / `extended-cache-ttl`。
+- 主轮 `messages` 里有一条 `role: "system"` 的 `# Environment` 消息（2.1.31x 会话中途 system 消息形态，与 X-37 的 2.1.318 直连 400 同机制）。
+- 会话 jsonl 含 `api-request-blob` 行（CC 自己记录发出的 system / 消息内容）与 `assistant` 行：节点若要读每轮实际发送内容与回复，不需要代理或钩子。
+- 证据：`docs/evidence/cc-2.1.312/interactive-i0-report.json`、`interactive-i0-requests.ndjson`（fake token 已脱敏）。驱动脚本 `/root/monitor/tui_probe.py`、`/root/monitor/tui-capture.mjs`。

@@ -1,0 +1,94 @@
+{
+ "binary": "/opt/cc-probe-bin/claude-2.1.312",
+ "model": "claude-sonnet-5-5",
+ "notes": [],
+ "sent": true,
+ "rendered_answer": true,
+ "requests": [
+  {
+   "url": "/v1/messages?beta=true",
+   "carries_prompt": false,
+   "method": "POST",
+   "ua": "claude-cli/2.1.312 (external, cli)",
+   "betas": "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,redact-thinking-2026-02-12,context-management-2025-06-27",
+   "session_hdr": "76bd6765-9f41-406d-a7ea-1b844404b03c",
+   "req_class": null,
+   "billing": null,
+   "entrypoint": null,
+   "system_blocks": 0,
+   "system_chars": 0,
+   "messages": 1,
+   "model": "claude-sonnet-5-5",
+   "stream": null,
+   "metadata_keys": [
+    "account_uuid",
+    "device_id",
+    "session_id"
+   ]
+  },
+  {
+   "url": "/v1/messages?beta=true",
+   "carries_prompt": true,
+   "method": "POST",
+   "ua": "claude-cli/2.1.312 (external, cli)",
+   "betas": "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,redact-thinking-2026-02-12,context-management-2025-06-27,per-turn-control-2026-07-01,mid-conversation-tool-changes-2026-07-01,thinking-token-count-2026-05-13,effort-2025-11-24,structured-outputs-2025-12-15",
+   "session_hdr": "76bd6765-9f41-406d-a7ea-1b844404b03c",
+   "req_class": null,
+   "billing": "x-anthropic-billing-header: cc_version=2.1.312.058; cc_entrypoint=cli;",
+   "entrypoint": "cli",
+   "system_blocks": 3,
+   "system_chars": 3186,
+   "messages": 1,
+   "model": "claude-sonnet-5-5",
+   "stream": true,
+   "metadata_keys": [
+    "account_uuid",
+    "device_id",
+    "session_id"
+   ]
+  },
+  {
+   "url": "/v1/messages?beta=true",
+   "carries_prompt": true,
+   "method": "POST",
+   "ua": "claude-cli/2.1.312 (external, cli)",
+   "betas": "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,context-management-2025-06-27,per-turn-control-2026-07-01,mid-conversation-tool-changes-2026-07-01,thinking-token-count-2026-05-13,advanced-tool-use-2025-11-20,effort-2025-11-24,dangerous-tool-use-2026-09-03,thinking-display-updates-2026-08-18,afk-mode-2026-01-31,extended-cache-ttl-2025-04-11",
+   "session_hdr": "76bd6765-9f41-406d-a7ea-1b844404b03c",
+   "req_class": null,
+   "billing": "x-anthropic-billing-header: cc_version=2.1.312.6b4; cc_entrypoint=cli;",
+   "entrypoint": "cli",
+   "system_blocks": 3,
+   "system_chars": 6051,
+   "messages": 2,
+   "model": "claude-sonnet-5-5",
+   "stream": true,
+   "metadata_keys": [
+    "account_uuid",
+    "device_id",
+    "session_id"
+   ]
+  }
+ ],
+ "transcripts": [
+  {
+   "file": "projects/-root-monitor-tui-probe-work/76bd6765-9f41-406d-a7ea-1b844404b03c.jsonl",
+   "lines": 29,
+   "types": [
+    "mode::",
+    "permission-mode::",
+    "atis-latch::",
+    "file-history-snapshot::",
+    "user:user:",
+    "attachment::",
+    "attachment::",
+    "attachment::",
+    "attachment::",
+    "attachment::",
+    "attachment::",
+    "attachment::"
+   ],
+   "entrypoint_field": "cli",
+   "assistant_text": "PROBEANSWER7A3F"
+  }
+ ]
+}
