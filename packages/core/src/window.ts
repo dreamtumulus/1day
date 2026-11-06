@@ -187,12 +187,40 @@ export interface RateLimitEventInfo {
   isUsingOverage?: boolean;
   overageStatus?: string;
   overageDisabledReason?: string;
+  /**
+   * Claude Code 2.1.31x: the per-window state moved here (`five_hour`, `seven_day`, model-family / overage windows), each
+   * `{ utilization: 0..1, resetsAt: epoch s, status }`; the top-level `utilization` is no longer sent. Reading only the
+   * top level recorded 0.0 for every worker account (2026-11-05 report: the account page's quota was always wrong).
+   */
+  unifiedWindows?: Record<string, { utilization?: number; resetsAt?: number | string; status?: string } | null | undefined>;
 }
 export function parseRateLimitEvent(info: unknown): WindowSnapshot | null {
   if (!info || typeof info !== "object") return null;
   const e = info as RateLimitEventInfo;
   const type = typeof e.rateLimitType === "string" ? e.rateLimitType : null;
   const status = typeof e.status === "string" ? e.status.toLowerCase() : null;
+  const uw = e.unifiedWindows && typeof e.unifiedWindows === "object" ? e.unifiedWindows : null;
+  if (uw) {
+    const pt = (w: string): WindowPoint | null => {
+      const x = uw[w];
+      if (!x || typeof x !== "object") return null;
+      const st = typeof x.status === "string" ? x.status.toLowerCase() : null;
+      const u = toFraction(x.utilization);
+      if (u === null && st !== "rejected") return null;
+      // the event's own verdict names the binding window: a rejected five_hour is exhausted whatever the fraction says
+      const rejected = st === "rejected" || (status === "rejected" && type === w);
+      return { used: rejected ? Math.max(u ?? 0, 1) : (u ?? 0), resetAt: toIso(x.resetsAt), status: rejected ? "rejected" : st };
+    };
+    const fiveHour = pt("five_hour");
+    const sevenDay = pt("seven_day");
+    const fable = pt("seven_day_overage_included") ?? pt("seven_day_fable");
+    if (fiveHour || sevenDay || fable) {
+      const presence = { five_hour: !!fiveHour, seven_day: !!sevenDay, fable: !!fable };
+      const best = binding([["five_hour", fiveHour], ["seven_day", sevenDay]]);
+      if (best) return { ...best, fiveHour, sevenDay, fable, presence };
+      return { used: 0, resetAt: null, window: null, fiveHour: null, sevenDay: null, fable, presence };
+    }
+  }
   if (!type && status !== "rejected") return null;
   let used = toFraction(e.utilization) ?? (status === "rejected" ? 1 : 0);
   if (e.surpassedThreshold === true || status === "rejected") used = Math.max(used, 1);

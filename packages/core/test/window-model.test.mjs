@@ -68,3 +68,21 @@ test("unified headers: 7d without 5h needs three agreeing samples before 'no fiv
   core.recordWindowPresence("h1", both.presence, "headers");
   assert.equal(model("h1").five_hour, true, "a 5h header flips it straight back");
 });
+
+test("rate_limit_event 2.1.31x shape: per-window state under unifiedWindows, no top-level utilization", () => {
+  const ev = core.parseRateLimitEvent({ status: "allowed", resetsAt: 1793904600, rateLimitType: "five_hour", overageStatus: "rejected", isUsingOverage: false,
+    unifiedWindows: { five_hour: { utilization: 0.1, resetsAt: 1793904600, status: "allowed" }, seven_day: { utilization: 0.16, resetsAt: 1794085200, status: "allowed" } } });
+  assert.equal(ev.fiveHour.used, 0.1); assert.equal(ev.sevenDay.used, 0.16);
+  assert.equal(ev.window, "seven_day", "binding = highest utilization"); assert.equal(ev.used, 0.16);
+  assert.equal(ev.fiveHour.resetAt, "2026-11-05T18:50:00Z");
+  assert.deepEqual(ev.presence, { five_hour: true, seven_day: true, fable: false });
+  // rejected five_hour verdict forces that window to exhausted even if the fraction lags
+  const rej = core.parseRateLimitEvent({ status: "rejected", rateLimitType: "five_hour", unifiedWindows: { five_hour: { utilization: 0.97, status: "allowed" }, seven_day: { utilization: 0.3 } } });
+  assert.equal(rej.fiveHour.used, 1); assert.equal(rej.window, "five_hour"); assert.equal(rej.used, 1);
+  // recorded into both window columns
+  core.recordRateLimitEvent("h1", { status: "allowed", rateLimitType: "five_hour", unifiedWindows: { five_hour: { utilization: 0.42, resetsAt: 1793904600 }, seven_day: { utilization: 0.07, resetsAt: 1794085200 } } });
+  const row = core.one("SELECT window_5h_used, window_7d_used, window_used FROM accounts WHERE id = 'h1'");
+  assert.equal(row.window_5h_used, 0.42); assert.equal(row.window_7d_used, 0.07); assert.equal(row.window_used, 0.42);
+  // legacy shape still works
+  assert.equal(core.parseRateLimitEvent({ status: "allowed", rateLimitType: "five_hour", utilization: 0.5 }).used, 0.5);
+});
