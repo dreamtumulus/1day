@@ -379,7 +379,7 @@ export class PlatformBridge {
           const urls = Array.isArray(set.proxies)
             ? set.proxies.filter((p): p is string => typeof p === "string")
             : [];
-          const { accepted, rejected } = this.deps.pool.replaceAll(urls, { proxyTeams: set.proxyTeams, proxyAccounts: set.proxyAccounts });
+          const { accepted, rejected } = this.deps.pool.replaceAll(urls, { proxyTeams: set.proxyTeams, proxyAccounts: set.proxyAccounts, proxyTeamBinding: set.proxyTeamBinding });
           this.log(`proxies.set applied: ${accepted} accepted, ${rejected} rejected`);
           break;
         }

@@ -414,18 +414,28 @@ export function proxyOccupancy(resourceKey: string, excludeJobId = ""): { bound:
 export type ProxyIncompatibility = "legacy" | "dead" | "unprobed" | "exit_unverified" | "cooldown" | "quarantined" |
   "other_organization" | "needs_virgin_exit" | "reserved_by_other";
 
+/** settings `proxy_org_binding_enforce` (2026-11-06): 0 = an exit may carry accounts of several organizations. */
+export function orgBindingEnforced(): boolean {
+  return getSetting("proxy_org_binding_enforce").trim() !== "0";
+}
+
 export function teamIncompatibleReason(p: IsolatedProxy, teamId: string | null): ProxyIncompatibility | null {
   if (p.isolation_version !== 1) return "legacy";
   if (p.status === "dead") return "dead";
   if (p.status !== "live") return "unprobed";
   if (!p.exit_ip || !p.resource_key || canonicalProxyResourceKey(p.exit_ip) !== p.resource_key) return "exit_unverified";
   if (p.cooldown_until && p.cooldown_until > nowIso()) return "cooldown";
+  const enforce = orgBindingEnforced();
   for (const key of [p.resource_key, `proxy:${p.id}`]) {
     if (quarantineActive(key)) return "quarantined";
+    if (!enforce) continue;
     const claim = one<{ team_id: string }>("SELECT team_id FROM proxy_team_claims WHERE resource_key=?", key);
     if (claim && claim.team_id !== teamId) return "other_organization";
     if (!teamId && claim) return "needs_virgin_exit";
   }
+  // Binding off (2026-11-06): organizations may share an exit; only the hard capacity limit (exitCap) and the exit's own
+  // health / quarantine / cooldown decide. Claims are still recorded, so turning enforcement back on restores the rule.
+  if (!enforce) return null;
   if (p.team_id && p.team_id !== teamId) return "other_organization";
   // An unidentified account must discover its organization on a virgin,
   // exclusive resource; it may not borrow another organization's exit.
@@ -804,10 +814,11 @@ export function nodeProxyUrls(nodeId: string): string[] {
 
 /** Protocol metadata is reconstructed from authoritative bindings and live reservations. */
 export function nodeProxyConfig(nodeId: string): {
-  proxies: string[]; proxyTeams: Record<string,string>; proxyAccounts: Record<string,string[]>;
+  proxies: string[]; proxyTeams: Record<string,string>; proxyAccounts: Record<string,string[]>; proxyTeamBinding: "enforce" | "accounts_only";
 } {
   const proxyTeams: Record<string,string> = {};
   const proxyAccounts: Record<string,string[]> = {};
+  const enforce = orgBindingEnforced();
   for (const p of all<IsolatedProxy>("SELECT * FROM node_proxies WHERE node_id=? AND isolation_version=1",nodeId)) {
     proxyTeams[p.id]=p.team_id??`unassigned:${p.id}`;
     proxyAccounts[p.id]=[];
@@ -816,13 +827,21 @@ export function nodeProxyConfig(nodeId: string): {
       AND proxy_resource_key=? AND ${liveReservationSql('onboarding_jobs')}`,p.id,p.resource_key);
     const team = p.team_id ?? jobs[0]?.team_id ?? (jobs[0] ? `pending:${jobs[0].id}` : null);
     if (!team) continue;
+    if (!enforce) {
+      // Binding off (2026-11-06): every account bound to this proxy and every live reservation on it may use it, whatever
+      // their organization; proxyTeams keeps the first organization for display and for nodes on an older bundle.
+      proxyTeams[p.id] = team;
+      const accountIds = all<{id:string}>("SELECT id FROM accounts WHERE bound_proxy_id=?",p.id).map((a)=>a.id);
+      proxyAccounts[p.id] = [...accountIds,...jobs.map((j)=>`onboard_${j.id}`)];
+      continue;
+    }
     const owner=one<{team_id:string}>("SELECT team_id FROM proxy_team_claims WHERE resource_key=?",p.resource_key);
     if(owner && owner.team_id!==team)continue;
     proxyTeams[p.id] = team;
     const accountIds = all<{id:string}>("SELECT id FROM accounts WHERE bound_proxy_id=? AND team_id=?",p.id,team).map((a)=>a.id);
     proxyAccounts[p.id] = [...accountIds,...jobs.filter((j)=>(j.team_id ?? `pending:${j.id}`)===team).map((j)=>`onboard_${j.id}`)];
   }
-  return {proxies:nodeProxyUrls(nodeId),proxyTeams,proxyAccounts};
+  return {proxies:nodeProxyUrls(nodeId),proxyTeams,proxyAccounts,proxyTeamBinding: enforce ? "enforce" : "accounts_only"};
 }
 
 /**

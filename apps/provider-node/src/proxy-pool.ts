@@ -194,7 +194,7 @@ export class ProxyPool {
   }
 
   /** Platform push / config reload: full replacement, persisted. */
-  replaceAll(urls: string[], metadata?: { proxyTeams?: Record<string, string>; proxyAccounts?: Record<string, string[]> }): { accepted: number; rejected: number } {
+  replaceAll(urls: string[], metadata?: { proxyTeams?: Record<string, string>; proxyAccounts?: Record<string, string[]>; proxyTeamBinding?: "enforce" | "accounts_only" }): { accepted: number; rejected: number } {
     const valid = [...new Set(urls.filter(isValidProxyUrl))];
     const rejected = urls.length - valid.length;
     // Keep what we already know about proxies that stay in the pool (liveness, strikes,
@@ -219,6 +219,7 @@ export class ProxyPool {
       const ids = new Set(valid.map(proxyId));
       this.store.data.proxyTeams = Object.fromEntries(Object.entries(metadata.proxyTeams ?? {}).filter(([id, team]) => ids.has(id) && typeof team === "string" && !!team));
       this.store.data.proxyAccounts = Object.fromEntries(Object.entries(metadata.proxyAccounts ?? {}).filter(([id, accounts]) => ids.has(id) && Array.isArray(accounts) && accounts.every((a) => typeof a === "string")));
+      this.store.data.proxyTeamBinding = metadata.proxyTeamBinding === "accounts_only" ? "accounts_only" : undefined;
     }
     const assignments = this.store.data.proxyAssignments;
     if (assignments) {
@@ -245,7 +246,7 @@ export class ProxyPool {
    * usable, matching pickForAccount.
    */
   getPinnedForArchive(id: string, teamId: string): string | null {
-    if (!teamId || this.store.data.proxyTeams?.[id] !== teamId) return null;
+    if (!teamId || (this.store.data.proxyTeamBinding !== "accounts_only" && this.store.data.proxyTeams?.[id] !== teamId)) return null;
     for (const [url, health] of this.health) if (proxyId(url) === id) return health.live !== false ? url : null;
     return null;
   }
@@ -254,7 +255,10 @@ export class ProxyPool {
     const tagged = this.store.data.proxyTeams?.[id];
     const team = tagged && !tagged.startsWith("unassigned:") ? tagged : null;
     if (team || teamId) {
-      if (!team || team !== teamId || !accountId || !this.store.data.proxyAccounts?.[id]?.includes(accountId)) return null;
+      const listed = !!accountId && !!this.store.data.proxyAccounts?.[id]?.includes(accountId);
+      // Binding off (platform setting proxy_org_binding_enforce=0, 2026-11-06): the account list alone decides.
+      if (this.store.data.proxyTeamBinding === "accounts_only") { if (!listed) return null; }
+      else if (!team || team !== teamId || !listed) return null;
     }
     for (const [url, h] of this.health) {
       if (proxyId(url) === id) return h.live !== false ? url : null;

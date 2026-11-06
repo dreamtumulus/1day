@@ -28,6 +28,7 @@ export interface NodeConfigData {
   proxyAssignments?: Record<string, string>;
   proxyTeams?: Record<string, string>;
   proxyAccounts?: Record<string, string[]>;
+  proxyTeamBinding?: "enforce" | "accounts_only";
 }
 
 const SENSITIVE_FIELDS = ["providerNodeSecret"] as const;

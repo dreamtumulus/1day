@@ -119,3 +119,18 @@ console.log("proxy-pool: ALL PASSED");
   assert.deepEqual(parseExitLookup("<html>blocked</html>"), { ip: null, country: null });
   console.log("proxy-pool: exit lookup parsing OK");
 }
+
+// proxy_org_binding_enforce=0 (2026-11-06): the platform pushes proxyTeamBinding "accounts_only"; the account list alone decides.
+{
+  const pool2 = new ProxyPool(fakeStore(), { autoCheck: false });
+  const id = proxyId(P1);
+  pool2.replaceAll([P1], { proxyTeams: { [id]: "team-A" }, proxyAccounts: { [id]: ["acct-1", "acct-2"] } });
+  assert.equal(pool2.getPinned(id, "acct-1", "team-A"), P1, "enforced: same organization resolves");
+  assert.equal(pool2.getPinned(id, "acct-2", "team-B"), null, "enforced: another organization is refused");
+  pool2.replaceAll([P1], { proxyTeams: { [id]: "team-A" }, proxyAccounts: { [id]: ["acct-1", "acct-2"] }, proxyTeamBinding: "accounts_only" });
+  assert.equal(pool2.getPinned(id, "acct-2", "team-B"), P1, "binding off: a listed account of another organization resolves");
+  assert.equal(pool2.getPinned(id, "acct-9", "team-B"), null, "binding off: an unlisted account is still refused");
+  assert.equal(pool2.getPinnedForArchive(id, "team-B"), P1, "binding off: archive pin ignores the organization tag");
+  pool2.replaceAll([P1], { proxyTeams: { [id]: "team-A" }, proxyAccounts: { [id]: ["acct-1", "acct-2"] } });
+  assert.equal(pool2.getPinned(id, "acct-2", "team-B"), null, "re-enforced on the next push");
+}

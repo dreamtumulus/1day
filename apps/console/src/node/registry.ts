@@ -821,7 +821,7 @@ export async function openTunnel(
     if (boundProxyDown(acc)) return null;
     proxyId = acc.bound_proxy_id;
     const policy = nodeProxyConfig(acc.node_id);
-    if (policy.proxyTeams[proxyId] !== teamId || !policy.proxyAccounts[proxyId]?.includes(acc.id)) return null;
+    if ((policy.proxyTeamBinding !== "accounts_only" && policy.proxyTeams[proxyId] !== teamId) || !policy.proxyAccounts[proxyId]?.includes(acc.id)) return null;
   } else if (teamId) return null;
   // Provider-owned: any node of that provider (or the pinned one). Platform-owned
   // (owner NULL): must be pinned to a platform node, i.e. one deployed by an admin.
@@ -966,7 +966,7 @@ export async function openEgressOnNode(nodeId: string, proxyId: string, bindingI
     const policy = nodeProxyConfig(nodeId);
     if (!one("SELECT 1 FROM node_proxies WHERE id=? AND node_id=? AND status='live' AND isolation_version=1", proxyId, nodeId)) return null;
     if (!conn.capabilities?.includes("team_isolation_v1") || (conn.runtimeTeamId && conn.runtimeTeamId !== teamId) ||
-      policy.proxyTeams[proxyId] !== teamId || !policy.proxyAccounts[proxyId]?.includes(bindingId)) return null;
+      (policy.proxyTeamBinding !== "accounts_only" && policy.proxyTeams[proxyId] !== teamId) || !policy.proxyAccounts[proxyId]?.includes(bindingId)) return null;
   } else if (conn.runtimeTeamId || nodeProxyConfig(nodeId).proxyTeams[proxyId]) return null;
   const sessionId = `tun_${randomUUID()}`;
   const response = awaitOpen(conn, sessionId);

@@ -184,6 +184,8 @@ export interface ProxiesSet {
   proxies: string[];
   proxyTeams?: Record<string, string>;
   proxyAccounts?: Record<string, string[]>;
+  /** 2026-11-06: "accounts_only" = the platform turned the exit ↔ organization binding off; getPinned checks the account list only. */
+  proxyTeamBinding?: "enforce" | "accounts_only";
 }
 
 export interface ProxyStatusReport {
