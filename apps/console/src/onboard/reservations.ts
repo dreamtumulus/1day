@@ -1,4 +1,4 @@
-import { all, claimProxyResource, ensureUpstreamTeam, nowIso, one, quarantineResource, recordProxyTeamEvent, run } from "@1dayapi/core";
+import { all, claimProxyResource, ensureUpstreamTeam, nowIso, one, quarantineResource, recordProxyTeamEvent, run, getSetting } from "@1dayapi/core";
 
 export const PENDING_CALLBACK_TTL_MS = 30 * 60_000;
 export const WORKING_JOB_TTL_MS = 3 * 60_000;
@@ -44,7 +44,9 @@ export function endReservation(jobId: string, code: string, message: string): bo
   //    claimed for that organization (reusable by its own accounts, never by another);
   //  - platform-side failure with no organization known → quarantine (unknown egress).
   let outcome: "quarantined" | "kept_for_team" | "released" = "released";
-  if (wentOut && unclaimedOrForeign) {
+  // settings proxy_quarantine_on_failure=0 (2026-11-06): a failed authorization never taints the exit; the slot is released.
+  const quarantineOn = getSetting("proxy_quarantine_on_failure").trim() !== "0";
+  if (quarantineOn && wentOut && unclaimedOrForeign) {
     const foreign = !!claimed && claimed.team_id !== j.team_id;
     if (failureTaintsExit(code) || foreign || !j.team_id) outcome = "quarantined";
     else {
@@ -67,7 +69,7 @@ export function endReservation(jobId: string, code: string, message: string): bo
   }
   const changed = run("UPDATE onboarding_jobs SET status='failed', error=?, payload_enc=NULL, authorize_url=NULL, updated_at=? WHERE id=? AND isolation_version=1 AND status IN ('working','pending_callback')", `${code}: ${message}`.slice(0,500), nowIso(), jobId).changes;
   if (changed && j.proxy_resource_key) recordProxyTeamEvent({resourceKey:j.proxy_resource_key,proxyId:j.proxy_id,nodeId:j.node_id,teamId:j.team_id,jobId,actorId:j.requester_id,event:"slot_released",
-    reason:`${code}; ${outcome === "quarantined" ? "exit quarantined" : outcome === "kept_for_team" ? "exit kept for the specified organization (platform-side failure, not tainted)" : "released before egress"}`});
+    reason:`${code}; ${outcome === "quarantined" ? "exit quarantined" : outcome === "kept_for_team" ? "exit kept for the specified organization (platform-side failure, not tainted)" : wentOut ? "released (quarantine on failure disabled)" : "released before egress"}`});
   return changed > 0;
 }
 

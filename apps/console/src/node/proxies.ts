@@ -372,7 +372,8 @@ export function recordNodeProxyExit(nodeId:string,proxyId:string,ip:string):bool
     const owner=one<{team_id:string}>("SELECT team_id FROM proxy_team_claims WHERE resource_key=?",key);
     const reservedByOther=!!p.team_id && one(`SELECT 1 FROM onboarding_jobs WHERE proxy_resource_key=?
       AND ${liveReservationSql('onboarding_jobs')} AND (team_id IS NULL OR team_id<>?)`,key,p.team_id);
-    const conflict=!!p.team_id && (!!owner && owner.team_id!==p.team_id || !!reservedByOther || !!quarantineActive(key));
+    // Organization conflict on the observed exit only counts while the exit ↔ organization binding is enforced (2026-11-06).
+    const conflict=!!p.team_id && ((orgBindingEnforced() && (!!owner && owner.team_id!==p.team_id || !!reservedByOther)) || !!quarantineActive(key));
     if(conflict){
       quarantineResource(`proxy:${p.id}`,"observed exit organization conflict");
       recordProxyTeamEvent({resourceKey:key,proxyId:p.id,nodeId,teamId:p.team_id,event:"exit_conflict",reason:"observed IP belongs to another organization"});

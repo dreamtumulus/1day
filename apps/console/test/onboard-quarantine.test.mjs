@@ -223,3 +223,18 @@ test("precheck: shape, embedded account uuid, duplicates by owner scope, admin/p
 test.after(async () => {
   await app.close();
 });
+
+test("endReservation: proxy_quarantine_on_failure=0 releases the slot after an upstream rejection without tainting the exit", () => {
+  core.setSetting("proxy_quarantine_on_failure", "0");
+  try {
+    mkProxy("qproxy000009", "203.0.113.19");
+    const id = mkJob({ proxyId: "qproxy000009", ip: "203.0.113.19" });
+    assert.equal(endReservation(id, "session_key_invalid", "authorize: HTTP 403"), true);
+    assert.deepEqual(quarantineRows("qproxy000009", "203.0.113.19"), [], "quarantine on failure disabled: exit untouched");
+    const ev = all("SELECT event, reason FROM proxy_team_events WHERE job_id=? ORDER BY created_at", id);
+    assert.equal(ev.some((e) => e.event === "quarantined"), false);
+    assert.ok(/quarantine on failure disabled/.test(ev.find((e) => e.event === "slot_released").reason), JSON.stringify(ev));
+  } finally {
+    core.setSetting("proxy_quarantine_on_failure", "1");
+  }
+});
