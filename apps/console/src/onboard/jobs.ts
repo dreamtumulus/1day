@@ -20,7 +20,7 @@ import {
 } from "@1dayapi/core";
 import { authorizeWithSessionKey, exchangeCallbackCode, newPkce, OnboardError, verifyAccessToken, type AuthResult, fetchProfileViaEgress } from "./direct-oauth.js";
 import { enrichAccountProfile } from "../ccr/profile.js";
-import { claimDiscoveredProxy, claimTeamProxy, nodeProxyUrls, proxyOccupancy, quarantineJobProxy, resolveTeamProxy, type IsolatedProxy, exitCap } from "../node/proxies.js";
+import { claimDiscoveredProxy, claimTeamProxy, nodeProxyUrls, orgBindingEnforced, proxyOccupancy, quarantineJobProxy, resolveTeamProxy, type IsolatedProxy, exitCap } from "../node/proxies.js";
 import { pushProxies } from "../node/registry.js";
 import { HttpError } from "../http.js";
 import { assertNodeCapacity } from "../node/capacity.js";
@@ -163,7 +163,7 @@ function insertJob(
   const p=one<IsolatedProxy>("SELECT * FROM node_proxies WHERE id=? AND node_id=?",proxyId,nodeId);
   if(!p || p.isolation_version!==1 || !p.resource_key)throw new OnboardError("proxy_unverified","A measured isolated proxy is required");
   const expected=params.expectedTeamId??null;
-  if(p.team_id && p.team_id!==expected)throw new OnboardError("proxy_team_mismatch","Proxy organization mismatch");
+  if(orgBindingEnforced() && p.team_id && p.team_id!==expected)throw new OnboardError("proxy_team_mismatch","Proxy organization mismatch");
   const alreadyBound=params.reauthAccountId && one("SELECT 1 FROM accounts WHERE id=? AND bound_proxy_id=?",params.reauthAccountId,proxyId);
   if(!alreadyBound && proxyOccupancy(p.resource_key).total>=exitCap())throw new OnboardError("proxy_capacity_reached","Proxy account capacity reached");
   run(
@@ -593,7 +593,10 @@ async function finishJob(job: JobRow, res: AuthResult): Promise<void> {
     });
   } catch (err) {
     const msg = (err as Error).message;
-    failJob(job.id, msg.startsWith("proxy_bound") || msg.startsWith("group_not_found") ? msg.split(":")[0] : "authorize_failed", msg);
+    // Platform-side bookkeeping failures keep their own (non-tainting) code: on 2026-11-06 a proxy_team_mismatch thrown
+    // here was filed as authorize_failed, which quarantined and killed two healthy exits (reservations.ts EXIT_TAINTING_CODES).
+    const own = /^(proxy_bound|group_not_found|proxy_team_mismatch|proxy_identity_changed|proxy_capacity_reached|proxy_quarantined)/.exec(msg);
+    failJob(job.id, own ? own[1] : "authorize_failed", msg);
     return;
   }
   jobControllers.delete(job.id);
@@ -645,7 +648,7 @@ async function reauthorizeInPlace(job: JobRow, row: AccountRow, credential: stri
   if(!teamId || teamId!==normalizeTeamId(res.orgUuid) || job.team_id!==teamId){
     failJob(job.id,"team_mismatch","Organization cannot change during re-authorization");return;
   }
-  if(!bound || bound.status!=="live" || bound.team_id!==teamId || bound.id!==job.proxy_id || bound.resource_key!==job.proxy_resource_key){
+  if(!bound || bound.status!=="live" || (orgBindingEnforced() && bound.team_id!==teamId) || bound.id!==job.proxy_id || bound.resource_key!==job.proxy_resource_key){
     failJob(job.id,"fixed_proxy_unavailable","The fixed proxy is unavailable; automatic rebinding is disabled");return;
   }
   const now=nowIso();

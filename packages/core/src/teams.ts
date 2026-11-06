@@ -1,6 +1,7 @@
 import { one, run } from "./db.js";
 import { newId } from "./crypto.js";
 import { nowIso } from "./time.js";
+import { getSetting } from "./settings.js";
 
 /** The upstream organization's UUID, never a billing group or provider id. */
 export function normalizeTeamId(value: unknown): string | null {
@@ -66,6 +67,9 @@ export function claimProxyResource(resourceKey: string, teamId: string): void {
   if (quarantineActive(resourceKey)) throw new Error("proxy_quarantined");
   run("INSERT OR IGNORE INTO proxy_team_claims(resource_key,team_id) VALUES (?,?)", resourceKey, teamId);
   if (one<{ team_id: string }>("SELECT team_id FROM proxy_team_claims WHERE resource_key=?", resourceKey)?.team_id !== teamId) {
+    // settings proxy_org_binding_enforce=0 (2026-11-06): the exit may carry several organizations; the first claim
+    // stays on record (append-only history), the new organization simply shares the exit.
+    if (getSetting("proxy_org_binding_enforce").trim() === "0") return;
     throw new Error("proxy_team_mismatch");
   }
 }

@@ -610,9 +610,9 @@ export function claimDiscoveredProxy(proxyId:string,teamId:string,jobId:string):
   const p=one<IsolatedProxy>("SELECT * FROM node_proxies WHERE id=?",proxyId);
   const job=one<{proxy_resource_key:string|null}>("SELECT proxy_resource_key FROM onboarding_jobs WHERE id=?",jobId);
   if(!p?.resource_key || p.resource_key!==job?.proxy_resource_key || p.isolation_version!==1 || !p.exit_ip ||
-    canonicalProxyResourceKey(p.exit_ip)!==p.resource_key || (p.team_id && p.team_id!==teamId))throw new Error("proxy_identity_changed");
+    canonicalProxyResourceKey(p.exit_ip)!==p.resource_key || (orgBindingEnforced() && p.team_id && p.team_id!==teamId))throw new Error("proxy_identity_changed");
   ensureUpstreamTeam(teamId);claimProxyResource(`proxy:${p.id}`,teamId);claimProxyResource(p.resource_key,teamId);
-  run("UPDATE node_proxies SET team_id=? WHERE id=?",teamId,p.id);
+  if(orgBindingEnforced() || !p.team_id)run("UPDATE node_proxies SET team_id=? WHERE id=?",teamId,p.id); // binding off: the first organization tag stays
   recordProxyTeamEvent({resourceKey:p.resource_key,proxyId:p.id,nodeId:p.node_id,teamId,jobId,event:"organization_discovered",
     reason:"discovery exit permanently assigned; final account slot selected separately"});
 }
@@ -622,12 +622,14 @@ export function claimTeamProxy(proxyId: string, teamId: string, accountId: strin
   const job = one<{ proxy_resource_key: string | null;requester_id:string|null }>("SELECT proxy_resource_key,requester_id FROM onboarding_jobs WHERE id=?", jobId);
   if (!p || p.isolation_version !== 1 || !p.resource_key || p.resource_key !== job?.proxy_resource_key ||
       !p.exit_ip || canonicalProxyResourceKey(p.exit_ip) !== p.resource_key || p.status !== "live" ||
-      (p.team_id && p.team_id !== teamId)) throw new Error("proxy_identity_changed");
+      (orgBindingEnforced() && p.team_id && p.team_id !== teamId)) throw new Error("proxy_identity_changed");
   if (proxyOccupancy(p.resource_key, jobId).total >= exitCap()) throw new Error("proxy_capacity_reached");
   ensureUpstreamTeam(teamId);
   claimProxyResource(`proxy:${p.id}`, teamId);
   claimProxyResource(p.resource_key, teamId);
-  run("UPDATE node_proxies SET team_id=? WHERE id=? AND isolation_version=1", teamId, p.id);
+  // binding off (2026-11-06): the first organization tag stays on the row (display / older node bundles); accounts of
+  // other organizations are listed through nodeProxyConfig's accounts-only policy.
+  if (orgBindingEnforced() || !p.team_id) run("UPDATE node_proxies SET team_id=? WHERE id=? AND isolation_version=1", teamId, p.id);
   recordProxyTeamEvent({ resourceKey: p.resource_key, proxyId:p.id,nodeId:p.node_id,teamId,accountId,jobId,event:"account_bound",
     actorId:job.requester_id,reason:proxyOccupancy(p.resource_key,jobId).total>=2?"third slot: no normal capacity":"normal account slot" });
 }
