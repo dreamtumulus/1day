@@ -14,7 +14,8 @@ test("canonicalTurn: single user turn → raw content + appended system (billing
   };
   const t = canonicalTurn(body, "fresh", false);
   assert.equal(t.error, null);
-  assert.equal(t.appendSystemPrompt, "You are Acme's assistant.", "the client's own billing header never travels inside the appended text");
+  assert.ok(t.appendSystemPrompt.startsWith("You are Acme's assistant.\n\nEnvironment note:"), `caller text first, then the sandbox-environment note: ${t.appendSystemPrompt.slice(0, 80)}`);
+  assert.equal(t.appendSystemPrompt.includes("x-anthropic-billing-header"), false, "the client's own billing header never travels inside the appended text");
   assert.deepEqual(t.content, body.messages[0].content, "the user's blocks, verbatim — no [user] fold, no platform note");
   assert.equal(callerSystemText({ system: "plain string system" }), "plain string system");
   // string content

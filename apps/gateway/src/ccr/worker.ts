@@ -56,9 +56,23 @@ function noteRateLimit(account: AccountRow, translator: SessionTranslator, reque
   }
 }
 
+/**
+ * Appended after the caller's system text on the canonical lane (2026-11-05, 测试BOOK: "I run on a Linux machine and cannot
+ * reach your directory"). The node's Claude Code describes ITS environment first (cwd under cc-sessions/cwd, Linux); the
+ * caller's own environment arrives second, so the model trusted the sandbox and refused paths that live on the caller's
+ * machine — although every caller tool (mcp__caller__*) executes there. Constant text: part of the cached prefix.
+ */
+export const CANONICAL_ENV_NOTE = [
+  "Environment note: the working directory, platform and OS described at the start of this system prompt belong to the",
+  "sandbox this process runs in — they are NOT the user's environment. The user's files, shell and working directory are on",
+  "the user's own machine; any path the user mentions refers to that machine. When caller tools are available (tool names",
+  "starting with mcp__caller__), read, list, edit and run things through them exactly as you would with built-in tools.",
+  "When no such tools are available, ask the user to paste what you need instead of describing this sandbox.",
+].join(" ");
+
 export function canonicalTurn(body: Json, planMode: "fresh" | "continue" | "tool_result", hasLiveSession: boolean, allowHistoryImport = false): { appendSystemPrompt: string; content: Json[] | null; importHistory: Json[] | null; error: { code: string; message: string } | null } {
   const msgs: Json[] = Array.isArray(body.messages) ? body.messages : [];
-  const appendSystemPrompt = callerSystemText(body);
+  const appendSystemPrompt = [callerSystemText(body), CANONICAL_ENV_NOTE].filter(Boolean).join("\n\n");
   const last = msgs[msgs.length - 1];
   // Canonical sends the caller's live turn raw to the native process, which forwards it upstream as-is. The caller's
   // own cache_control markers must not ride along (legacy drops them too, translate.ts): Claude Code sets its own, and
