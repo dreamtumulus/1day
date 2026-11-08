@@ -20,7 +20,7 @@ import {
 } from "@1dayapi/core";
 import { authorizeWithSessionKey, exchangeCallbackCode, newPkce, OnboardError, verifyAccessToken, type AuthResult, fetchProfileViaEgress } from "./direct-oauth.js";
 import { enrichAccountProfile } from "../ccr/profile.js";
-import { claimDiscoveredProxy, claimTeamProxy, nodeProxyUrls, orgBindingEnforced, proxyOccupancy, quarantineJobProxy, resolveTeamProxy, type IsolatedProxy, exitCap } from "../node/proxies.js";
+import { claimDiscoveredProxy, claimTeamProxy, nodeProxyUrls, orgBindingEnforced, proxyOccupancy, quarantineJobProxy, resolveTeamProxy, type IsolatedProxy, exitCap, poolRow } from "../node/proxies.js";
 import { pushProxies } from "../node/registry.js";
 import { HttpError } from "../http.js";
 import { assertNodeCapacity } from "../node/capacity.js";
@@ -160,7 +160,8 @@ function insertJob(
     throw new HttpError(409,"reauth_in_progress","This account already has an active authorization job");
   const id = newId();
   const now = nowIso();
-  const p=one<IsolatedProxy>("SELECT * FROM node_proxies WHERE id=? AND node_id=?",proxyId,nodeId);
+  // Home row or a row shared into this node (cross-node sharing, 2026-11-08).
+  const p=poolRow(nodeId,proxyId);
   if(!p || p.isolation_version!==1 || !p.resource_key)throw new OnboardError("proxy_unverified","A measured isolated proxy is required");
   const expected=params.expectedTeamId??null;
   if(orgBindingEnforced() && p.team_id && p.team_id!==expected)throw new OnboardError("proxy_team_mismatch","Proxy organization mismatch");
@@ -662,7 +663,7 @@ async function reauthorizeInPlace(job: JobRow, row: AccountRow, credential: stri
     const params:OnboardParams=job.params_json?JSON.parse(job.params_json):{};
     run("UPDATE onboarding_jobs SET status='done',account_id=?,params_json=?,payload_enc=NULL,updated_at=? WHERE id=?",
       row.id,JSON.stringify({...params,reauthorized:true}),now,job.id);
-    recordProxyTeamEvent({resourceKey:bound.resource_key!,proxyId:bound.id,nodeId:bound.node_id,teamId,
+    recordProxyTeamEvent({resourceKey:bound.resource_key!,proxyId:bound.id,nodeId:job.node_id,teamId,
       accountId:row.id,jobId:job.id,event:"account_reauthorized",actorId:job.requester_id,reason:"fixed proxy retained"});
   });
   jobControllers.delete(job.id);

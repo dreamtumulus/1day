@@ -545,4 +545,38 @@ await test("POST /accounts/:id/reauth: pinned to the account's proxy, identity c
   }
 });
 
+// ---------- cross-node sharing (2026-11-08, X-44): onboarding through a proxy shared from another node ----------
+
+await test("session_key + explicit proxy shared from another node: job completes on the requested node, account bound to the shared row", async () => {
+  const { addNodeProxies, listNodeProxies } = await import("../dist/node/proxies.js");
+  const url = "http://u:p@10.1.0.9:8009";
+  const sharedId = pid(url);
+  // Lives on node-prov (home), verified there; shared into node-plat by appending the same line to node-plat's pool.
+  addNodeProxies("node-prov", [{ url, label: "shared-src" }]);
+  run("UPDATE node_proxies SET status='live', last_check_at=? WHERE id=?", "2026-10-15T02:00:00Z", sharedId);
+  assert.equal(recordNodeProxyExit("node-prov", sharedId, "198.51.100.9"), true);
+  const add = addNodeProxies("node-plat", [{ url }]);
+  assert.equal(add.shared, 1);
+  const r = await admin("POST", "/api/admin/accounts/onboard", { method: "session_key", sessionKey: "shared-1", nodeId: "node-plat", proxyId: sharedId, name: "onboarded-shared" });
+  assert.equal(r.status, 200, JSON.stringify(r));
+  const done = await waitJob(admin, "/api/admin", r.data.jobId);
+  assert.equal(done.status, "done", JSON.stringify(done));
+  const a = one("SELECT node_id, bound_proxy_id, team_id, status FROM accounts WHERE id = ?", done.accountId);
+  assert.equal(a.node_id, "node-plat", "account lives on the requested node");
+  assert.equal(a.bound_proxy_id, sharedId, "bound to the shared row");
+  assert.equal(one("SELECT node_id FROM node_proxies WHERE id=?", sharedId).node_id, "node-prov", "home row untouched");
+  const ev = one("SELECT node_id FROM proxy_team_events WHERE event='account_bound' AND account_id=?", done.accountId);
+  assert.equal(ev.node_id, "node-plat", "account_bound event names the node that carries the account");
+  // Scheduling gate: the account's node holds the share -> not down (binding rule off, as in production since 2026-11-06).
+  core.setSetting("proxy_org_binding_enforce", "0");
+  assert.equal(core.boundProxyDown({ bound_proxy_id: sharedId, team_id: a.team_id, node_id: "node-plat" }), false);
+  // Both pools annotate the carrier with its node.
+  for (const n of ["node-prov", "node-plat"]) {
+    const row = listNodeProxies(n).find((p) => p.id === sharedId);
+    assert.equal(row.carriers.length, 1, n);
+    assert.equal(row.carriers[0].nodeId, "node-plat", n);
+    assert.equal(row.shared, n === "node-plat");
+  }
+});
+
 await app.close();

@@ -784,7 +784,7 @@ export function claimDiscoveredProxy(proxyId:string,teamId:string,jobId:string):
 
 export function claimTeamProxy(proxyId: string, teamId: string, accountId: string, jobId: string): void {
   const p = one<IsolatedProxy>("SELECT * FROM node_proxies WHERE id=?", proxyId);
-  const job = one<{ proxy_resource_key: string | null;requester_id:string|null }>("SELECT proxy_resource_key,requester_id FROM onboarding_jobs WHERE id=?", jobId);
+  const job = one<{ proxy_resource_key: string | null;requester_id:string|null;node_id:string|null }>("SELECT proxy_resource_key,requester_id,node_id FROM onboarding_jobs WHERE id=?", jobId);
   if (!p || p.isolation_version !== 1 || !p.resource_key || p.resource_key !== job?.proxy_resource_key ||
       !p.exit_ip || canonicalProxyResourceKey(p.exit_ip) !== p.resource_key || p.status !== "live" ||
       (orgBindingEnforced() && p.team_id && p.team_id !== teamId)) throw new Error("proxy_identity_changed");
@@ -795,8 +795,9 @@ export function claimTeamProxy(proxyId: string, teamId: string, accountId: strin
   // binding off (2026-11-06): the first organization tag stays on the row (display / older node bundles); accounts of
   // other organizations are listed through nodeProxyConfig's accounts-only policy.
   if (orgBindingEnforced() || !p.team_id) run("UPDATE node_proxies SET team_id=? WHERE id=? AND isolation_version=1", teamId, p.id);
-  // The event's node is the node that carries the account (its home node for an own row, the sharing node otherwise; 2026-11-08).
-  const accountNode = one<{ node_id: string | null }>("SELECT node_id FROM accounts WHERE id=?", accountId)?.node_id ?? p.node_id;
+  // The event's node is the node that carries the account — the job's node (the account row may not exist yet at claim
+  // time), else the account's node, else the proxy's home node (cross-node sharing, 2026-11-08).
+  const accountNode = job.node_id ?? one<{ node_id: string | null }>("SELECT node_id FROM accounts WHERE id=?", accountId)?.node_id ?? p.node_id;
   recordProxyTeamEvent({ resourceKey: p.resource_key, proxyId:p.id,nodeId:accountNode,teamId,accountId,jobId,event:"account_bound",
     actorId:job.requester_id,reason:proxyOccupancy(p.resource_key,jobId).total>=2?"third slot: no normal capacity":"normal account slot" });
 }
