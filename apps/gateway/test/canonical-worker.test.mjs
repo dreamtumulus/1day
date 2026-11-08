@@ -158,3 +158,42 @@ test("canonicalTurn (X-42): trailing role:system messages are the live turn's ta
   assert.equal(canonicalBuiltInToolProfile(false, true), "restricted-default");
   assert.equal(canonicalBuiltInToolProfile(false, false), "restricted-default");
 });
+
+test("translator: an upstream refusal (HTTP 200, stop_reason refusal + stop_details) reaches the client as the official shape — Claude Code's 'safeguards flagged' sentence is neither content nor an error", () => {
+  const t = new SessionTranslator({ model: "claude-fable-5-1", simulateTools: false, nativeTools: false, internalTools: true });
+  const se = (event) => ({ type: "stream_event", event });
+  let out = "";
+  out += t.push(se({ type: "message_start", message: { id: "m1", usage: { input_tokens: 10, output_tokens: 1 } } }));
+  out += t.push(se({ type: "content_block_start", index: 0, content_block: { type: "text", text: "" } }));
+  out += t.push(se({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "Partial answer" } }));
+  out += t.push(se({ type: "content_block_stop", index: 0 }));
+  out += t.push(se({ type: "message_delta", delta: { stop_reason: "refusal", stop_sequence: null, stop_details: { category: "cyber" } }, usage: { output_tokens: 5 } }));
+  out += t.push(se({ type: "message_stop" }));
+  const sentence = "API Error: Fable 5.1's safeguards flagged this message (https://www.anthropic.com/legal/aup). Our intentionally broad safeguards allow us to deliver more capabilities faster, but can sometimes flag legitimate coding and cybersecurity tasks. Claude Code can't respond to this message with Fable 5.1.\n\nDetails: `[cyber]`";
+  out += t.push({ type: "assistant", message: { id: "m1", content: [{ type: "text", text: sentence }] } });
+  out += t.push({ type: "result", subtype: "error_during_execution", is_error: true, result: sentence, usage: { input_tokens: 10, output_tokens: 5 } });
+  assert.equal(t.error, null, "a refusal is a served turn, not a session error");
+  assert.equal(t.finished, true);
+  const m = t.message();
+  assert.equal(m.stop_reason, "refusal");
+  assert.deepEqual(m.stop_details, { category: "cyber" });
+  assert.deepEqual(m.content, [{ type: "text", text: "Partial answer" }], "the upstream's partial output stays; the sentence never becomes a text block");
+  out += t.end();
+  assert.ok(!out.includes("safeguards flagged"), "the sentence never reaches the wire");
+  const evs = parseSse(out);
+  const delta = evs.find((e) => e.type === "message_delta");
+  assert.equal(delta.delta.stop_reason, "refusal");
+  assert.deepEqual(delta.delta.stop_details, { category: "cyber" });
+  // a plain turn carries stop_details: null, as the Messages API does
+  const t2 = new SessionTranslator({ model: "m", simulateTools: false, nativeTools: false });
+  t2.push(se({ type: "message_start", message: { id: "m2", usage: { input_tokens: 1, output_tokens: 1 } } }));
+  t2.push({ type: "assistant", message: { id: "m2", content: [{ type: "text", text: "ok" }] } });
+  t2.push({ type: "result", subtype: "success", is_error: false, result: "ok", usage: { input_tokens: 1, output_tokens: 1 } });
+  assert.equal(t2.message().stop_reason, "end_turn"); assert.equal(t2.message().stop_details, null);
+  // without a refusal stop the sentence is still the session error (e.g. a 529 rendered by Claude Code)
+  const t3 = new SessionTranslator({ model: "m", simulateTools: false, nativeTools: false });
+  t3.push(se({ type: "message_start", message: { id: "m3", usage: { input_tokens: 1, output_tokens: 0 } } }));
+  t3.push({ type: "assistant", message: { id: "m3", content: [{ type: "text", text: "API Error: 529 overloaded" }] } });
+  t3.push({ type: "result", subtype: "error_during_execution", is_error: true, result: "API Error: 529 overloaded" });
+  assert.match(t3.error, /529 overloaded/);
+});

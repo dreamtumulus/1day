@@ -626,6 +626,12 @@ export class SessionTranslator {
     return this.timeline.map(([t, k]) => `+${(t / 1000).toFixed(1)}s ${k}`).join(" ");
   }
   private stopReason: string = "end_turn";
+  /**
+   * The upstream's `stop_details` (2026-11-08): on a refusal the Messages API answers HTTP 200 with
+   * `stop_reason: "refusal"` and `stop_details: { category }`; Claude Code renders that as its own "API Error: … safeguards
+   * flagged this message … Details: `[cyber]`" sentence. The client gets the official shape, not the sentence.
+   */
+  private stopDetails: Json | null = null;
   private errorMessage: string | null = null;
   /** A held "API Error: …" assistant text (see case "assistant"); surfaces as the session error at `result`. */
   private heldApiError: string | null = null;
@@ -1140,6 +1146,13 @@ export class SessionTranslator {
             this.usageSeen = true;
           }
           if (ev.delta?.stop_reason === "max_tokens") out += this.finishEarly("max_tokens");
+          // Safety classifier refusal: the upstream ended the message itself (HTTP 200, stop_reason refusal). Kept as the
+          // client's stop reason, with the upstream's stop_details; the `result` is then a served turn, not an error.
+          if (ev.delta?.stop_reason === "refusal") {
+            this.stopReason = "refusal";
+            const sd = ev.delta?.stop_details;
+            this.stopDetails = sd && typeof sd === "object" ? (sd as Json) : null;
+          }
         }
         break;
       }
@@ -1178,7 +1191,9 @@ export class SessionTranslator {
             // not an answer: streaming it as text made clients take the refusal for content (customer report
             // 2026-10-29). Hold it; the `result` turns it into the session's error, never into a text block.
             if (isCcApiErrorText(b.text)) {
-              this.heldApiError ??= b.text.trim();
+              // After an upstream refusal the sentence is Claude Code's rendering of a stop the client already gets
+              // as stop_reason "refusal": neither output nor an error.
+              if (this.stopReason !== "refusal") this.heldApiError ??= b.text.trim();
               continue;
             }
             out += this.closeBlock() + this.appendText(b.text) + this.closeBlock();
@@ -1210,16 +1225,19 @@ export class SessionTranslator {
         }
         this.addUsage(r.usage, true);
         const held = this.heldApiError;
-        const isError = r.is_error === true || (typeof r.subtype === "string" && r.subtype.startsWith("error")) || held !== null;
+        // A refusal is a served turn in the Messages API (HTTP 200, stop_reason refusal); Claude Code's `result` calls it
+        // an error and repeats its sentence in `result` — neither reaches the client.
+        const refused = this.stopReason === "refusal";
+        const isError = !refused && (r.is_error === true || (typeof r.subtype === "string" && r.subtype.startsWith("error")) || held !== null);
         const produced = this.nonEmptyBlocks().length > 0 || this.blockText.length > 0;
-        const subtype = String(r.subtype ?? (isError ? "error" : "success"));
+        const subtype = String(r.subtype ?? (isError ? "error" : refused ? "refusal" : "success"));
         const resultText = held ?? (typeof r.result === "string" && r.result ? r.result : null);
         this.resultInfo = { subtype, isError, text: resultText ? resultText.slice(0, 300) : null };
         // error_max_turns after real output is a legitimate (truncated) answer → stop_reason max_tokens below.
         if (isError && (subtype !== "error_max_turns" || !produced || held !== null)) {
           const text = resultText ?? `session ended with ${subtype}`;
           this.errorMessage = produced ? `${text} (after partial output)` : text;
-        } else if (!produced && resultText) {
+        } else if (!refused && !produced && resultText) {
           // No assistant message observed (schema drift?) — fall back to the summarized result text.
           out += this.appendText(r.result);
         }
@@ -1343,6 +1361,7 @@ export class SessionTranslator {
       content,
       stop_reason: this.stopReason,
       stop_sequence: this.stopSequence,
+      stop_details: this.stopDetails,
       usage: this.usageOut(),
     };
   }
@@ -1387,7 +1406,7 @@ export class SessionTranslator {
     }
     const u = this.usageOut();
     out += sseEvent("message_delta", {
-      delta: { stop_reason: this.stopReason, stop_sequence: this.stopSequence },
+      delta: { stop_reason: this.stopReason, stop_sequence: this.stopSequence, stop_details: this.stopDetails },
       usage: { output_tokens: u.output_tokens, input_tokens: u.input_tokens, cache_read_input_tokens: u.cache_read_input_tokens, cache_creation_input_tokens: u.cache_creation_input_tokens },
     });
     out += sseEvent("message_stop", {});
