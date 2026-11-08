@@ -1,0 +1,115 @@
+A streamed message's whole row (told after its stream, 1dayAPI gateway reads blocks and usage from the stream) carries no content or usage: Claude Code 2.1.319 writes a tool_use message's transcript row only when the tool's result arrives, i.e. on the next request's tunnel, where the gateway took the row for a new message (replayed tool_use blocks, usage counted once per row; 2026-11-08).
+diff --git a/internal/claudetui/tap.go b/internal/claudetui/tap.go
+index 509bb66..9d411e1 100644
+--- a/internal/claudetui/tap.go
++++ b/internal/claudetui/tap.go
+@@ -235,6 +235,15 @@ func (t *tap) event(e json.RawMessage) {
+ 	t.out.emit(map[string]any{"type": "stream_event", "event": e, "session_id": t.sid, "parent_tool_use_id": nil})
+ }
+ 
++// told says whether message id's reply was told as its stream: the
++// bridge has its blocks and usage already, and its whole rows carry only
++// the row's place (1dayAPI: Claude Code 2.1.319 writes a tool_use
++// message's row when the tool's result comes, on the next request's
++// tunnel, where the bridge would take the row for a new message).
++func (t *tap) told(id string) bool {
++	return t != nil && t.on && t.started[id]
++}
++
+ // going says whether a stream is open, one with no message yet if bare.
+ func (t *tap) going(bare bool) bool {
+ 	for _, st := range t.open {
+diff --git a/internal/claudetui/tap_test.go b/internal/claudetui/tap_test.go
+index 39e8562..654427d 100644
+--- a/internal/claudetui/tap_test.go
++++ b/internal/claudetui/tap_test.go
+@@ -396,3 +396,45 @@ func TestTapKeptLimitsNotAfterNewer(t *testing.T) {
+ 		})
+ 	}
+ }
++
++// A streamed message's whole row, told after (Claude Code 2.1.319 writes a
++// tool_use message's row only when its tool's result comes), carries no
++// content or usage: the bridge has them from the stream, and a row told on
++// the next request's tunnel is not a new message there.
++func TestTapToldRowHasNoBody(t *testing.T) {
++	l := &lines{}
++	tp, write := testTap(t, l)
++	tr := newTranslator(l)
++	tr.tap = tp
++	write(`{"tap":"on"}`, `{"s":1,"open":true}`)
++	write(tapReply(1, "msg_1")...)
++	tr.row(whole("msg_1"))
++	var row map[string]any
++	for _, m := range l.out {
++		if m["type"] == "assistant" {
++			row = m
++		}
++	}
++	if row == nil {
++		t.Fatalf("told %v: no whole row", kinds(l))
++	}
++	msg, _ := row["message"].(map[string]any)
++	if msg == nil {
++		t.Fatalf("the row has no message: %v", row)
++	}
++	if _, ok := msg["content"]; ok {
++		t.Fatalf("a streamed message's row carries its content: %v", msg)
++	}
++	if _, ok := msg["usage"]; ok {
++		t.Fatalf("a streamed message's row carries its usage: %v", msg)
++	}
++	if msg["id"] != "msg_1" || msg["model"] != "claude-haiku" || row["request_id"] != "req_1" {
++		t.Fatalf("the row lost its place: %v %v", row, msg)
++	}
++	// one no stream was read for keeps its content, as before
++	tr.row(whole("msg_2"))
++	msg2, _ := l.out[len(l.out)-1]["message"].(map[string]any)
++	if _, ok := msg2["content"]; !ok || msg2["id"] != "msg_2" {
++		t.Fatalf("a message told whole lost its content: %v", msg2)
++	}
++}
+diff --git a/internal/claudetui/transcript.go b/internal/claudetui/transcript.go
+index b73f2c4..84dbf66 100644
+--- a/internal/claudetui/transcript.go
++++ b/internal/claudetui/transcript.go
+@@ -80,10 +80,14 @@ func (t *translator) row(b []byte) {
+ 			} `json:"content"`
+ 		}
+ 		_ = json.Unmarshal(r.Message, &m)
++		msg := r.Message
+ 		if m.Model != "<synthetic>" && m.ID != "" {
+ 			t.tap.before(m.ID)
++			if t.tap.told(m.ID) {
++				msg = withoutBody(msg)
++			}
+ 		}
+-		line := map[string]any{"type": "assistant", "message": r.Message}
++		line := map[string]any{"type": "assistant", "message": msg}
+ 		// the row's place in the session, as -p tells it: the bridge
+ 		// branches a conversation off there (cutSession)
+ 		if r.UUID != "" {
+@@ -129,6 +133,23 @@ func (t *translator) row(b []byte) {
+ 	}
+ }
+ 
++// withoutBody is an assistant row's message without its content and
++// usage: the id, role, model and stop reason stay. The message as given
++// when it can't be read.
++func withoutBody(raw json.RawMessage) json.RawMessage {
++	var m map[string]any
++	if json.Unmarshal(raw, &m) != nil {
++		return raw
++	}
++	delete(m, "content")
++	delete(m, "usage")
++	b, err := json.Marshal(m)
++	if err != nil {
++		return raw
++	}
++	return b
++}
++
+ // isPrompt says whether a user row's message is one typed in: text, not a
+ // tool's result.
+ func isPrompt(raw json.RawMessage) bool {

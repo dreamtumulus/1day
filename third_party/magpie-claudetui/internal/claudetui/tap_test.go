@@ -396,3 +396,45 @@ func TestTapKeptLimitsNotAfterNewer(t *testing.T) {
 		})
 	}
 }
+
+// A streamed message's whole row, told after (Claude Code 2.1.319 writes a
+// tool_use message's row only when its tool's result comes), carries no
+// content or usage: the bridge has them from the stream, and a row told on
+// the next request's tunnel is not a new message there.
+func TestTapToldRowHasNoBody(t *testing.T) {
+	l := &lines{}
+	tp, write := testTap(t, l)
+	tr := newTranslator(l)
+	tr.tap = tp
+	write(`{"tap":"on"}`, `{"s":1,"open":true}`)
+	write(tapReply(1, "msg_1")...)
+	tr.row(whole("msg_1"))
+	var row map[string]any
+	for _, m := range l.out {
+		if m["type"] == "assistant" {
+			row = m
+		}
+	}
+	if row == nil {
+		t.Fatalf("told %v: no whole row", kinds(l))
+	}
+	msg, _ := row["message"].(map[string]any)
+	if msg == nil {
+		t.Fatalf("the row has no message: %v", row)
+	}
+	if _, ok := msg["content"]; ok {
+		t.Fatalf("a streamed message's row carries its content: %v", msg)
+	}
+	if _, ok := msg["usage"]; ok {
+		t.Fatalf("a streamed message's row carries its usage: %v", msg)
+	}
+	if msg["id"] != "msg_1" || msg["model"] != "claude-haiku" || row["request_id"] != "req_1" {
+		t.Fatalf("the row lost its place: %v %v", row, msg)
+	}
+	// one no stream was read for keeps its content, as before
+	tr.row(whole("msg_2"))
+	msg2, _ := l.out[len(l.out)-1]["message"].(map[string]any)
+	if _, ok := msg2["content"]; !ok || msg2["id"] != "msg_2" {
+		t.Fatalf("a message told whole lost its content: %v", msg2)
+	}
+}

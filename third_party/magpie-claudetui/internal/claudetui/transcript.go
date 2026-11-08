@@ -80,10 +80,14 @@ func (t *translator) row(b []byte) {
 			} `json:"content"`
 		}
 		_ = json.Unmarshal(r.Message, &m)
+		msg := r.Message
 		if m.Model != "<synthetic>" && m.ID != "" {
 			t.tap.before(m.ID)
+			if t.tap.told(m.ID) {
+				msg = withoutBody(msg)
+			}
 		}
-		line := map[string]any{"type": "assistant", "message": r.Message}
+		line := map[string]any{"type": "assistant", "message": msg}
 		// the row's place in the session, as -p tells it: the bridge
 		// branches a conversation off there (cutSession)
 		if r.UUID != "" {
@@ -127,6 +131,23 @@ func (t *translator) row(b []byte) {
 			t.out.turnOver()
 		}
 	}
+}
+
+// withoutBody is an assistant row's message without its content and
+// usage: the id, role, model and stop reason stay. The message as given
+// when it can't be read.
+func withoutBody(raw json.RawMessage) json.RawMessage {
+	var m map[string]any
+	if json.Unmarshal(raw, &m) != nil {
+		return raw
+	}
+	delete(m, "content")
+	delete(m, "usage")
+	b, err := json.Marshal(m)
+	if err != nil {
+		return raw
+	}
+	return b
 }
 
 // isPrompt says whether a user row's message is one typed in: text, not a

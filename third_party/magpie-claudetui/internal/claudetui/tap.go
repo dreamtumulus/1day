@@ -235,6 +235,15 @@ func (t *tap) event(e json.RawMessage) {
 	t.out.emit(map[string]any{"type": "stream_event", "event": e, "session_id": t.sid, "parent_tool_use_id": nil})
 }
 
+// told says whether message id's reply was told as its stream: the
+// bridge has its blocks and usage already, and its whole rows carry only
+// the row's place (1dayAPI: Claude Code 2.1.319 writes a tool_use
+// message's row when the tool's result comes, on the next request's
+// tunnel, where the bridge would take the row for a new message).
+func (t *tap) told(id string) bool {
+	return t != nil && t.on && t.started[id]
+}
+
 // going says whether a stream is open, one with no message yet if bare.
 func (t *tap) going(bare bool) bool {
 	for _, st := range t.open {

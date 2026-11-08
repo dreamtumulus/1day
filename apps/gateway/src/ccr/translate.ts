@@ -499,6 +499,13 @@ export interface TranslatorOptions {
    */
   internalTools?: boolean;
   /**
+   * Message ids already delivered to the client by earlier requests of this conversation (TurnMemory.messageIds).
+   * Claude Code 2.1.319 writes the transcript row of a tool_use message only when the tool result arrives, so the
+   * TUI shim tells that row on the *next* tunnel: without this list it read as a new message (replayed tool_use
+   * blocks, usage counted once per row — 5× on 2026-11-08). Whole rows carrying a known id add nothing.
+   */
+  knownMessageIds?: string[];
+  /**
    * Phase 3 (docs/worker-sessions.md §4): the client asked for extended thinking
    * (`thinking: {type:"enabled"}`), so thinking / redacted_thinking blocks and
    * their signature deltas are forwarded instead of dropped.
@@ -614,6 +621,8 @@ export class SessionTranslator {
   /** Raw cumulative result usage of the process (before baseline subtraction); null until a result arrives. */
   private cumulative: TranslatedUsage | null = null;
   private streamedMessageIds = new Set<string>();
+  /** Whole-row messages whose usage was counted: Claude Code writes one row per content block, each with the message's whole usage. */
+  private readonly wholeUsageIds = new Set<string>();
   /** Diagnostics: (ms since construction, kind) for every event that is not a content delta / ping, last 60 kept. */
   private readonly timeline: Array<[number, string]> = [];
   private readonly t0 = Date.now();
@@ -662,6 +671,12 @@ export class SessionTranslator {
     this.fenceFallback = this.transcriptGuard && this.nativeTools;
     this.toolNames = Array.isArray(o.toolNames) ? o.toolNames.filter((n) => typeof n === "string") : null;
     this.holdLen = Math.max(0, this.stopSequences.reduce((m, s) => Math.max(m, s.length), 0) - 1, this.transcriptGuard ? GUARD_HOLD : 0);
+    for (const id of o.knownMessageIds ?? []) if (typeof id === "string" && id) this.streamedMessageIds.add(id);
+  }
+
+  /** Message ids this turn delivered or already knew (streamed, or told whole): remembered for the conversation's next request. */
+  get deliveredMessageIds(): string[] {
+    return [...new Set([...this.streamedMessageIds, ...this.wholeUsageIds])];
   }
 
   /** True when the message was ended by the translator itself (client max_tokens hit upstream, or a stop sequence matched). */
@@ -1161,7 +1176,11 @@ export class SessionTranslator {
         if (!msg) break;
         const mid = typeof msg.id === "string" ? msg.id : null;
         const streamed = !!mid && this.streamedMessageIds.has(mid);
-        if (!streamed) this.addUsage(msg.usage, false);
+        // One row per content block, all with the same usage: count a message once (a row without an id counts).
+        if (!streamed && !(mid && this.wholeUsageIds.has(mid))) {
+          this.addUsage(msg.usage, false);
+          if (mid) this.wholeUsageIds.add(mid);
+        }
         if (!streamed && Array.isArray(msg.content)) {
           for (const b of msg.content as AnthropicBlock[]) {
             if (this.thinking && (b?.type === "thinking" || b?.type === "redacted_thinking")) {

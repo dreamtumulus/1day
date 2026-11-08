@@ -376,6 +376,8 @@ export async function runCcrWorker(input: CcrWorkerInput): Promise<Response | nu
       ? { sessionId: translator.nativeSessionId ?? nativeSessionId!, profileId: `cc-${CC_VERSION}-restricted`, revision: (mem?.native?.revision ?? 0) + (awaiting ? 0 : 1), state: awaiting ? ("AWAITING_CALLER" as const) : ("COMMITTED" as const), resumes: (mem?.native?.resumes ?? 0) + (resumed ? 1 : 0), ...(historyImport || mem?.native?.imported ? { imported: true } : {}) }
       : undefined;
     const fold = `[assistant]\n${contentText(translator.message().content, nativeTools ? "plain" : "fence")}`;
+    // Delivered message ids follow the conversation (the TUI shim tells a tool_use message's whole row on the next tunnel).
+    const messageIds = [...new Set([...(plan.mode === "fresh" ? [] : (mem?.messageIds ?? [])), ...translator.deliveredMessageIds])].slice(-16);
     if (awaiting) {
       // Turn parked on the node: same turn counter; what this response already billed is added to the
       // process total so the resumed turn's increment covers only the continuation.
@@ -385,12 +387,13 @@ export async function runCcrWorker(input: CcrWorkerInput): Promise<Response | nu
         turn: plan.mode === "fresh" ? 0 : (plan.expectedTurn ?? 0),
         usage: addUsage(prevUsage, translator.rawUsage),
         pendingCalls: awaiting,
+        messageIds,
         tails: blockTails(persistentBlocks),
         ...(native ? { native } : {}),
       });
       return;
     }
-    sessionMemory.remember(reuseKey, { hashes: plan.hashes, assistantFold: fold, turn: plan.mode === "fresh" ? 1 : (plan.expectedTurn ?? 0) + 1, usage: translator.cumulativeUsage, tails: blockTails(persistentBlocks), ...(native ? { native } : {}) });
+    sessionMemory.remember(reuseKey, { hashes: plan.hashes, assistantFold: fold, turn: plan.mode === "fresh" ? 1 : (plan.expectedTurn ?? 0) + 1, usage: translator.cumulativeUsage, tails: blockTails(persistentBlocks), messageIds, ...(native ? { native } : {}) });
   };
   // Sampled turn capture (docs/worker-sessions.md 2026-11-03): request half now, response half at every exit below.
   const capture = captureWanted(input.apiKeyId, input.requestId)
@@ -405,6 +408,8 @@ export async function runCcrWorker(input: CcrWorkerInput): Promise<Response | nu
     cacheWriteAsInput: getSetting("ccr_cache_write_as_input") !== "0",
     // Continued / resumed turn: bill only the increment over what the process already reported.
     usageBaseline: plan.mode === "fresh" ? null : (mem?.usage ?? null),
+    // Messages earlier requests already delivered: their whole rows, told late by the TUI shim, are not a new answer.
+    knownMessageIds: plan.mode === "fresh" ? [] : (mem?.messageIds ?? []),
     stopSequences,
     // Canonical: no folded transcript to guard, and the process's own --restricted tools are internal rounds.
     transcriptGuard: !canonical,

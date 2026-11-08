@@ -19,6 +19,8 @@ export interface TurnMemory {
   usage: { input_tokens: number; output_tokens: number; cache_read_input_tokens: number; cache_creation_input_tokens: number } | null;
   /** Native tools: the turn is parked on the node waiting for these tool results (client tool_use id → node callId). */
   pendingCalls?: Array<{ toolUseId: string; callId: string; name: string }>;
+  /** Upstream message ids already delivered to the client (last 16): a whole row of one told on a later tunnel is not a new message. */
+  messageIds?: string[];
   /** Diagnostics (2026-10-23): shape of the last blocks fed, so a prefix miss can be explained in the log. */
   tails?: BlockTail[];
   /** Canonical native session (spec §6.3 / WP3): what `--resume` needs and where the session stands. */

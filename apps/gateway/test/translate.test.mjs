@@ -760,3 +760,35 @@ test("system/api_retry events are counted into turnFacts (canary 2026-11-02 §8.
   assert.deepEqual(t.turnFacts, { upstreamRetries: 3, retryStatuses: [429, 529], retryDelayMs: 61_000 });
   assert.match(t.eventTimeline, /system\/api_retry/);
 });
+
+test("whole rows of a message the conversation already delivered add nothing; one row per block counts the usage once (TUI shim, 2026-11-08)", () => {
+  // Claude Code 2.1.319 writes a tool_use message's transcript row only when the tool result arrives: the TUI shim told
+  // the previous turn's five rows on the tool_result request's tunnel, which read as a new message (replayed tool_use,
+  // usage ×5). The gateway now knows the ids earlier requests delivered.
+  const usage = { input_tokens: 32828, output_tokens: 4048, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 };
+  const known = new SessionTranslator({ model: "m", simulateTools: false, nativeTools: true, thinking: true, knownMessageIds: ["msg_prev"] });
+  for (const b of [{ type: "thinking", thinking: "", signature: "sig" }, { type: "text", text: "收到。" }, { type: "tool_use", id: "toolu_1", name: "mcp__caller__Read", input: { file_path: "/a" } }]) {
+    known.push({ type: "assistant", message: { id: "msg_prev", role: "assistant", content: [b], usage } });
+  }
+  assert.deepEqual(known.rawUsage, { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }, "a known message's rows bill nothing");
+  assert.equal(known.message().content.length, 0, "a known message's blocks are not replayed");
+  assert.equal(known.toolUseStopAt, null, "no tool_use stop from a replayed row");
+  assert.ok(known.deliveredMessageIds.includes("msg_prev"));
+
+  // Fresh translator, no stream (no --include-partial-messages): three rows of one message = one message, usage once.
+  const t = new SessionTranslator({ model: "m", simulateTools: false });
+  t.push({ type: "assistant", message: { id: "msg_a", content: [{ type: "text", text: "One. " }], usage: { input_tokens: 10, output_tokens: 7 } } });
+  t.push({ type: "assistant", message: { id: "msg_a", content: [{ type: "text", text: "Two." }], usage: { input_tokens: 10, output_tokens: 7 } } });
+  t.push({ type: "assistant", message: { id: "msg_b", content: [{ type: "text", text: "Three." }], usage: { input_tokens: 3, output_tokens: 1 } } });
+  t.push({ type: "result", subtype: "success", result: "" });
+  assert.equal(t.message().usage.input_tokens, 13);
+  assert.equal(t.message().usage.output_tokens, 8);
+  assert.deepEqual(t.message().content.map((b) => b.text), ["One. ", "Two.", "Three."]);
+  assert.deepEqual(t.deliveredMessageIds.sort(), ["msg_a", "msg_b"]);
+
+  // A row stripped by the shim (id, no content/usage) is harmless on a fresh translator too.
+  const s = new SessionTranslator({ model: "m", simulateTools: false, nativeTools: true });
+  s.push({ type: "assistant", message: { id: "msg_s", role: "assistant", model: "claude-haiku", stop_reason: null } });
+  assert.equal(s.message().content.length, 0);
+  assert.equal(s.rawUsage.input_tokens, 0);
+});
