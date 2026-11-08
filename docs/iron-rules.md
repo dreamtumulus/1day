@@ -50,7 +50,7 @@
   | `cc_client_response_profile` | 对 Claude Code UA 不下发 `x-1day-*` 诊断头（只影响下游） | `0` |
   | `key_policy_auto` | Key 策略判断器的 auto 层生效（spec §6.2 / WP8） | `0` |
   | `canonical_history_import` | canonical 新会话导入外部历史（CC transcript 形态、剥 thinking，spec WP3 / G3） | `0` |
-  | `canonical_caller_tools_isolation` | 客户带 tools 的 canonical 会话以 tools-disabled-canonical 档启动（`--restricted --tools ""`，无内建工具与客户同名工具并存）并用加强版环境说明（X-42） | `0` |
+  | `canonical_cc_client_compat` | canonical 对真 CC 客户的兼容修补（X-42）：活轮尾部 `role:system` 当活轮尾巴不再回落 legacy；带客户 tools 的会话 `tools-disabled-canonical`（`--tools ""`）；加强版环境说明 | `0` |
   | `raw_preserve_headers` | 原样透传账号到节点出口不补 Claude Code 指纹头（raw-v1，spec WP5.4） | `0` |
   | `telemetry_evidence_required` | native-required 的 Key 开 canonical 会话前要求账号×profile 遥测证据 ≥ secondary（spec §6.4 / WP6） | `0` |
   | `worker_canonical` | 车道 B canonical 进程：节点官方 CC 原生身份 + `--restricted` + caller MCP + 原生 session，客户 system 追加（spec WP2；节点还需 `CC_WORKER_CANONICAL=1`） | `0` |

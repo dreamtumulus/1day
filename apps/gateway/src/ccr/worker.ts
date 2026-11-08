@@ -71,7 +71,7 @@ export const CANONICAL_ENV_NOTE = [
 ].join(" ");
 
 /**
- * Stronger wording, used with settings canonical_caller_tools_isolation (2026-11-08, X-42). The 11-08 incident: a Windows
+ * Stronger wording, used with settings canonical_cc_client_compat (2026-11-08, X-42). The 11-08 incident: a Windows
  * VS Code user's second turn ran canonical; the model reached for the process's own built-in Read / Glob (restricted to
  * the node cwd) instead of mcp__caller__Read, every attempt failed inside the sandbox, the internal rounds were consumed
  * by the translator, and the user was told "I run in a remote Linux sandbox" plus the node's install path. With the
@@ -90,24 +90,25 @@ export const CANONICAL_ENV_NOTE_V2 = [
 
 /**
  * Which built-in tool profile a canonical process gets (node: `--restricted`, plus `--tools ""` for tools-disabled).
- * With caller tools present and settings canonical_caller_tools_isolation on, the process keeps none of its own tools:
+ * With caller tools present and settings canonical_cc_client_compat on, the process keeps none of its own tools:
  * a built-in Read beside an mcp__caller__Read is a trap the model fell into on 2026-11-08 (X-42).
  */
-export function canonicalBuiltInToolProfile(isolation: boolean, hasCallerTools: boolean): "restricted-default" | "tools-disabled-canonical" {
-  return isolation && hasCallerTools ? "tools-disabled-canonical" : "restricted-default";
+export function canonicalBuiltInToolProfile(ccClientCompat: boolean, hasCallerTools: boolean): "restricted-default" | "tools-disabled-canonical" {
+  return ccClientCompat && hasCallerTools ? "tools-disabled-canonical" : "restricted-default";
 }
 
-export function canonicalTurn(body: Json, planMode: "fresh" | "continue" | "tool_result", hasLiveSession: boolean, allowHistoryImport = false, isolation = false): { appendSystemPrompt: string; content: Json[] | null; importHistory: Json[] | null; error: { code: string; message: string } | null } {
+export function canonicalTurn(body: Json, planMode: "fresh" | "continue" | "tool_result", hasLiveSession: boolean, allowHistoryImport = false, ccClientCompat = false): { appendSystemPrompt: string; content: Json[] | null; importHistory: Json[] | null; error: { code: string; message: string } | null } {
   const msgs: Json[] = Array.isArray(body.messages) ? body.messages : [];
-  const appendSystemPrompt = [callerSystemText(body), isolation ? CANONICAL_ENV_NOTE_V2 : CANONICAL_ENV_NOTE].filter(Boolean).join("\n\n");
+  const appendSystemPrompt = [callerSystemText(body), ccClientCompat ? CANONICAL_ENV_NOTE_V2 : CANONICAL_ENV_NOTE].filter(Boolean).join("\n\n");
   // Claude Code 2.1.31x closes a request with `role:"system"` messages after the live user turn (# Environment on the
   // first request, environment updates and task notifications later). They are not history: the live turn is the last
   // user message, and the trailing system text rides along as text blocks after the user's own (older Claude Code
   // rendered the same attachments inside the user message). Until 2026-11-08 a first request shaped [user, system] was
   // refused as history_import_unsupported and served by the legacy worker; the second turn then switched lanes (X-42).
+  // Gated by settings canonical_cc_client_compat (铁律 2: more first turns reach the upstream through canonical).
   let end = msgs.length;
   const trailingSystem: Json[] = [];
-  while (end > 0 && msgs[end - 1]?.role === "system") trailingSystem.unshift(msgs[--end]);
+  while (ccClientCompat && end > 0 && msgs[end - 1]?.role === "system") trailingSystem.unshift(msgs[--end]);
   const last = msgs[end - 1];
   const history = msgs.slice(0, Math.max(0, end - 1));
   // Canonical sends the caller's live turn raw to the native process, which forwards it upstream as-is. The caller's
@@ -332,9 +333,9 @@ export async function runCcrWorker(input: CcrWorkerInput): Promise<Response | nu
   const content = reuseKey ? (plan.mode === "continue" ? (ephemeral ? fullBlocks.slice(echoAt + 1) : plan.content) : fullBlocks) : blocks;
   // Canonical (I3): never the folded transcript — the raw last user turn (or nothing for a parked tool round);
   // anything the live process does not hold is refused up front, not re-folded.
-  // Caller-tools isolation (X-42): no built-in tools beside the caller's MCP tools, stronger environment note.
-  const callerToolsIsolation = canonical && featureFor("canonical_caller_tools_isolation", { groupId: input.groupId, accountId: account.id });
-  const canon = canonical ? canonicalTurn(body, plan.mode, !!mem && !!reuseKey, featureFor("canonical_history_import", { groupId: input.groupId, accountId: account.id }), callerToolsIsolation) : null;
+  // Claude Code client compat (X-42): system tail = live turn, no built-in tools beside the caller's MCP tools, stronger environment note.
+  const ccClientCompat = canonical && featureFor("canonical_cc_client_compat", { groupId: input.groupId, accountId: account.id });
+  const canon = canonical ? canonicalTurn(body, plan.mode, !!mem && !!reuseKey, featureFor("canonical_history_import", { groupId: input.groupId, accountId: account.id }), ccClientCompat) : null;
   if (canon?.error) throw new TunnelRequestError(canon.error.code, canon.error.message);
   // Native session (spec §6.3 / WP3): fresh = new id; continue / tool_result = the remembered session, resumed by the
   // node if its live process is gone; import = transcript built here, written and resumed on the node.
@@ -419,7 +420,7 @@ export async function runCcrWorker(input: CcrWorkerInput): Promise<Response | nu
     isolation: input.isolation,
     prompt: sendPrompt,
     systemPrompt,
-    ...(canonical ? { mode: "canonical" as const, profileId: `cc-${CC_VERSION}-restricted`, appendSystemPrompt: canon!.appendSystemPrompt, nativeSessionId: nativeSessionId!, nativeSession: nativeSession!, ...(historyImport ? { historyImport } : {}), builtInToolProfile: canonicalBuiltInToolProfile(callerToolsIsolation, !!toolDefs && toolDefs.length > 0) } : {}),
+    ...(canonical ? { mode: "canonical" as const, profileId: `cc-${CC_VERSION}-restricted`, appendSystemPrompt: canon!.appendSystemPrompt, nativeSessionId: nativeSessionId!, nativeSession: nativeSession!, ...(historyImport ? { historyImport } : {}), builtInToolProfile: canonicalBuiltInToolProfile(ccClientCompat, !!toolDefs && toolDefs.length > 0) } : {}),
     ...(thinkingBudget > 0 ? { thinkingBudget } : {}),
     ...(effort ? { effort } : {}),
     ...(maxTokens > 0 ? { maxTokens } : {}),
