@@ -34,6 +34,16 @@
    （默认 3720～4200 秒 = 62～70 分钟；2026-10-20 先定 15～20 分钟，同日加长），`error_message` 以 `onboard_cooldown:` 开头；期间调度器不选它（与临时冷却同一字段），
    账号列表显示为「新号冷静期」而非错误，上号结果附 `cooldownUntil`。冷静期内仍会做授权后的 usage 基线探测与 profile 回填
    （真实 Claude Code 登录后也会立即做这两件事）。两项设置都为 0 = 关闭。
+8. **代理可跨节点共用，只标注、不搬迁（用户 2026-11-08 定，X-44）**：同一条代理地址可以同时在多个节点的池里。行归属首次加入的
+   **原节点**（`node_proxies.node_id`），其他节点通过 `node_proxy_shares(proxy_id,node_id)`（迁移 40）**共享**使用；追加 / 整池替换 /
+   自带代理遇到"已在其他节点"的地址不再剔除，而是建共享（结果里 `shared` 计数；`skipped.onOtherNode` 恒为 0 保留字段）。所有池查询
+   （列表、选择器、auto 分配、手选、心跳回写、出口记录、隧道开启、`nodeProxyConfig` 推送、节点代理计数）都按"原节点或已共享"取行，
+   节点侧收到的 `proxies.set` 含共享行；出口容量仍按 `proxyOccupancy(resource_key)` **全局**合并计数（常态 2 / 最多 3），与哪个节点承载无关。
+   UI 只做**提醒**：代理池列表标「共享自 X」/「也在 Y 池中」，账号数列下列出已承载的账号 `名称 @节点 · 组织`（组织名仅管理员可见，
+   号商 / 上号员的选择器只给账号与节点）；上号选择器选项与自带代理预览同样附带。删除规则：从共享节点移除只删共享（本节点有账号绑在它上面
+   则拒绝 `bound`）；原节点上仍被其他节点共享的行不能移除（`shared` 分类 / 整池替换抛错），先去对方节点解除共享。
+   自带代理命中别的节点池时不再切换出网节点，而是共享进所选节点并推送该节点探活（`homeNodeId` 告知原节点）；"无人使用且卡住"的重置
+   路径会把旧行的使用方（原节点 + 各共享节点）在新行上重新建共享。两个节点都会探活同一条共享代理并写同一行的 live/dead。
 
 ## 2. 上号方式与凭据分流
 
@@ -213,7 +223,8 @@ POST /api/provider/accounts/onboard/precheck
 ```
 POST /api/admin/accounts/onboard/proxy        body {nodeId, proxy, orgUuid?, dryRun?}
 POST /api/provider/accounts/onboard/proxy
-  → {data:{proxyId|null, nodeId|null, parsed:{scheme,host,port,username,display}, existed, added, pushed,
+  → {data:{proxyId|null, nodeId|null, homeNodeId|null, homeNodeName|null, shared, carriers:[{accountId,accountName,status,nodeId,nodeName,teamId?,teamName?}],
+            parsed:{scheme,host,port,username,display}, existed, added, pushed,
             status, lastError, exitIp, country, quarantined, quarantineReason, boundAccounts, reservedAccounts,
             blocked: null | legacy|dead|unprobed|exit_unverified|cooldown|quarantined|other_organization|needs_virgin_exit|reserved_by_other|full|not_in_pool}}
 ```

@@ -1,7 +1,7 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { all, decryptJson, newId, nowIso, one, randomHex, run, sha256Hex, tx } from "@1dayapi/core";
 import { bad, body, notFound, num, sendError, str, uuid } from "../http.js";
-import { listProxiesForPicker, resolveTeamProxy, ProxyInputError, listNodeProxyGroups } from "../node/proxies.js";
+import { listProxiesForPicker, resolveTeamProxy, ProxyInputError, listNodeProxyGroups, PROXY_IN_POOL_SQL } from "../node/proxies.js";
 import {
   continueAuthUrlJob,
   cancelJob,
@@ -151,8 +151,8 @@ function generateOnboardToken(): { plaintext: string; hash: string; preview: str
 function nodeView(n: NodeRowLite) {
   const used = nodeOccupancy(n.node_id);
   const freeProxies = one<{ n: number }>(
-    "SELECT COUNT(*) AS n FROM node_proxies WHERE node_id = ? AND isolation_version=1 AND status='live' AND resource_key IS NOT NULL",
-    n.node_id,
+    `SELECT COUNT(*) AS n FROM node_proxies p WHERE ${PROXY_IN_POOL_SQL} AND p.isolation_version=1 AND p.status='live' AND p.resource_key IS NOT NULL`,
+    n.node_id, n.node_id,
   )!.n;
   return { nodeId: n.node_id, name: n.name, online: n.online === 1, capacity: n.capacity, used, freeProxies };
 }

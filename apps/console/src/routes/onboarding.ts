@@ -389,7 +389,7 @@ export function registerOnboardingRoutes(app: FastifyInstance): void {
         : null;
       try {
         const res = tx(() => resolveSuppliedProxy(nodeId, raw, {
-          teamId: uuid(b, "orgUuid") ?? null, dryRun, allowedNodes,
+          teamId: uuid(b, "orgUuid") ?? null, dryRun, allowedNodes, includeTeams: scope === "admin" && req.user!.role === "admin",
           label: `supplied:${req.user!.name ?? req.user!.id}`.slice(0, 120),
           push: (id) => pushProxies(id, nodeProxyUrls(id)),
         }));

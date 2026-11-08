@@ -14,7 +14,7 @@ import {
 import { parseAccountFields, touchesConnection } from "../account-input.js";
 import { importOAuthCredential } from "../onboard/jobs.js";
 import { bad, body, notFound, oneOf, page, paged, query, Where, dateRange, str } from "../http.js";
-import { releaseAccountProxies, releaseNodeResources } from "../node/proxies.js";
+import { releaseAccountProxies, releaseNodeResources, NODE_POOL_COUNT_SQL } from "../node/proxies.js";
 import { disconnectNode } from "../node/registry.js";
 import { requireProvider } from "../session.js";
 import {
@@ -116,7 +116,7 @@ export function registerProviderRoutes(app: FastifyInstance): void {
     data: all(
       `SELECT n.*,
               (SELECT COUNT(*) FROM accounts a WHERE a.node_id = n.node_id AND a.route = 'node') AS account_count,
-              (SELECT COUNT(*) FROM node_proxies p WHERE p.node_id = n.node_id) AS proxy_count
+              ${NODE_POOL_COUNT_SQL} AS proxy_count
        FROM nodes n WHERE n.provider_id = ? ORDER BY n.created_at DESC`,
       req.user!.id,
     ).map(nodeShape),

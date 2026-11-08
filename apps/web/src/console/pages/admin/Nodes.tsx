@@ -793,6 +793,16 @@ function ProxyPoolModal({ node, onClose }: { node: NodeRow; onClose: () => void 
                         </span>
                       )}
                       <span>{p.label ?? "—"}</span>
+                      {p.shared && (
+                        <span className="rounded px-1.5 py-0.5 text-[11px]" style={{ background: "var(--surface-variant)", color: "var(--on-surface-variant)" }} title={t("admin.nodes.proxyShareHint")}>
+                          {t("admin.nodes.proxySharedFrom", { node: p.homeNodeName ?? p.homeNodeId ?? "?" })}
+                        </span>
+                      )}
+                      {!p.shared && !!p.sharedWith?.length && (
+                        <span className="rounded px-1.5 py-0.5 text-[11px]" style={{ background: "var(--surface-variant)", color: "var(--on-surface-variant)" }} title={t("admin.nodes.proxyShareHint")}>
+                          {t("admin.nodes.proxySharedWith", { nodes: p.sharedWith.map((n) => n.name ?? n.nodeId).join(", ") })}
+                        </span>
+                      )}
                     </span>
                   ),
                 },
@@ -828,7 +838,22 @@ function ProxyPoolModal({ node, onClose }: { node: NodeRow; onClose: () => void 
                     ),
                 },
                 ...(isAdmin ? [{ key: "team", header: t("team.name"), render: (p: NodeProxy) => <div className="max-w-[160px] text-[12px]"><div className="truncate">{p.teamName ?? (p.teamId ? t("team.unnamed") : t("team.unassigned"))}</div>{p.teamId && <div className="truncate font-mono text-[11px] text-on-surface-faint" title={p.teamId}>{p.teamId}</div>}</div> }] : []),
-                { key: "assigned", header: t("admin.nodes.colAssigned"), align: "right", render: (p) => <span title={t("team.proxyCapacityHint")}>{fmtNum(p.boundAccounts ?? p.assignedAccounts)} / 3{p.reservedAccounts ? ` (+${p.reservedAccounts})` : ""}</span> },
+                { key: "assigned", header: t("admin.nodes.colAssigned"), align: "right", render: (p) => (
+                  <div className="text-right">
+                    <span title={t("team.proxyCapacityHint")}>{fmtNum(p.boundAccounts ?? p.assignedAccounts)} / 3{p.reservedAccounts ? ` (+${p.reservedAccounts})` : ""}</span>
+                    {!!p.carriers?.length && (
+                      <div className="mt-0.5 max-w-[240px] text-[11px] text-on-surface-faint" title={t("admin.nodes.proxyShareHint")}>
+                        <div>{t("admin.nodes.proxyCarriers", { n: p.carriers.length })}</div>
+                        {p.carriers.map((c) => (
+                          <div key={c.accountId} className="truncate" title={`${c.accountName ?? c.accountId} · ${c.nodeName ?? c.nodeId ?? "?"}${c.teamName || c.teamId ? ` · ${c.teamName ?? c.teamId}` : ""}`}>
+                            {c.accountName ?? c.accountId.slice(0, 8)} @{c.nodeName ?? c.nodeId ?? "?"}
+                            {(c.teamName || c.teamId) && ` · ${t("admin.nodes.proxyCarrierOrg", { team: c.teamName ?? c.teamId!.slice(0, 8) })}`}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                ) },
                 {
                   key: "check",
                   header: t("admin.nodes.colLastCheck"),
@@ -901,21 +926,23 @@ function ProxyPoolModal({ node, onClose }: { node: NodeRow; onClose: () => void 
               try {
                 const url = `/api/admin/nodes/${encodeURIComponent(node.nodeId)}/proxies`;
                 type Skips = { duplicateInBatch: number; alreadyInPool: number; onOtherNode: number };
+                type Shared = { shared?: number };
                 const payload = { proxies, ...(addGroup.trim() ? { group: addGroup.trim() } : {}) };
                 const res =
                   mode === "append"
-                    ? await api.post<{ pushed: boolean; added: number; regrouped?: number; skipped: Skips; skippedUrls: string[] }>(url, payload)
-                    : await api.put<{ pushed: boolean; total: number; skipped: Skips; skippedUrls: string[] }>(url, payload);
+                    ? await api.post<{ pushed: boolean; added: number; regrouped?: number; skipped: Skips; skippedUrls: string[] } & Shared>(url, payload)
+                    : await api.put<{ pushed: boolean; total: number; skipped: Skips; skippedUrls: string[] } & Shared>(url, payload);
                 // Duplicates are dropped server-side; tell the operator what happened (user rule 2026-10-20).
                 const sk = res.skipped ?? { duplicateInBatch: 0, alreadyInPool: 0, onOtherNode: 0 };
                 const skippedTotal = sk.duplicateInBatch + sk.alreadyInPool + sk.onOtherNode;
                 const count = "added" in res ? t("admin.nodes.appendResult", { added: res.added }) : t("admin.nodes.replaceResult", { total: res.total });
                 const regrouped = "regrouped" in res && res.regrouped ? " " + t("admin.nodes.regroupedResult", { n: res.regrouped }) : "";
+                const sharedNote = res.shared ? " " + t("admin.nodes.sharedResult", { n: res.shared }) : "";
                 const dropped =
                   skippedTotal > 0
                     ? " " + t("admin.nodes.skippedResult", { skipped: skippedTotal, dup: sk.duplicateInBatch, pool: sk.alreadyInPool, other: sk.onOtherNode })
                     : "";
-                toast.success(`${count}${regrouped}${dropped} ${t(res.pushed ? "admin.nodes.poolSavedPushed" : "admin.nodes.poolSavedOffline")}`);
+                toast.success(`${count}${regrouped}${sharedNote}${dropped} ${t(res.pushed ? "admin.nodes.poolSavedPushed" : "admin.nodes.poolSavedOffline")}`);
                 setText("");
                 if (addGroup.trim()) setGroupFilter(addGroup.trim());
                 await reload();

@@ -75,7 +75,7 @@ import {
   strArray,
 } from "../http.js";
 import { deployNodeLocal, deployNodeViaSsh } from "../node/deploy.js";
-import { ProxyInputError, addNodeProxies, rebindAccountProxy, removeNodeProxies, listNodeProxies, listNodeProxyGroups, listProxiesForPicker, nodeExists, nodeProxyUrls, normalizeProxyGroup, releaseAccountProxies, releaseNodeResources, replaceNodeProxies, setNodeProxyGroup, unquarantineProxy, validateProxies, type AddProxiesResult, type ProxyInput, type ReplaceProxiesResult } from "../node/proxies.js";
+import { ProxyInputError, addNodeProxies, rebindAccountProxy, removeNodeProxies, listNodeProxies, listNodeProxyGroups, listProxiesForPicker, nodeExists, nodeProxyUrls, normalizeProxyGroup, releaseAccountProxies, releaseNodeResources, replaceNodeProxies, setNodeProxyGroup, unquarantineProxy, validateProxies, type AddProxiesResult, type ProxyInput, type ReplaceProxiesResult, NODE_POOL_COUNT_SQL, PROXY_IN_POOL_SQL } from "../node/proxies.js";
 import { requestViaNode } from "../node/egress-request.js";
 import { disconnectNode, pushProxies, retireTeamOnNodes } from "../node/registry.js";
 import { claimReleaseMinDays, releaseTeamClaims, teamClaims, teamOverview } from "../node/teams.js";
@@ -1438,7 +1438,7 @@ export function registerAdminRoutes(app: FastifyInstance): void {
     data: all(
       `SELECT n.*, u.name AS provider_name, u.role AS provider_role,
               (SELECT COUNT(*) FROM accounts a WHERE a.node_id = n.node_id AND a.route = 'node') AS account_count,
-              (SELECT COUNT(*) FROM node_proxies p WHERE p.node_id = n.node_id) AS proxy_count
+              ${NODE_POOL_COUNT_SQL} AS proxy_count
        FROM nodes n LEFT JOIN users u ON u.id = n.provider_id ORDER BY n.online DESC, n.created_at DESC`,
     ).map(nodeShape),
   }));
@@ -1455,8 +1455,8 @@ export function registerAdminRoutes(app: FastifyInstance): void {
               (SELECT COUNT(*) FROM accounts a WHERE a.node_id = n.node_id AND a.status = 'active' AND (
                  (a.window_exhausted_until IS NOT NULL AND a.window_exhausted_until > strftime('%Y-%m-%dT%H:%M:%SZ','now')) OR
                  (a.rate_limited_until IS NOT NULL AND a.rate_limited_until > strftime('%Y-%m-%dT%H:%M:%SZ','now')))) AS acc_cooling,
-              (SELECT COUNT(*) FROM node_proxies p WHERE p.node_id = n.node_id) AS proxy_total,
-              (SELECT COUNT(*) FROM node_proxies p WHERE p.node_id = n.node_id AND p.status = 'live') AS proxy_live,
+              ${NODE_POOL_COUNT_SQL} AS proxy_total,
+              (SELECT COUNT(*) FROM node_proxies p WHERE (p.node_id = n.node_id OR EXISTS (SELECT 1 FROM node_proxy_shares s WHERE s.proxy_id = p.id AND s.node_id = n.node_id)) AND p.status = 'live') AS proxy_live,
               (SELECT COUNT(*) FROM usage_logs l WHERE l.node_id = n.node_id AND l.created_at > strftime('%Y-%m-%dT%H:%M:%SZ','now','-60 minutes')) AS req_1h,
               (SELECT COUNT(*) FROM usage_logs l WHERE l.node_id = n.node_id AND l.status_code >= 400 AND l.created_at > strftime('%Y-%m-%dT%H:%M:%SZ','now','-60 minutes')) AS err_1h,
               (SELECT ROUND(AVG(l.duration_ms)) FROM usage_logs l WHERE l.node_id = n.node_id AND l.status_code = 200 AND l.created_at > strftime('%Y-%m-%dT%H:%M:%SZ','now','-60 minutes')) AS avg_ms_1h,
@@ -1544,7 +1544,7 @@ export function registerAdminRoutes(app: FastifyInstance): void {
       throw err;
     }
     const pushed = pushProxies(id, res.urls);
-    return { data: { pushed, total: res.urls.length, skipped: res.skipped, skippedUrls: res.skippedUrls, proxies: listNodeProxies(id) } };
+    return { data: { pushed, total: res.urls.length, shared: res.shared, skipped: res.skipped, skippedUrls: res.skippedUrls, proxies: listNodeProxies(id) } };
   });
 
   // Append proxies to a node's pool (bound rows untouched). After the insert
@@ -1566,7 +1566,7 @@ export function registerAdminRoutes(app: FastifyInstance): void {
       throw err;
     }
     const pushed = pushProxies(id, nodeProxyUrls(id));
-    return { data: { pushed, added: res.added, regrouped: res.regrouped, skipped: res.skipped, skippedUrls: res.skippedUrls, proxies: listNodeProxies(id) } };
+    return { data: { pushed, added: res.added, shared: res.shared, regrouped: res.regrouped, skipped: res.skipped, skippedUrls: res.skippedUrls, proxies: listNodeProxies(id) } };
   });
 
   // Proxy groups (2026-10-29): per-group tallies, and moving rows between groups (null = ungroup).
@@ -1624,7 +1624,7 @@ export function registerAdminRoutes(app: FastifyInstance): void {
     if (ids.length > 1000) bad("invalid_request", "at most 1000 proxyIds per call");
     const res = tx(() => removeNodeProxies(id, ids, req.user!.id));
     const pushed = res.removed.length ? pushProxies(id, nodeProxyUrls(id)) : false;
-    return { data: { ...res, pushed, remaining: one<{ n: number }>("SELECT COUNT(*) AS n FROM node_proxies WHERE node_id = ?", id)!.n } };
+    return { data: { ...res, pushed, remaining: one<{ n: number }>(`SELECT COUNT(*) AS n FROM node_proxies p WHERE ${PROXY_IN_POOL_SQL}`, id, id)!.n } };
   });
 
   // Lift a quarantine (docs/onboarding.md §12.1): operator decision, kept in the history.
@@ -1649,8 +1649,10 @@ export function registerAdminRoutes(app: FastifyInstance): void {
     if (!nodeExists(id)) notFound("node");
     // ?free=1: credential-free picker view (live + unbound), docs/onboarding.md §4.
     // The ops role only ever gets the picker shape (no proxy URLs / errors).
-    if (query(req).free === "1" || req.user!.role === "ops") return { data: listProxiesForPicker(id, query(req).free === "1") };
-    return { data: listNodeProxies(id) };
+    // Organization names on the share / carrier annotations go to administrators only (2026-11-08).
+    const includeTeams = req.user!.role === "admin";
+    if (query(req).free === "1" || req.user!.role === "ops") return { data: listProxiesForPicker(id, query(req).free === "1", { includeTeams }) };
+    return { data: listNodeProxies(id, { includeTeams }) };
   });
 
   const deployBase = (req: FastifyRequest): string => {

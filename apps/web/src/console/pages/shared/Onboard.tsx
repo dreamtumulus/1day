@@ -418,11 +418,16 @@ export function OnboardPage({ scope }: { scope: OnboardScope }) {
     if (!ownPreview) return t("onboard.proxyOwnHint");
     const parsed = t("onboard.proxyOwnParsed", { url: ownPreview.parsed.display });
     if (!ownPreview.existed) return `${parsed} · ${t("onboard.proxyOwnNew")}`;
-    const known = t("onboard.proxyOwnKnown", { node: ownPreview.nodeId ?? "?", status: t(`status.${ownPreview.status ?? "unknown"}`), n: ownPreview.boundAccounts + ownPreview.reservedAccounts });
+    const known = ownPreview.shared
+      ? t("onboard.proxyOwnShared", { home: ownPreview.homeNodeName ?? ownPreview.homeNodeId ?? "?", status: t(`status.${ownPreview.status ?? "unknown"}`), n: ownPreview.boundAccounts + ownPreview.reservedAccounts })
+      : t("onboard.proxyOwnKnown", { node: ownPreview.nodeId ?? "?", status: t(`status.${ownPreview.status ?? "unknown"}`), n: ownPreview.boundAccounts + ownPreview.reservedAccounts });
+    const carried = ownPreview.carriers?.length
+      ? ` · ${t("onboard.proxyCarriers", { list: ownPreview.carriers.map((c) => `${c.accountName ?? c.accountId.slice(0, 8)}@${c.nodeName ?? c.nodeId ?? "?"}${c.teamName ? `(${c.teamName})` : ""}`).join(", ") })}`
+      : "";
     if (ownPreview.reset) return `${parsed} · ${known} · ${t("onboard.proxyOwnReset")}`;
     const blocked = ownPreview.blocked && ownPreview.blocked !== "unprobed" && ownPreview.blocked !== "exit_unverified"
       ? ` · ${t(`onboard.proxyBlocked.${ownPreview.blocked}`, { err: ownPreview.lastError ?? ownPreview.quarantineReason ?? "-" })}` : "";
-    return `${parsed} · ${known}${blocked}`;
+    return `${parsed} · ${known}${carried}${blocked}`;
   })();
 
   /**
@@ -679,9 +684,14 @@ export function OnboardPage({ scope }: { scope: OnboardScope }) {
         .filter((p) => !proxyGroup || (p.group ?? "") === proxyGroup)
         .map((p) => {
           const host = p.host ? `${p.host}${p.port ? `:${p.port}` : ""}` : p.id.slice(0, 12);
+          // Cross-node sharing (2026-11-08): say where the row lives and who already uses the exit — a reminder, not a block.
+          const shared = p.shared ? ` · ${t("onboard.proxySharedFrom", { node: p.homeNodeName ?? p.homeNodeId ?? "?" })}` : "";
+          const carriers = p.carriers?.length
+            ? ` · ${t("onboard.proxyCarriers", { list: p.carriers.map((c) => `${c.accountName ?? c.accountId.slice(0, 8)}@${c.nodeName ?? c.nodeId ?? "?"}${c.teamName ? `(${c.teamName})` : ""}`).join(", ") })}`
+            : "";
           return {
             value: p.id,
-            label: `${p.group ? `[${p.group}] ` : ""}${p.country ? `${p.country} · ` : ""}${p.label ? `${p.label} · ` : ""}${host} · ${t("team.proxyOccupied", { n: (p.boundAccounts ?? 0) + (p.reservedAccounts ?? 0) })}`,
+            label: `${p.group ? `[${p.group}] ` : ""}${p.country ? `${p.country} · ` : ""}${p.label ? `${p.label} · ` : ""}${host} · ${t("team.proxyOccupied", { n: (p.boundAccounts ?? 0) + (p.reservedAccounts ?? 0) })}${shared}${carriers}`,
           };
         }),
     [proxies, proxyGroup, t],

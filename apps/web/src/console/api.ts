@@ -375,8 +375,28 @@ export interface NodeMonitorRow {
   traffic: { req1h: number; err1h: number; avgMs1h: number | null; req24h: number; err24h: number; cost24h: number };
 }
 
+/** An account bound to a proxy, on any node (reminder annotation; organization fields for administrators only). */
+export interface ProxyCarrier {
+  accountId: string;
+  accountName: string | null;
+  status: string;
+  nodeId: string | null;
+  nodeName: string | null;
+  teamId?: string | null;
+  teamName?: string | null;
+}
+/** Cross-node sharing annotation (2026-11-08): where the row lives and which other nodes also hold it. */
+export interface ProxyShareInfo {
+  homeNodeId?: string;
+  homeNodeName?: string | null;
+  /** true: this row lives in another node's pool and is shared into the node being viewed. */
+  shared?: boolean;
+  sharedWith?: Array<{ nodeId: string; name: string | null }>;
+  carriers?: ProxyCarrier[];
+}
+
 /** Masked proxy ledger entry (password shown as ***, url null if undecryptable). */
-export interface NodeProxy {
+export interface NodeProxy extends ProxyShareInfo {
   id: string;
   url: string | null;
   label: string | null;
@@ -578,7 +598,7 @@ export const adminAccountWindow = (id: string) => api.post<AdminAccount>(`/api/a
 export type OnboardScope = "admin" | "provider";
 
 /** Credential-free proxy picker view: GET .../nodes/:id/proxies (?free=1 for live+unbound only). */
-export interface ProxyPickerItem {
+export interface ProxyPickerItem extends ProxyShareInfo {
   id: string;
   label: string | null;
   group?: string | null;
@@ -715,8 +735,9 @@ export const onboardPrecheck = (scope: OnboardScope, sessionKeys: string[]) =>
  * parsed into a socks5 URL; a proxy already in a pool is reused (that pool's node comes back in
  * `nodeId`), otherwise it is appended to the node's pool and probed. Call again to poll `blocked`.
  */
-export interface OnboardSuppliedProxy {
+export interface OnboardSuppliedProxy extends ProxyShareInfo {
   proxyId: string | null;
+  /** The requested node (since 2026-11-08 a proxy known elsewhere is shared into it instead of switching nodes). */
   nodeId: string | null;
   parsed: { scheme: string; host: string; port: number; username: string | null; display: string };
   existed: boolean;

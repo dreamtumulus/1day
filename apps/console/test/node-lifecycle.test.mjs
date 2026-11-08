@@ -97,7 +97,7 @@ await test("PUT proxies: dropping a bound proxy is refused; keeping it preserves
   assert.equal(one("SELECT bound_proxy_id FROM accounts WHERE id='acc-bound'").bound_proxy_id, pid(u1));
 });
 
-await test("POST proxies: duplicates (in batch / in pool / on another node) are dropped, the rest added, counts reported", async () => {
+await test("POST proxies: duplicates (in batch / in pool) are dropped, a line on another node is shared in (2026-11-08), the rest added, counts reported", async () => {
   mkNode("lc-other", adminUser.id);
   replaceNodeProxies("lc-other", [{ url: "http://u:p@10.9.6.1:8000" }]);
   const before = one("SELECT COUNT(*) AS n FROM node_proxies WHERE node_id='lc-prov'").n;
@@ -112,24 +112,36 @@ await test("POST proxies: duplicates (in batch / in pool / on another node) are 
   });
   assert.equal(r.status, 200, JSON.stringify(r));
   assert.equal(r.data.added, 2);
-  assert.deepEqual(r.data.skipped, { duplicateInBatch: 1, alreadyInPool: 1, onOtherNode: 1 });
-  assert.equal(r.data.skippedUrls.length, 3);
+  assert.equal(r.data.shared, 1, "the line living on lc-other is shared into lc-prov instead of being dropped");
+  assert.deepEqual(r.data.skipped, { duplicateInBatch: 1, alreadyInPool: 1, onOtherNode: 0 });
+  assert.equal(r.data.skippedUrls.length, 2);
   assert.ok(r.data.skippedUrls.every((u) => !u.includes(":p@")), "skipped urls are masked");
   assert.equal(one("SELECT COUNT(*) AS n FROM node_proxies WHERE node_id='lc-prov'").n, before + 2);
+  assert.equal(one("SELECT COUNT(*) AS n FROM node_proxy_shares WHERE node_id='lc-prov'").n, 1);
+  const sharedRow = r.data.proxies.find((p) => p.id === pid("http://u:p@10.9.6.1:8000"));
+  assert.equal(sharedRow?.shared, true);
+  assert.equal(sharedRow?.homeNodeId, "lc-other");
   const kept = one("SELECT label, bound_account_id FROM node_proxies WHERE id=?", pid(u1));
   assert.equal(kept.label, "kept", "existing row's label untouched");
   assert.equal(kept.bound_account_id, "acc-bound");
   assert.equal(one("SELECT node_id FROM node_proxies WHERE id=?", pid("http://u:p@10.9.6.1:8000")).node_id, "lc-other", "other node keeps its proxy");
   assert.equal(one("SELECT label FROM node_proxies WHERE id=?", pid("http://u:p@10.9.7.1:8000")).label, "fresh-1", "first occurrence wins");
 
-  // Replace mode dedupes the batch the same way and reports it.
+  // A home row another node uses through a share cannot be dropped by a replace (2026-11-08): remove the share first.
+  const refused = await admin("PUT", "/api/admin/nodes/lc-other/proxies", { proxies: [{ url: "http://u:p@10.9.6.2:8000" }] });
+  assert.equal(refused.status, 400, JSON.stringify(refused));
+  assert.match(refused.error?.message ?? "", /shared with other nodes/);
+  // Replace mode dedupes the batch the same way and reports it; a line living on lc-prov (u1) becomes a share.
   const r2 = await admin("PUT", "/api/admin/nodes/lc-other/proxies", {
-    proxies: [{ url: "http://u:p@10.9.6.2:8000" }, { url: "http://u:p@10.9.6.2:8000" }, { url: u1 }],
+    proxies: [{ url: "http://u:p@10.9.6.2:8000" }, { url: "http://u:p@10.9.6.2:8000" }, { url: u1 }, { url: "http://u:p@10.9.6.1:8000" }],
   });
   assert.equal(r2.status, 200, JSON.stringify(r2));
-  assert.equal(r2.data.total, 1);
-  assert.deepEqual(r2.data.skipped, { duplicateInBatch: 1, alreadyInPool: 0, onOtherNode: 1 });
-  assert.equal(one("SELECT COUNT(*) AS n FROM node_proxies WHERE node_id='lc-other'").n, 1);
+  assert.equal(r2.data.total, 3);
+  assert.equal(r2.data.shared, 1);
+  assert.deepEqual(r2.data.skipped, { duplicateInBatch: 1, alreadyInPool: 0, onOtherNode: 0 });
+  assert.equal(one("SELECT COUNT(*) AS n FROM node_proxies WHERE node_id='lc-other'").n, 2);
+  assert.equal(one("SELECT COUNT(*) AS n FROM node_proxy_shares WHERE node_id='lc-other'").n, 1);
+  assert.equal(one("SELECT node_id FROM node_proxies WHERE id=?", pid(u1)).node_id, "lc-prov", "u1 stays home on lc-prov");
 });
 
 await test("DELETE node (admin) with a bound account: 200, account unbound+disabled, ledger cleared", async () => {

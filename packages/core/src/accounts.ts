@@ -733,7 +733,9 @@ export function boundProxyDown(a: Pick<AccountRow, "bound_proxy_id"> & { team_id
   // the proxy row keeps the first organization's tag, accounts of other organizations share the exit.
   const orgBound = getSetting("proxy_org_binding_enforce").trim() !== "0";
   if ((orgBound && row.team_id !== team) || row.isolation_version !== 1 || !row.resource_key) return true;
-  if(a.node_id!==undefined && a.node_id!==row.node_id)return true;
+  // Cross-node sharing (2026-11-08): the account's node may use the proxy when it is the home node or holds a share.
+  if (a.node_id !== undefined && a.node_id !== row.node_id &&
+      !(a.node_id && one("SELECT 1 FROM node_proxy_shares WHERE proxy_id = ? AND node_id = ?", a.bound_proxy_id, a.node_id))) return true;
   if (quarantineActive(row.resource_key, `proxy:${a.bound_proxy_id}`)) return true;
   if (!orgBound) return false;
   return !one("SELECT 1 FROM proxy_team_claims WHERE resource_key=? AND team_id=?", row.resource_key, team);

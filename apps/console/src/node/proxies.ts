@@ -80,6 +80,8 @@ export interface ProxySkips {
 }
 
 export interface AddProxiesResult {
+  /** Lines already living in another node's pool, now shared into this node (2026-11-08). */
+  shared: number;
   added: number;
   /** Rows already in this node's pool that the batch moved into its group (user rule 2026-10-29). */
   regrouped: number;
@@ -97,10 +99,67 @@ const totalSkipped = (s: ProxySkips): number => s.duplicateInBatch + s.alreadyIn
  * `acceptInPool` = true keeps lines already in this node's pool (replace mode
  * re-saves them); false drops them (append mode leaves existing rows alone).
  */
-function dedupeBatch(nodeId: string, proxies: ProxyInput[], acceptInPool: boolean): { keep: ProxyInput[]; inPool: ProxyInput[]; skipped: ProxySkips; skippedUrls: string[] } {
+/**
+ * Cross-node sharing (operator rule 2026-11-08, docs/onboarding.md §1 原则 8): a proxy row lives on its *home* node
+ * (`node_proxies.node_id`) and may be shared into other nodes' pools (`node_proxy_shares`). Every pool query below uses
+ * `PROXY_IN_POOL_SQL` so a node sees its home rows and its shares alike; the exit capacity (2 normal / 3 max) is one
+ * global count via proxyOccupancy, whichever node carries the accounts. The UI only *annotates* a shared row (home node,
+ * other nodes, the accounts and organizations it already carries) — nothing is moved or deleted on the home node.
+ */
+/** SQL predicate on alias `p`: the row is in node `?`'s pool (home or shared). Binds nodeId twice. */
+export const PROXY_IN_POOL_SQL = "(p.node_id = ? OR EXISTS (SELECT 1 FROM node_proxy_shares s WHERE s.proxy_id = p.id AND s.node_id = ?))";
+/** Same predicate for a bare `node_proxies` UPDATE/SELECT without alias. Binds nodeId twice. */
+export const NODE_PROXIES_IN_POOL_SQL = "(node_proxies.node_id = ? OR EXISTS (SELECT 1 FROM node_proxy_shares s WHERE s.proxy_id = node_proxies.id AND s.node_id = ?))";
+/** Pool size of a node (home rows + shares), for a correlated subquery on `nodes n`. */
+export const NODE_POOL_COUNT_SQL = "(SELECT COUNT(*) FROM node_proxies p WHERE p.node_id = n.node_id OR EXISTS (SELECT 1 FROM node_proxy_shares s WHERE s.proxy_id = p.id AND s.node_id = n.node_id))";
+
+type PoolRow = IsolatedProxy & { url_enc: string; label: string | null; created_at: string; cooldown_reason: string | null };
+/** One pool row of a node (home or shared), or undefined. */
+export function poolRow(nodeId: string, proxyId: string): PoolRow | undefined {
+  return one<PoolRow>(`SELECT p.* FROM node_proxies p WHERE p.id = ? AND ${PROXY_IN_POOL_SQL}`, proxyId.slice(0, 40), nodeId, nodeId);
+}
+/** All pool rows of a node (home + shared). */
+function poolRows(nodeId: string, orderBy = "p.created_at, p.id"): PoolRow[] {
+  return all<PoolRow>(`SELECT p.* FROM node_proxies p WHERE ${PROXY_IN_POOL_SQL} ORDER BY ${orderBy}`, nodeId, nodeId);
+}
+export function proxyInPool(nodeId: string, proxyId: string): boolean {
+  return !!poolRow(nodeId, proxyId);
+}
+function isSharedInto(nodeId: string, proxyId: string): boolean {
+  return !!one("SELECT 1 FROM node_proxy_shares WHERE proxy_id = ? AND node_id = ?", proxyId, nodeId);
+}
+function nodeName(nodeId: string): string | null {
+  // Node display names live in deploy_meta.name (routes/onboarder.ts nodeRows); the nodes table has no name column.
+  return one<{ name: string | null }>("SELECT json_extract(deploy_meta, '$.name') AS name FROM nodes WHERE node_id = ?", nodeId)?.name ?? null;
+}
+export interface ProxyCarrier {
+  accountId: string; accountName: string | null; status: string;
+  nodeId: string | null; nodeName: string | null;
+  /** Organization fields: routes return them to administrators only. */
+  teamId: string | null; teamName: string | null;
+}
+/** Accounts bound to a proxy, on any node (the "already carrying" annotation). */
+export function proxyCarriers(proxyId: string, includeTeams: boolean): ProxyCarrier[] {
+  return all<{ id: string; name: string | null; status: string; node_id: string | null; team_id: string | null; node_name: string | null; team_name: string | null }>(
+    `SELECT a.id, a.name, a.status, a.node_id, a.team_id,
+            (SELECT json_extract(n.deploy_meta, '$.name') FROM nodes n WHERE n.node_id = a.node_id) AS node_name,
+            (SELECT t.name FROM upstream_teams t WHERE t.id = a.team_id) AS team_name
+     FROM accounts a WHERE a.bound_proxy_id = ? ORDER BY a.created_at`, proxyId,
+  ).map((r) => ({ accountId: r.id, accountName: r.name, status: r.status, nodeId: r.node_id, nodeName: r.node_name,
+    teamId: includeTeams ? r.team_id : null, teamName: includeTeams ? r.team_name : null }));
+}
+/** Share annotation of one row as seen from `nodeId`: its home node and the *other* nodes it is shared into (home excluded). */
+function shareInfo(nodeId: string, p: { id: string; node_id: string }) {
+  const others = all<{ node_id: string }>("SELECT node_id FROM node_proxy_shares WHERE proxy_id = ? ORDER BY created_at", p.id).map((r) => r.node_id);
+  const sharedWith = others.filter((n) => n !== nodeId).map((n) => ({ nodeId: n, name: nodeName(n) }));
+  return { homeNodeId: p.node_id, homeNodeName: nodeName(p.node_id), shared: p.node_id !== nodeId, sharedWith };
+}
+interface ShareInput { input: ProxyInput; homeNodeId: string; existed: boolean }
+function dedupeBatch(nodeId: string, proxies: ProxyInput[], acceptInPool: boolean): { keep: ProxyInput[]; inPool: ProxyInput[]; shared: ShareInput[]; skipped: ProxySkips; skippedUrls: string[] } {
   const seen = new Set<string>();
   const keep: ProxyInput[] = [];
   const inPool: ProxyInput[] = [];
+  const shared: ShareInput[] = [];
   const skipped = noSkips();
   const skippedUrls: string[] = [];
   for (const p of proxies) {
@@ -113,8 +172,15 @@ function dedupeBatch(nodeId: string, proxies: ProxyInput[], acceptInPool: boolea
     seen.add(id);
     const owner = one<{ node_id: string }>("SELECT node_id FROM node_proxies WHERE id = ?", id);
     if (owner && owner.node_id !== nodeId) {
-      skipped.onOtherNode++;
-      skippedUrls.push(maskProxyUrl(p.url));
+      // Operator rule 2026-11-08: a proxy that already lives in another node's pool is not a duplicate to drop — it is
+      // shared into this node (the home row and its accounts stay where they are; the UI marks the share and who uses it).
+      const existed = isSharedInto(nodeId, id);
+      if (existed && !acceptInPool) {
+        skipped.alreadyInPool++;
+        skippedUrls.push(maskProxyUrl(p.url));
+        continue;
+      }
+      shared.push({ input: p, homeNodeId: owner.node_id, existed });
       continue;
     }
     if (owner && !acceptInPool) {
@@ -129,7 +195,21 @@ function dedupeBatch(nodeId: string, proxies: ProxyInput[], acceptInPool: boolea
     }
     keep.push(p);
   }
-  return { keep, inPool, skipped, skippedUrls };
+  return { keep, inPool, shared, skipped, skippedUrls };
+}
+
+function addShares(nodeId: string, shared: ShareInput[], actorReason: string): number {
+  let n = 0;
+  for (const s of shared) {
+    if (s.existed) continue;
+    const id = proxyIdFromUrl(s.input.url);
+    if (run("INSERT OR IGNORE INTO node_proxy_shares (proxy_id, node_id) VALUES (?, ?)", id, nodeId).changes === 0) continue;
+    n++;
+    const p = one<{ resource_key: string | null; team_id: string | null }>("SELECT resource_key, team_id FROM node_proxies WHERE id = ?", id);
+    recordProxyTeamEvent({ resourceKey: p?.resource_key ?? `proxy:${id}`, proxyId: id, nodeId, teamId: p?.team_id ?? null, event: "proxy_shared",
+      reason: `${actorReason}: shared into node ${nodeId} from home node ${s.homeNodeId}` });
+  }
+  return n;
 }
 
 /**
@@ -138,9 +218,10 @@ function dedupeBatch(nodeId: string, proxies: ProxyInput[], acceptInPool: boolea
  * are dropped and counted; the remaining lines are inserted.
  */
 export function addNodeProxies(nodeId: string, proxies: ProxyInput[]): AddProxiesResult {
-  const existing = one<{ n: number }>("SELECT COUNT(*) AS n FROM node_proxies WHERE node_id = ?", nodeId)?.n ?? 0;
-  const { keep, inPool, skipped, skippedUrls } = dedupeBatch(nodeId, proxies, false);
-  if (existing + keep.length > 500) throw new ProxyInputError(`at most 500 proxies per node (has ${existing}, adding ${keep.length})`);
+  const existing = poolRows(nodeId).length;
+  const { keep, inPool, shared, skipped, skippedUrls } = dedupeBatch(nodeId, proxies, false);
+  const newShares = shared.filter((x) => !x.existed).length;
+  if (existing + keep.length + newShares > 500) throw new ProxyInputError(`at most 500 proxies per node (has ${existing}, adding ${keep.length + newShares})`);
   for (const p of keep) {
     run(
       "INSERT INTO node_proxies (id, node_id, url_enc, label, status,isolation_version, group_name) VALUES (?, ?, ?, ?, 'unknown',1, ?)",
@@ -155,15 +236,18 @@ export function addNodeProxies(nodeId: string, proxies: ProxyInput[]): AddProxie
   for (const p of inPool) {
     regrouped += run("UPDATE node_proxies SET group_name = ? WHERE id = ? AND node_id = ? AND group_name IS NOT ?", p.group ?? null, proxyIdFromUrl(p.url), nodeId, p.group ?? null).changes;
   }
-  if (totalSkipped(skipped) > 0 || regrouped > 0) {
-    console.info(`[proxies] node ${nodeId}: added ${keep.length}, regrouped ${regrouped}, skipped ${totalSkipped(skipped)} (batch dup ${skipped.duplicateInBatch}, in pool ${skipped.alreadyInPool}, other node ${skipped.onOtherNode})`);
+  const sharedNow = addShares(nodeId, shared, "pool append");
+  if (totalSkipped(skipped) > 0 || regrouped > 0 || sharedNow > 0) {
+    console.info(`[proxies] node ${nodeId}: added ${keep.length}, shared ${sharedNow}, regrouped ${regrouped}, skipped ${totalSkipped(skipped)} (batch dup ${skipped.duplicateInBatch}, in pool ${skipped.alreadyInPool}, other node ${skipped.onOtherNode})`);
   }
-  return { added: keep.length, regrouped, skipped, skippedUrls };
+  return { added: keep.length, shared: sharedNow, regrouped, skipped, skippedUrls };
 }
 
 export interface ReplaceProxiesResult {
-  /** Plaintext URLs of the new pool, for the WS push. */
+  /** Plaintext URLs of the new pool (home rows and shares), for the WS push. */
   urls: string[];
+  /** Lines living in another node's pool that are (now or still) shared into this node (2026-11-08). */
+  shared: number;
   skipped: ProxySkips;
   skippedUrls: string[];
 }
@@ -173,11 +257,11 @@ export interface ReplaceProxiesResult {
  * batch or living in another node's pool are dropped and counted.
  */
 export function replaceNodeProxies(nodeId: string, proxies: ProxyInput[]): ReplaceProxiesResult {
-  const { keep: unique, skipped, skippedUrls } = dedupeBatch(nodeId, proxies, true);
+  const { keep: unique, shared, skipped, skippedUrls } = dedupeBatch(nodeId, proxies, true);
   // Rows that stay in the pool keep their health and their account binding;
   // a proxy that still carries an account cannot be removed (one account =
   // one proxy for life, docs/onboarding.md §1): delete the account first.
-  const keep = new Set(unique.map((p) => proxyIdFromUrl(p.url)));
+  const keep = new Set([...unique, ...shared.map((x) => x.input)].map((p) => proxyIdFromUrl(p.url)));
   const bound = all<{ id: string; bound_account_id: string }>(
     `SELECT p.id,p.bound_account_id FROM node_proxies p WHERE p.node_id = ? AND
       (p.bound_account_id IS NOT NULL OR EXISTS(SELECT 1 FROM accounts a WHERE a.bound_proxy_id=p.id)
@@ -189,8 +273,27 @@ export function replaceNodeProxies(nodeId: string, proxies: ProxyInput[]): Repla
       `${bound.length} proxy(ies) still bound to accounts cannot be removed from the pool (ids: ${bound.map((r) => r.id).join(", ")}); delete those accounts first`,
     );
   }
+  // A home row that other nodes use through a share stays too (remove their shares first; 2026-11-08).
+  const sharedOut = all<{ id: string }>(
+    "SELECT DISTINCT p.id FROM node_proxies p JOIN node_proxy_shares s ON s.proxy_id = p.id WHERE p.node_id = ? AND s.node_id <> ?", nodeId, nodeId,
+  ).filter((r) => !keep.has(r.id));
+  if (sharedOut.length) {
+    throw new ProxyInputError(
+      `${sharedOut.length} proxy(ies) shared with other nodes cannot be removed from their home pool (ids: ${sharedOut.map((r) => r.id).join(", ")}); remove the shares on those nodes first`,
+    );
+  }
+  // Shares of this node that drop out of the list: fine unless an account of this node is bound through them.
+  const sharedBound = all<{ proxy_id: string }>(
+    `SELECT s.proxy_id FROM node_proxy_shares s WHERE s.node_id = ? AND EXISTS(SELECT 1 FROM accounts a WHERE a.bound_proxy_id = s.proxy_id AND a.node_id = ?)`, nodeId, nodeId,
+  ).filter((r) => !keep.has(r.proxy_id));
+  if (sharedBound.length) {
+    throw new ProxyInputError(
+      `${sharedBound.length} shared proxy(ies) still bound to accounts of this node cannot be removed (ids: ${sharedBound.map((r) => r.proxy_id).join(", ")}); delete those accounts first`,
+    );
+  }
   const placeholders = keep.size ? [...keep].map(() => "?").join(",") : "''";
   run(`DELETE FROM node_proxies WHERE node_id = ? AND id NOT IN (${placeholders})`, nodeId, ...keep);
+  run(`DELETE FROM node_proxy_shares WHERE node_id = ? AND proxy_id NOT IN (${placeholders})`, nodeId, ...keep);
   for (const p of unique) {
     const id = proxyIdFromUrl(p.url);
     if (one("SELECT 1 FROM node_proxies WHERE id = ? AND node_id = ?", id, nodeId)) {
@@ -207,10 +310,11 @@ export function replaceNodeProxies(nodeId: string, proxies: ProxyInput[]): Repla
       );
     }
   }
-  if (totalSkipped(skipped) > 0) {
-    console.info(`[proxies] node ${nodeId}: replaced pool with ${unique.length}, skipped ${totalSkipped(skipped)} (batch dup ${skipped.duplicateInBatch}, other node ${skipped.onOtherNode})`);
+  addShares(nodeId, shared, "pool replace");
+  if (totalSkipped(skipped) > 0 || shared.length > 0) {
+    console.info(`[proxies] node ${nodeId}: replaced pool with ${unique.length} own + ${shared.length} shared, skipped ${totalSkipped(skipped)} (batch dup ${skipped.duplicateInBatch}, other node ${skipped.onOtherNode})`);
   }
-  return { urls: unique.map((p) => p.url), skipped, skippedUrls };
+  return { urls: [...unique, ...shared.map((x) => x.input)].map((p) => p.url), shared: shared.length, skipped, skippedUrls };
 }
 
 /**
@@ -223,17 +327,31 @@ export interface RemoveProxiesResult {
   removed: string[];
   bound: string[];
   reserved: string[];
+  /** Home rows other nodes still use through a share (2026-11-08): remove the shares on those nodes first. */
+  shared: string[];
   notFound: string[];
 }
 export function removeNodeProxies(nodeId: string, proxyIds: string[], actorId: string | null): RemoveProxiesResult {
-  const out: RemoveProxiesResult = { removed: [], bound: [], reserved: [], notFound: [] };
+  const out: RemoveProxiesResult = { removed: [], bound: [], reserved: [], shared: [], notFound: [] };
   for (const raw of proxyIds) {
     const id = String(raw).slice(0, 40);
-    const p = one<{ id: string; bound_account_id: string | null; resource_key: string | null; team_id: string | null }>(
-      "SELECT id, bound_account_id, resource_key, team_id FROM node_proxies WHERE id = ? AND node_id = ?", id, nodeId);
+    const p = one<{ id: string; node_id: string; bound_account_id: string | null; resource_key: string | null; team_id: string | null }>(
+      `SELECT p.id, p.node_id, p.bound_account_id, p.resource_key, p.team_id FROM node_proxies p WHERE p.id = ? AND ${PROXY_IN_POOL_SQL}`, id, nodeId, nodeId);
     if (!p) { out.notFound.push(id); continue; }
+    if (p.node_id !== nodeId) {
+      // A share: only this node's use goes away; the home row, its health and other nodes' accounts are untouched.
+      if (one("SELECT 1 FROM accounts WHERE bound_proxy_id = ? AND node_id = ?", id, nodeId)) { out.bound.push(id); continue; }
+      if (proxyReserved(id)) { out.reserved.push(id); continue; }
+      run("DELETE FROM node_proxy_assignments WHERE node_id = ? AND proxy_id = ?", nodeId, id);
+      run("DELETE FROM node_proxy_shares WHERE node_id = ? AND proxy_id = ?", nodeId, id);
+      recordProxyTeamEvent({ resourceKey: p.resource_key ?? `proxy:${id}`, proxyId: id, nodeId, teamId: p.team_id, actorId, event: "proxy_unshared",
+        reason: `share removed from node ${nodeId} by an operator (home node ${p.node_id} keeps the row)` });
+      out.removed.push(id);
+      continue;
+    }
     if (p.bound_account_id || one("SELECT 1 FROM accounts WHERE bound_proxy_id = ?", id)) { out.bound.push(id); continue; }
     if (proxyReserved(id)) { out.reserved.push(id); continue; }
+    if (one("SELECT 1 FROM node_proxy_shares WHERE proxy_id = ? AND node_id <> ?", id, nodeId)) { out.shared.push(id); continue; }
     run("DELETE FROM node_proxy_assignments WHERE node_id = ? AND proxy_id = ?", nodeId, id);
     run("DELETE FROM node_proxies WHERE id = ? AND node_id = ?", id, nodeId);
     recordProxyTeamEvent({ resourceKey: p.resource_key ?? `proxy:${id}`, proxyId: id, nodeId, teamId: p.team_id, actorId, event: "proxy_removed",
@@ -339,7 +457,7 @@ export interface ProxyGroupSummary {
 
 /** Per-group tallies of a node's pool, ungrouped last. */
 export function listNodeProxyGroups(nodeId: string): ProxyGroupSummary[] {
-  const rows = all<IsolatedProxy & { group_name: string | null }>("SELECT * FROM node_proxies WHERE node_id=?", nodeId);
+  const rows = poolRows(nodeId);
   const by = new Map<string | null, ProxyGroupSummary>();
   const now = nowIso();
   for (const p of rows) {
@@ -364,7 +482,7 @@ export function canonicalProxyResourceKey(ip: string): string | null {
 
 /** Runtime observations apply only to newly enrolled proxies, never legacy backfill. */
 export function recordNodeProxyExit(nodeId:string,proxyId:string,ip:string):boolean {
-  const observed=one<IsolatedProxy>("SELECT * FROM node_proxies WHERE id=? AND node_id=? AND isolation_version=1",proxyId,nodeId);
+  const observed=one<IsolatedProxy>(`SELECT p.* FROM node_proxies p WHERE p.id=? AND ${PROXY_IN_POOL_SQL} AND p.isolation_version=1`,proxyId,nodeId,nodeId);
   const observedKey=canonicalProxyResourceKey(ip);
   // Heartbeats repeat the same observation. Do not take a writer lock merely
   // to rewrite an unchanged identity; claims/quarantine remain checked live.
@@ -373,7 +491,7 @@ export function recordNodeProxyExit(nodeId:string,proxyId:string,ip:string):bool
     (!observed.team_id || one("SELECT 1 FROM proxy_team_claims WHERE resource_key=? AND team_id=?",observedKey,observed.team_id)) &&
     proxyOccupancy(observedKey).total<=exitCap())return true;
   return tx(()=>{
-    const p=one<IsolatedProxy>("SELECT * FROM node_proxies WHERE id=? AND node_id=? AND isolation_version=1",proxyId,nodeId);
+    const p=one<IsolatedProxy>(`SELECT p.* FROM node_proxies p WHERE p.id=? AND ${PROXY_IN_POOL_SQL} AND p.isolation_version=1`,proxyId,nodeId,nodeId);
     if(!p)return false;
     const freeze=(why:string)=>{const f=freezeAccountsOnProxy(proxyId,why);if(f.length)console.warn(`[proxies] ${proxyId} ${why} → ${f.length} account(s) frozen (proxy_down)`);};
     if(quarantineActive(`proxy:${p.id}`)){
@@ -476,7 +594,7 @@ export function resolveTeamProxy(nodeId: string, teamIdInput?: string | null, re
   const teamId = normalizeTeamId(teamIdInput);
   if (teamIdInput && !teamId) throw new ProxyInputError("team_identity_invalid");
   if (requested && requested !== "auto") {
-    const p = one<IsolatedProxy>("SELECT * FROM node_proxies WHERE node_id=? AND id=?", nodeId, requested);
+    const p = poolRow(nodeId, requested);
     if (!p || excludeProxyIds?.has(p.id)) throw new ProxyInputError(`proxy_not_found: proxy ${requested} is not in this node's pool`);
     const reason = teamIncompatibleReason(p, teamId);
     if (reason) throw new ProxyInputError(`proxy_unassignable: ${reason}`);
@@ -486,7 +604,7 @@ export function resolveTeamProxy(nodeId: string, teamIdInput?: string | null, re
   }
   // "auto within a group" (2026-10-29): only rows of that group are candidates.
   const group = groupName === undefined ? undefined : normalizeProxyGroup(groupName);
-  const candidates = all<IsolatedProxy>("SELECT * FROM node_proxies WHERE node_id=? ORDER BY last_check_at,id", nodeId)
+  const candidates = poolRows(nodeId, "p.last_check_at, p.id")
     .filter((p) => (group === undefined || (p.group_name ?? null) === group) && !excludeProxyIds?.has(p.id) && teamCompatible(p, teamId))
     .map((p) => ({ p, count: proxyOccupancy(p.resource_key!, excludeJobId).total }))
     .filter((x) => x.count < exitCap());
@@ -499,8 +617,18 @@ export function resolveTeamProxy(nodeId: string, teamIdInput?: string | null, re
 export interface SuppliedProxyResult {
   /** Pool row id (sha256 of the stored URL); null on a dry run when the proxy is not in any pool yet. */
   proxyId: string | null;
-  /** Node whose pool holds the row (may differ from the requested node when the proxy already lived elsewhere). */
+  /**
+   * Node the onboarding will use. Since 2026-11-08 this is the requested node: a proxy that already lives in another
+   * node's pool is shared into the requested node instead of moving the onboarding there (homeNodeId tells where it lives).
+   */
   nodeId: string | null;
+  /** Home node of the pool row (differs from nodeId for a shared proxy); null when not in any pool yet. */
+  homeNodeId: string | null;
+  homeNodeName: string | null;
+  /** The row is (or on submit will be) shared into the requested node from another node's pool. */
+  shared: boolean;
+  /** Accounts already bound to this proxy on any node (reminder only; organization fields for administrators). */
+  carriers: ProxyCarrier[];
   /** How the input was understood, without the password. */
   parsed: { scheme: string; host: string; port: number; username: string | null; display: string };
   /** The row existed before this call (matched by stored URL or by host/port/credentials). */
@@ -537,7 +665,7 @@ export interface SuppliedProxyResult {
  */
 export function resolveSuppliedProxy(nodeId: string, raw: string, opts: {
   teamId?: string | null; label?: string; group?: string | null; dryRun?: boolean; allowedNodes?: Set<string> | null;
-  push?: (nodeId: string) => boolean;
+  push?: (nodeId: string) => boolean; includeTeams?: boolean;
 }): SuppliedProxyResult {
   const parsed = parseProxyInput(raw);
   if (!parsed) throw new ProxyInputError("proxy_unparseable: expected host:port, host:port:user:pass, user:pass@host:port or a socks5:// / http:// URL");
@@ -556,7 +684,10 @@ export function resolveSuppliedProxy(nodeId: string, raw: string, opts: {
       if (proxyUrlFingerprint(url) === fingerprint) { hit = r; break; }
     }
   }
-  if (hit && !allowed(hit.node_id)) throw new ProxyInputError(`proxy_on_other_node: this proxy is already in another node's pool`);
+  // Cross-node sharing (2026-11-08): a hit in another pool is used from the requested node through a share; `allowedNodes`
+  // (providers: own nodes) only has to contain the requested node — the home node may belong to anyone, the operator
+  // supplied the address themselves.
+  if (!allowed(nodeId)) throw new ProxyInputError(`proxy_on_other_node: node ${nodeId} is not one of your nodes`);
   const teamId = normalizeTeamId(opts.teamId ?? null);
   // An existing row nobody uses is the operator's to reuse as if new (user rule 2026-10-29):
   // a stale quarantine, cooldown, dead verdict or an old organization claim must not turn a
@@ -565,6 +696,7 @@ export function resolveSuppliedProxy(nodeId: string, raw: string, opts: {
   // URL (socks5 unless they wrote another scheme) is added to the node they chose, so the
   // result follows their selection instead of wherever/however the old row was recorded.
   let reset = false;
+  let reshare: string[] = [];
   if (hit) {
     const p = one<IsolatedProxy>("SELECT * FROM node_proxies WHERE id=?", hit.id)!;
     const occ = p.resource_key ? proxyOccupancy(p.resource_key) : { bound: 0, reserved: 0, total: 0 };
@@ -583,9 +715,13 @@ export function resolveSuppliedProxy(nodeId: string, raw: string, opts: {
         liftQuarantine(keys, null, "re-supplied by an operator while unused");
         recordProxyTeamEvent({ resourceKey: p.resource_key ?? `proxy:${p.id}`, proxyId: p.id, nodeId: p.node_id, teamId: p.team_id,
           event: "resupplied", reason: `operator supplied this unused proxy again (was: ${reason}); old row dropped, re-added as new on node ${nodeId}` });
+        // Other nodes that used the row (its home and its shares) keep using the re-added row as shares (2026-11-08).
+        const users = new Set([p.node_id, ...all<{ node_id: string }>("SELECT node_id FROM node_proxy_shares WHERE proxy_id = ?", p.id).map((r) => r.node_id)]);
+        users.delete(nodeId);
         run("DELETE FROM node_proxy_assignments WHERE proxy_id = ?", p.id);
+        run("DELETE FROM node_proxy_shares WHERE proxy_id = ?", p.id);
         run("DELETE FROM node_proxies WHERE id = ?", p.id);
-        if (p.node_id !== nodeId) opts.push?.(p.node_id);
+        reshare = [...users];
         hit = undefined; // fall through to the insert below
       }
     }
@@ -593,7 +729,7 @@ export function resolveSuppliedProxy(nodeId: string, raw: string, opts: {
   const display = describeProxy(parsed);
   const base = { parsed: { scheme: parsed.scheme, host: parsed.host, port: parsed.port, username: parsed.username, display } };
   const snapshot = (id: string, owner: string, existed: boolean, added: boolean, pushed: boolean): SuppliedProxyResult => {
-    const p = one<IsolatedProxy>("SELECT * FROM node_proxies WHERE id=? AND node_id=?", id, owner)!;
+    const p = one<IsolatedProxy>("SELECT * FROM node_proxies WHERE id=?", id)!;
     const q = proxyQuarantine(p.id, p.resource_key);
     const occ = p.resource_key ? proxyOccupancy(p.resource_key) : { bound: 0, reserved: 0, total: 0 };
     const reason = teamIncompatibleReason(p, teamId);
@@ -603,18 +739,34 @@ export function resolveSuppliedProxy(nodeId: string, raw: string, opts: {
       const stored = parseProxyInput(decryptString(one<{ url_enc: string }>("SELECT url_enc FROM node_proxies WHERE id=?", p.id)!.url_enc));
       if (stored) shown = { scheme: stored.scheme, host: stored.host, port: stored.port, username: stored.username, display: describeProxy(stored) };
     } catch { /* unreadable ciphertext: keep the input's reading */ }
-    return { ...base, parsed: shown, proxyId: p.id, nodeId: owner, existed, added, pushed, reset, status: p.status, lastError: p.last_error ?? null,
+    return { ...base, parsed: shown, proxyId: p.id, nodeId, homeNodeId: owner, homeNodeName: nodeName(owner), shared: owner !== nodeId,
+      carriers: proxyCarriers(p.id, !!opts.includeTeams), existed, added, pushed, reset, status: p.status, lastError: p.last_error ?? null,
       exitIp: p.exit_ip, country: (p as IsolatedProxy & { exit_country?: string | null }).exit_country ?? null,
       quarantined: q.quarantined, quarantineReason: q.reason, boundAccounts: occ.bound, reservedAccounts: occ.reserved,
       blocked: reason ?? (occ.total >= exitCap() ? "full" : null) };
   };
-  if (hit) return snapshot(hit.id, hit.node_id, true, false, false);
+  if (hit) {
+    if (hit.node_id !== nodeId && !opts.dryRun && !isSharedInto(nodeId, hit.id)) {
+      // Known elsewhere: share it into the requested node and push that node's pool so it probes the exit.
+      addShares(nodeId, [{ input: { url: canonical }, homeNodeId: hit.node_id, existed: false }], "supplied for onboarding");
+      const pushed = !!opts.push?.(nodeId);
+      return snapshot(hit.id, hit.node_id, true, false, pushed);
+    }
+    return snapshot(hit.id, hit.node_id, true, false, false);
+  }
   if (opts.dryRun) {
-    return { ...base, proxyId: null, nodeId: null, existed: false, added: false, pushed: false, reset: false, status: null, lastError: null, exitIp: null,
-      country: null, quarantined: false, quarantineReason: null, boundAccounts: 0, reservedAccounts: 0, blocked: "not_in_pool" };
+    return { ...base, proxyId: null, nodeId: null, homeNodeId: null, homeNodeName: null, shared: false, carriers: [], existed: false, added: false, pushed: false,
+      reset: false, status: null, lastError: null, exitIp: null, country: null, quarantined: false, quarantineReason: null, boundAccounts: 0, reservedAccounts: 0, blocked: "not_in_pool" };
   }
   const res = addNodeProxies(nodeId, [{ url: canonical, label: opts.label ?? "supplied", group: opts.group ?? "supplied" }]);
   const id = proxyIdFromUrl(canonical);
+  if (reshare.length) {
+    // The reset dropped the old row; the nodes that used it get the new row as shares and a fresh pool push.
+    for (const n of reshare) {
+      run("INSERT OR IGNORE INTO node_proxy_shares (proxy_id, node_id) VALUES (?, ?)", id, n);
+      opts.push?.(n);
+    }
+  }
   const pushed = res.added > 0 && !!opts.push?.(nodeId);
   return snapshot(id, nodeId, res.added === 0, res.added > 0, pushed);
 }
@@ -643,7 +795,9 @@ export function claimTeamProxy(proxyId: string, teamId: string, accountId: strin
   // binding off (2026-11-06): the first organization tag stays on the row (display / older node bundles); accounts of
   // other organizations are listed through nodeProxyConfig's accounts-only policy.
   if (orgBindingEnforced() || !p.team_id) run("UPDATE node_proxies SET team_id=? WHERE id=? AND isolation_version=1", teamId, p.id);
-  recordProxyTeamEvent({ resourceKey: p.resource_key, proxyId:p.id,nodeId:p.node_id,teamId,accountId,jobId,event:"account_bound",
+  // The event's node is the node that carries the account (its home node for an own row, the sharing node otherwise; 2026-11-08).
+  const accountNode = one<{ node_id: string | null }>("SELECT node_id FROM accounts WHERE id=?", accountId)?.node_id ?? p.node_id;
+  recordProxyTeamEvent({ resourceKey: p.resource_key, proxyId:p.id,nodeId:accountNode,teamId,accountId,jobId,event:"account_bound",
     actorId:job.requester_id,reason:proxyOccupancy(p.resource_key,jobId).total>=2?"third slot: no normal capacity":"normal account slot" });
 }
 
@@ -746,9 +900,7 @@ export function proxyQuarantine(proxyId: string, resourceKey: string | null): { 
  * decision in the event history. Returns false when nothing was active.
  */
 export function unquarantineProxy(nodeId: string, proxyId: string, actorId: string | null): boolean {
-  const p = one<{ id: string; resource_key: string | null; team_id: string | null }>(
-    "SELECT id, resource_key, team_id FROM node_proxies WHERE id=? AND node_id=?", proxyId, nodeId,
-  );
+  const p = poolRow(nodeId, proxyId);
   if (!p) throw new ProxyInputError("proxy_not_found");
   const keys = [`proxy:${p.id}`, ...(p.resource_key ? [p.resource_key] : [])];
   return tx(() => {
@@ -761,9 +913,10 @@ export function unquarantineProxy(nodeId: string, proxyId: string, actorId: stri
   });
 }
 
-export function listNodeProxies(nodeId: string) {
+export function listNodeProxies(nodeId: string, opts: { includeTeams?: boolean } = { includeTeams: true }) {
   const rows = all<{
     id: string;
+    node_id: string;
     url_enc: string;
     label: string | null;
     status: string;
@@ -775,10 +928,10 @@ export function listNodeProxies(nodeId: string) {
     cooldown_until: string | null;
     cooldown_reason: string | null;
   }>(
-    `SELECT p.id, p.url_enc, p.label, p.status, p.last_check_at, p.last_error, p.created_at, p.cooldown_until, p.cooldown_reason,p.team_id,p.exit_ip,p.resource_key,p.exit_country,p.group_name,
-            (SELECT COUNT(*) FROM node_proxy_assignments a WHERE a.node_id = p.node_id AND a.proxy_id = p.id) AS assigned
-     FROM node_proxies p WHERE p.node_id = ? ORDER BY p.created_at, p.id`,
-    nodeId,
+    `SELECT p.id, p.node_id, p.url_enc, p.label, p.status, p.last_check_at, p.last_error, p.created_at, p.cooldown_until, p.cooldown_reason,p.team_id,p.exit_ip,p.resource_key,p.exit_country,p.group_name,
+            (SELECT COUNT(*) FROM node_proxy_assignments a WHERE a.node_id = ? AND a.proxy_id = p.id) AS assigned
+     FROM node_proxies p WHERE ${PROXY_IN_POOL_SQL} ORDER BY p.created_at, p.id`,
+    nodeId, nodeId, nodeId,
   );
   const now = nowIso();
   return rows.map((r) => {
@@ -806,6 +959,8 @@ export function listNodeProxies(nodeId: string) {
       overflowSlots:Math.max(0,3-(r.resource_key?proxyOccupancy(r.resource_key).total:3)),
       teamId:r.team_id,teamName:r.team_id?one<{name:string|null}>("SELECT name FROM upstream_teams WHERE id=?",r.team_id)?.name??null:null,
       exitIp:r.exit_ip,resourceKey:r.resource_key,
+      ...shareInfo(nodeId, r),
+      carriers: proxyCarriers(r.id, opts.includeTeams !== false),
       cooldownUntil: r.cooldown_until && r.cooldown_until > now ? r.cooldown_until : null,
       cooldownReason: r.cooldown_until && r.cooldown_until > now ? r.cooldown_reason : null,
       createdAt: r.created_at,
@@ -815,7 +970,7 @@ export function listNodeProxies(nodeId: string) {
 
 /** Plaintext URLs of a node's pool (for the WS push after deploy). */
 export function nodeProxyUrls(nodeId: string): string[] {
-  const rows = all<{ url_enc: string }>("SELECT url_enc FROM node_proxies WHERE node_id = ?", nodeId);
+  const rows = all<{ url_enc: string }>(`SELECT p.url_enc FROM node_proxies p WHERE ${PROXY_IN_POOL_SQL} ORDER BY p.created_at, p.id`, nodeId, nodeId);
   const out: string[] = [];
   for (const r of rows) {
     try {
@@ -834,7 +989,7 @@ export function nodeProxyConfig(nodeId: string): {
   const proxyTeams: Record<string,string> = {};
   const proxyAccounts: Record<string,string[]> = {};
   const enforce = orgBindingEnforced();
-  for (const p of all<IsolatedProxy>("SELECT * FROM node_proxies WHERE node_id=? AND isolation_version=1",nodeId)) {
+  for (const p of poolRows(nodeId).filter((r) => r.isolation_version === 1)) {
     proxyTeams[p.id]=p.team_id??`unassigned:${p.id}`;
     proxyAccounts[p.id]=[];
     if(!p.resource_key || quarantineActive(p.resource_key,`proxy:${p.id}`))continue;
@@ -864,8 +1019,8 @@ export function nodeProxyConfig(nodeId: string): {
  * status only — userinfo never leaves this layer. freeOnly keeps live unbound
  * proxies, oldest successful probe first (the auto-assignment order, §6.1).
  */
-export function listProxiesForPicker(nodeId: string, freeOnly: boolean) {
-  return all<IsolatedProxy & {url_enc:string;label:string|null}>("SELECT * FROM node_proxies WHERE node_id=? ORDER BY last_check_at,id",nodeId)
+export function listProxiesForPicker(nodeId: string, freeOnly: boolean, opts: { includeTeams?: boolean } = {}) {
+  return poolRows(nodeId, "p.last_check_at, p.id")
     .map((p)=>{
       const slots=p.resource_key ? proxyOccupancy(p.resource_key) : {bound:0,reserved:0,total:0};
       let host:string|null=null;let port:number|null=null;
@@ -875,6 +1030,7 @@ export function listProxiesForPicker(nodeId: string, freeOnly: boolean) {
         boundAccounts:slots.bound,reservedAccounts:slots.reserved,
         normalSlots:Math.max(0,2-slots.total),overflowSlots:Math.max(0,3-slots.total),
         exitIp:p.exit_ip,resourceKey:p.resource_key,country:p.exit_country??null,
+        ...shareInfo(nodeId, p), carriers: proxyCarriers(p.id, !!opts.includeTeams),
         usable:p.isolation_version===1 && p.status==='live' && !!p.resource_key &&
           !quarantineActive(p.resource_key,`proxy:${p.id}`) &&
           (!p.cooldown_until || p.cooldown_until<=nowIso()) && slots.total<exitCap()};

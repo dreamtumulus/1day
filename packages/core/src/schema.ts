@@ -319,6 +319,15 @@ CREATE TABLE node_proxies (
   created_at TEXT NOT NULL DEFAULT (${SQL_NOW})
 );
 CREATE INDEX idx_node_proxies_node ON node_proxies(node_id);
+-- migration 40 (2026-11-08, docs/onboarding.md §1 原则 8): a pool row lives on its home node (node_proxies.node_id) and may be
+-- shared into other nodes' pools; the exit's capacity is one global count whichever node uses it.
+CREATE TABLE node_proxy_shares (
+  proxy_id TEXT NOT NULL REFERENCES node_proxies(id) ON DELETE CASCADE,
+  node_id TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (${SQL_NOW}),
+  PRIMARY KEY (proxy_id, node_id)
+);
+CREATE INDEX idx_node_proxy_shares_node ON node_proxy_shares(node_id);
 
 -- Account onboarding jobs (docs/onboarding.md §5): async authorize-and-import
 -- pipeline state. payload_enc holds the sessionKey / PKCE verifier+state

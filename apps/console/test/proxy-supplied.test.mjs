@@ -66,17 +66,23 @@ test("existing proxy is reused whatever the spelling, never a failure", async ()
   assert.equal(resolveTeamProxy("sp-node-a", TEAM, knownId).id, knownId);
 });
 
-test("a proxy known on another node is answered with that node", async () => {
-  // the admin may onboard anywhere: the row's node comes back so the form can switch
+test("a proxy known on another node is shared into the requested node (2026-11-08); the home row stays", async () => {
   const r = await admin("POST", "/api/admin/accounts/onboard/proxy", { nodeId: "sp-node-a", proxy: "198.51.100.77:1080:bob:pw" });
   assert.equal(r.status, 200);
-  assert.equal(r.data.nodeId, "sp-node-x");
+  assert.equal(r.data.nodeId, "sp-node-a", "no node switch");
+  assert.equal(r.data.homeNodeId, "sp-node-x");
+  assert.equal(r.data.shared, true);
   assert.equal(r.data.existed, true);
-  // a provider may not touch another provider's pool
+  assert.equal(one("SELECT COUNT(*) n FROM node_proxy_shares WHERE node_id='sp-node-a'").n, 1);
+  assert.equal(one("SELECT node_id FROM node_proxies WHERE id=?", r.data.proxyId).node_id, "sp-node-x", "home row untouched");
+  // a provider supplying the same address for their own node gets the same share (they typed the address themselves)
   const p = await provider("POST", "/api/provider/accounts/onboard/proxy", { nodeId: "sp-node-a", proxy: "198.51.100.77:1080:bob:pw" });
-  assert.equal(p.status, 400);
-  assert.equal(p.error?.code ?? p.code, "proxy_on_other_node");
-  assert.equal(one("SELECT COUNT(*) n FROM node_proxies WHERE node_id='sp-node-a'").n, 1);
+  assert.equal(p.status, 200);
+  assert.equal(p.data.shared, true);
+  // ...but may not target a node that is not theirs
+  const x = await provider("POST", "/api/provider/accounts/onboard/proxy", { nodeId: "sp-node-x", proxy: "198.51.100.77:1080:bob:pw" });
+  assert.equal(x.status, 404);
+  assert.equal(one("SELECT COUNT(*) n FROM node_proxies WHERE node_id='sp-node-a'").n, 1, "no home row added to sp-node-a");
 });
 
 test("dry run parses and looks up without writing", async () => {

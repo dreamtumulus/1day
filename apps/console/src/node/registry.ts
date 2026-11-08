@@ -1,7 +1,7 @@
 import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { WebSocketServer, type WebSocket } from "ws";
 import { all, boundProxyDown, decryptString, ensureDeviceId, isConversationGenerationActive, nowIso, one, run, sha256Hex, type AccountRow, freezeAccountsOnProxy, freezeAccountForProxy, recordProxyTeamEvent } from "@1dayapi/core";
-import { nodeProxyConfig, recordNodeProxyExit } from "./proxies.js";
+import { nodeProxyConfig, recordNodeProxyExit, NODE_PROXIES_IN_POOL_SQL, PROXY_IN_POOL_SQL } from "./proxies.js";
 import { isTrustedExecutionNode } from "./trust.js";
 
 export interface IsolationContext { teamId: string; conversationId: string; generation: number }
@@ -566,14 +566,16 @@ function recordProxyHealth(nodeId: string, msg: Record<string, unknown>): void {
         // last known live/dead verdict until the node re-probes: flipping every
         // bound account to "proxy unknown" on each node restart would take them
         // all out of scheduling for the whole probe pass.
-        run("UPDATE node_proxies SET status = 'unknown' WHERE node_id = ? AND id = ? AND isolation_version=1 AND status NOT IN ('live', 'dead')", nodeId, id.slice(0, 40));
+        run(`UPDATE node_proxies SET status = 'unknown' WHERE ${NODE_PROXIES_IN_POOL_SQL} AND id = ? AND isolation_version=1 AND status NOT IN ('live', 'dead')`, nodeId, nodeId, id.slice(0, 40));
         continue;
       }
+      // A shared proxy (2026-11-08) is probed by every node that holds it; each verdict is written to the one row.
       run(
-        "UPDATE node_proxies SET status = ?, last_check_at = ?, last_error = ? WHERE node_id = ? AND id = ? AND isolation_version=1",
+        `UPDATE node_proxies SET status = ?, last_check_at = ?, last_error = ? WHERE ${NODE_PROXIES_IN_POOL_SQL} AND id = ? AND isolation_version=1`,
         live ? "live" : "dead",
         now,
         typeof err === "string" && err ? err.slice(0, 300) : null,
+        nodeId,
         nodeId,
         id.slice(0, 40),
       );
@@ -583,7 +585,7 @@ function recordProxyHealth(nodeId: string, msg: Record<string, unknown>): void {
         const frozen = freezeAccountsOnProxy(id.slice(0, 40), `node ${nodeId} reported the bound proxy dead${typeof err === "string" && err ? `: ${err.slice(0, 200)}` : ""}`);
         if (frozen.length) console.warn(`[registry] proxy ${id.slice(0, 12)} on ${nodeId} dead → ${frozen.length} account(s) frozen (proxy_down): ${frozen.join(",")}`);
       }
-      const isolated = one<{ exit_ip: string | null }>("SELECT exit_ip FROM node_proxies WHERE node_id=? AND id=? AND isolation_version=1", nodeId, id);
+      const isolated = one<{ exit_ip: string | null }>(`SELECT exit_ip FROM node_proxies WHERE ${NODE_PROXIES_IN_POOL_SQL} AND id=? AND isolation_version=1`, nodeId, nodeId, id);
       if (isolated && live === true) {
         const ip = (p as Record<string, unknown>).exitIp;
         if (typeof ip !== "string" || !ip) {
@@ -601,7 +603,7 @@ function recordProxyHealth(nodeId: string, msg: Record<string, unknown>): void {
         if (!accepted || isolated.exit_ip !== ip) pushNeeded = true;
         const country = (p as Record<string, unknown>).exitCountry;
         if (typeof country === "string" && /^[A-Z]{2}$/.test(country)) {
-          run("UPDATE node_proxies SET exit_country = ? WHERE node_id = ? AND id = ? AND (exit_country IS NULL OR exit_country <> ?)", country, nodeId, id.slice(0, 40), country);
+          run(`UPDATE node_proxies SET exit_country = ? WHERE ${NODE_PROXIES_IN_POOL_SQL} AND id = ? AND (exit_country IS NULL OR exit_country <> ?)`, country, nodeId, nodeId, id.slice(0, 40), country);
         }
       }
     }
@@ -964,7 +966,7 @@ export async function openEgressOnNode(nodeId: string, proxyId: string, bindingI
   if (!conn || signal?.aborted) return null;
   if (teamId) {
     const policy = nodeProxyConfig(nodeId);
-    if (!one("SELECT 1 FROM node_proxies WHERE id=? AND node_id=? AND status='live' AND isolation_version=1", proxyId, nodeId)) return null;
+    if (!one(`SELECT 1 FROM node_proxies WHERE id=? AND ${NODE_PROXIES_IN_POOL_SQL} AND status='live' AND isolation_version=1`, proxyId, nodeId, nodeId)) return null;
     if (!conn.capabilities?.includes("team_isolation_v1") || (conn.runtimeTeamId && conn.runtimeTeamId !== teamId) ||
       (policy.proxyTeamBinding !== "accounts_only" && policy.proxyTeams[proxyId] !== teamId) || !policy.proxyAccounts[proxyId]?.includes(bindingId)) return null;
   } else if (conn.runtimeTeamId || nodeProxyConfig(nodeId).proxyTeams[proxyId]) return null;
@@ -1002,9 +1004,10 @@ export async function openCleanupEgress(nodeId: string, proxyId: string, account
   if (!node) return null;
   const conn = await waitForNodeConn(node.provider_id, nodeId);
   if (!conn || !conn.capabilities?.includes("team_isolation_v1") || (conn.runtimeTeamId && conn.runtimeTeamId !== teamId)) return null;
+  // The account_bound event carries the node of the account (home or sharing node, 2026-11-08), so match it on `nodeId`.
   if (!one(`SELECT 1 FROM node_proxies p JOIN proxy_team_claims c ON c.resource_key=p.resource_key AND c.team_id=p.team_id
-    JOIN proxy_team_events e ON e.proxy_id=p.id AND e.team_id=p.team_id AND e.node_id=p.node_id
-    WHERE p.id=? AND p.node_id=? AND p.team_id=? AND p.isolation_version=1 AND p.status='live' AND e.account_id=? AND e.event='account_bound'`, proxyId, nodeId, teamId, accountId)) return null;
+    JOIN proxy_team_events e ON e.proxy_id=p.id AND e.team_id=p.team_id AND e.node_id=?
+    WHERE p.id=? AND ${PROXY_IN_POOL_SQL} AND p.team_id=? AND p.isolation_version=1 AND p.status='live' AND e.account_id=? AND e.event='account_bound'`, nodeId, proxyId, nodeId, nodeId, teamId, accountId)) return null;
   const sessionId = `tun_${randomUUID()}`;
   const pending = awaitOpen(conn, sessionId);
   const opened = registerOpened(conn, sessionId, "http_egress", accountId);

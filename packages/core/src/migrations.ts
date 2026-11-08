@@ -325,6 +325,7 @@ const MIGRATIONS: Array<{ version: number; up: (d: DatabaseSync, log: Log) => vo
   { version: 37, up: migration37 },
   { version: 38, up: migration38 },
   { version: 39, up: migration39 },
+  { version: 40, up: migration40 },
 ];
 
 // 上号员令牌（独立鉴权的上号站点 /onboard）：admin 签发，绑定目标节点；
@@ -1070,4 +1071,18 @@ function migration38(d: DatabaseSync, log: Log): void {
 function migration39(d: DatabaseSync, log: Log): void {
   addColumns(d, log, "usage_logs", [["upstream_retries", "INTEGER"]]);
   log("migration 39: usage_logs.upstream_retries");
+}
+
+// Operator rule 2026-11-08 (docs/onboarding.md §1 原则 8, X-44): one proxy may sit in several nodes' pools. The row stays on
+// its home node; a share grants another node its use. Nothing is backfilled: existing rows are home rows with no shares.
+function migration40(d: DatabaseSync, log: Log): void {
+  d.exec(`
+CREATE TABLE IF NOT EXISTS node_proxy_shares (
+  proxy_id TEXT NOT NULL REFERENCES node_proxies(id) ON DELETE CASCADE,
+  node_id TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+  PRIMARY KEY (proxy_id, node_id)
+);
+CREATE INDEX IF NOT EXISTS idx_node_proxy_shares_node ON node_proxy_shares(node_id);`);
+  log("migration 40: node_proxy_shares (cross-node proxy sharing)");
 }
