@@ -100,8 +100,11 @@ async function buildBundle(): Promise<BundleInfo> {
     const st = statSync(out);
     return { path: out, bytes: st.size, sha256: sha256File(out), signature };
   }
-  // Keep dist/ in sync with src/ before bundling.
-  await run("pnpm", ["--filter", "@1dayapi/provider-node", "build"], 180_000);
+  // Keep dist/ in sync with src/ before bundling. The repo's own tsc, not pnpm: under the console's service user
+  // corepack's pnpm shim was broken (2026-11-08: "Cannot find module .../corepack/v1/pnpm/12.18.0/bin/pnpm.cjs").
+  const tsc = [join(PROVIDER_NODE_DIR, "node_modules", ".bin", "tsc"), join(repoRoot, "node_modules", ".bin", "tsc")].find((p) => existsSync(p));
+  if (!tsc) throw new Error("tsc not found (apps/provider-node/node_modules/.bin/tsc): run pnpm install in the repo");
+  await run(process.execPath, [tsc, "-p", join(PROVIDER_NODE_DIR, "tsconfig.json")], 180_000);
   await run(
     bun,
     [

@@ -1,0 +1,29 @@
+Claude Code 2.1.319 (Linux native build) sends no x-claude-code-request-class header, so tap.js also recognises the main turn by a text the node appends to every main-turn system prompt (env ONEDAY_CC_TAP_MATCH), leaving out the quota probe, the title request and prompt suggestions.
+--- a/internal/claudetui/tap.js	2026-11-08 17:55:54.689374951 +0800
++++ b/internal/claudetui/tap.js	2026-11-08 17:55:54.719211044 +0800
+@@ -19,6 +19,11 @@
+ (() => {
+   const file = process.env.ONEDAY_CC_TAP;
+   const guard = process.env.ONEDAY_CC_GUARD;
++  // 1dayAPI: Claude Code 2.1.319 (Linux) sends no x-claude-code-request-class header, so the main turn's requests are
++  // told apart by a text the node appends to every main-turn system prompt (ONEDAY_CC_TAP_MATCH); side requests (the
++  // startup quota probe, the title) don't carry it, and a prompt-suggestion request is left out by its own marker.
++  const match = process.env.ONEDAY_CC_TAP_MATCH || "";
++  delete process.env.ONEDAY_CC_TAP_MATCH;
+   delete process.env.ONEDAY_CC_GUARD;
+   if (!file) return;
+   // none of it is handed on to what Claude Code runs, nor says it is here
+@@ -133,8 +138,12 @@
+       try {
+         const url = String((input && input.url) || input);
+         const headers = new Headers((init && init.headers) || (input && input.headers) || undefined);
++        const body = init && typeof init.body === "string" ? init.body : "";
++        const main =
++          headers.get("x-claude-code-request-class") === "main" ||
++          (match !== "" && body.indexOf(match) >= 0 && body.indexOf("[SUGGESTION MODE") < 0 && body.indexOf('"stream":true') >= 0);
+         if (
+-          headers.get("x-claude-code-request-class") === "main" &&
++          main &&
+           /\/v1\/messages(\?|$)/.test(url) &&
+           res.body &&
+           /^text\/event-stream/.test(res.headers.get("content-type") || "")

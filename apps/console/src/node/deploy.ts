@@ -253,6 +253,32 @@ else
   WANTED=default.target
   SYSCTL="systemctl --user"
 fi
+# Environment lines belong in [Service]: appended after [Install] (as until 2026-11-08) systemd ignored them, and the
+# node ran with the defaults (the CCR instance tried port 16889 and the default worker root).
+UNIT_ENV=""
+if [ "$(id -u)" -eq 0 ]; then
+  UNIT_ENV="$UNIT_ENV
+Environment=CC_WORKER_MACHINE_IDENTITY=1"
+fi
+# Canonical worker (spec WP2; default for every key since 2026-11-05): the node declares canonical_v1 only with this env.
+UNIT_ENV="$UNIT_ENV
+Environment=CC_WORKER_CANONICAL=1"
+if [ -n "$NODE_INSTANCE" ]; then
+  # a named instance names every path of its own (the default node keeps the historical defaults untouched)
+  UNIT_ENV="$UNIT_ENV
+Environment=PROVIDER_CONFIG_PATH=$CFG_DIR/config.json
+Environment=PROVIDER_CONSOLE_PORT=$NODE_CONSOLE_PORT
+Environment=CC_WORKER_ROOT=/var/lib/1dayapi-cc-worker$NODE_SUFFIX
+Environment=CC_WORKER_CLAUDE_BIN=$CLAUDE_BIN"
+elif [ "$CLAUDE_VERSION" != "2.1.312" ]; then
+  UNIT_ENV="$UNIT_ENV
+Environment=CC_WORKER_CLAUDE_BIN=$CLAUDE_BIN"
+fi
+if [ "$NODE_TUI" = "1" ]; then
+  UNIT_ENV="$UNIT_ENV
+Environment=CC_WORKER_TUI=1
+Environment=CC_WORKER_TUI_SHIM=/opt/cc-tui-shim/cc-tui-shim"
+fi
 cat > "$UNIT" <<EOF
 [Unit]
 Description=1DayAPI provider node$NODE_SUFFIX
@@ -262,31 +288,11 @@ Wants=network-online.target
 [Service]
 ExecStart=$HOME/.bun/bin/bun $APP_DIR/node-bundle.js
 Restart=always
-RestartSec=3
+RestartSec=3$UNIT_ENV
 
 [Install]
 WantedBy=$WANTED
 EOF
-if [ "$(id -u)" -eq 0 ]; then
-  echo "Environment=CC_WORKER_MACHINE_IDENTITY=1" >> "$UNIT"
-fi
-# Canonical worker (spec WP2; default for every key since 2026-11-05): the node declares canonical_v1 only with this env.
-echo "Environment=CC_WORKER_CANONICAL=1" >> "$UNIT"
-if [ -n "$NODE_INSTANCE" ]; then
-  # a named instance names every path of its own (the default node keeps the historical defaults untouched)
-  {
-    echo "Environment=PROVIDER_CONFIG_PATH=$CFG_DIR/config.json"
-    echo "Environment=PROVIDER_CONSOLE_PORT=$NODE_CONSOLE_PORT"
-    echo "Environment=CC_WORKER_ROOT=/var/lib/1dayapi-cc-worker$NODE_SUFFIX"
-    echo "Environment=CC_WORKER_CLAUDE_BIN=$CLAUDE_BIN"
-  } >> "$UNIT"
-elif [ "$CLAUDE_VERSION" != "2.1.312" ]; then
-  echo "Environment=CC_WORKER_CLAUDE_BIN=$CLAUDE_BIN" >> "$UNIT"
-fi
-if [ "$NODE_TUI" = "1" ]; then
-  echo "Environment=CC_WORKER_TUI=1" >> "$UNIT"
-  echo "Environment=CC_WORKER_TUI_SHIM=/opt/cc-tui-shim/cc-tui-shim" >> "$UNIT"
-fi
 if ! $SYSCTL daemon-reload || ! $SYSCTL enable --now "$UNIT_NAME"; then
   echo "[deploy] WARN: systemd unavailable; starting node with nohup"
   if [ "$(id -u)" -eq 0 ]; then

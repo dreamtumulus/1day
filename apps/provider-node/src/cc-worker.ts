@@ -198,6 +198,9 @@ export interface CcWorkerManagerOptions {
   log?: (msg: string) => void;
 }
 
+/** Text present in every canonical system prompt the gateway appends (CANONICAL_ENV_NOTE / _V2 both open with it). */
+export const TUI_TAP_MATCH = "Environment note:";
+
 export class CcWorkerManager {
   private readonly isolation: IsolationGuard;
   private opts: CcWorkerManagerOptions;
@@ -1132,6 +1135,9 @@ export class CcWorkerManager {
       if (tui) {
         env.ONEDAY_CC_TUI_TRUST = "1";
         if (mcpConfigFile) env.ONEDAY_TUI_LISTED = path.join(workDir, "mcp-listed");
+        // The tap tells the main turn's requests apart by the environment note the gateway appends to every canonical
+        // system prompt (CANONICAL_ENV_NOTE*, worker.ts); Claude Code 2.1.319 sends no request-class header.
+        env.ONEDAY_CC_TAP_MATCH = TUI_TAP_MATCH;
       }
       const program = tui ? this.tuiShim : this.claudeBin;
       const programArgs = tui ? [this.claudeBin, ...args] : args;
