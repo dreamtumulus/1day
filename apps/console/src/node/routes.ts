@@ -20,6 +20,7 @@ import { enqueueArchive } from "./archive-cleanup.js";
 import { importOAuthCredential } from "../onboard/jobs.js";
 import { releaseNodeResources } from "./proxies.js";
 import { ensureBundle } from "./bundle.js";
+import { SHIM_SOURCE, shimPath } from "./deploy.js";
 import {
   attachNode,
   closeTunnel,
@@ -450,6 +451,24 @@ export function registerNodeRoutes(app: FastifyInstance): void {
     reply.header("content-disposition", 'attachment; filename="node-bundle.js"');
     reply.header("x-bundle-sha256", bundle.sha256);
     return reply.send(createReadStream(bundle.path));
+  });
+
+  // TUI shim download (docs/tui-worker-2026-11-08.md): the static cc-tui-shim binary built by
+  // third_party/magpie-claudetui/sync.sh, handed out under the same auth as the bundle (a one-time code of its own).
+  app.get("/internal/provider/cc-tui-shim", async (request, reply) => {
+    const { code } = request.query as { code?: string };
+    const internalOk = isLoopback(request) && verifyInternalToken(request.headers[INTERNAL_HEADER]);
+    if (!internalOk) {
+      if (!code) return sendError(reply, 401, "invalid_binding_code", "A valid binding code is required");
+      const now = nowIso();
+      const claim = run("UPDATE node_bind_codes SET used_at = ? WHERE code = ? AND used_at IS NULL AND expires_at > ?", now, code, now);
+      if (claim.changes === 0) return sendError(reply, 401, "invalid_binding_code", "Binding code is invalid, expired or already used");
+    }
+    const shim = shimPath();
+    if (!shim) return sendError(reply, 503, "shim_unavailable", `${SHIM_SOURCE} is not built on this server`);
+    reply.header("content-type", "application/octet-stream");
+    reply.header("content-disposition", 'attachment; filename="cc-tui-shim"');
+    return reply.send(createReadStream(shim));
   });
 }
 

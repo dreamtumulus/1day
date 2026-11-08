@@ -301,7 +301,7 @@ export class PlatformBridge {
         nodeId: id.nodeId,
         providerId: id.providerId,
         nodeVersion: NODE_VERSION,
-        capabilities: [...PROTOCOL_CAPABILITIES, ...(process.env.CC_WORKER_TEAM_UIDS === "1" || (process.env.PROVIDER_TEAM_ID && process.getuid?.() !== 0) ? ["team_uid_isolation_v1"] : []), ...(this.workerManager.canonicalEnabled ? ["canonical_v1"] : [])],
+        capabilities: [...PROTOCOL_CAPABILITIES, ...(process.env.CC_WORKER_TEAM_UIDS === "1" || (process.env.PROVIDER_TEAM_ID && process.getuid?.() !== 0) ? ["team_uid_isolation_v1"] : []), ...(this.workerManager.canonicalEnabled ? ["canonical_v1"] : []), ...(this.workerManager.tuiEnabled ? ["tui_v1"] : [])],
         ...(process.env.PROVIDER_TEAM_ID ? { runtimeTeamId: process.env.PROVIDER_TEAM_ID } : {}),
         isolatedContexts: [...this.workerManager.isolatedContexts(), ...this.egressManager.isolatedContexts()],
         acceptingSessions: !this.draining,

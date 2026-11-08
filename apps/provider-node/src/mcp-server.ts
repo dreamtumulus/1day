@@ -14,6 +14,7 @@
 // path + random token, and a session's tool list is fixed for its lifetime.
 
 import crypto from "node:crypto";
+import fs from "node:fs";
 
 type Json = Record<string, unknown>;
 
@@ -43,6 +44,12 @@ interface McpSession {
   pending: Map<string, PendingToolCall>;
   /** Observer: a new call is waiting for the client's result. */
   onCall: (call: PendingToolCall) => void;
+  /**
+   * TUI worker: touched once Claude Code has listed this session's tools. The interactive mode connects its MCP
+   * servers beside its prompt, and a message sent before the list came in was answered without the caller's tools
+   * (magpie's finding); the shim waits for this file before it pastes the first message.
+   */
+  listedFile?: string;
 }
 
 const PROTOCOL_VERSION = "2025-03-26";
@@ -78,9 +85,9 @@ export class McpServer {
   }
 
   /** Register a session's tool set; returns the URL to put in the process's mcp-config. */
-  register(sid: string, tools: McpToolDef[], onCall: (call: PendingToolCall) => void): string {
+  register(sid: string, tools: McpToolDef[], onCall: (call: PendingToolCall) => void, opts?: { listedFile?: string }): string {
     const token = crypto.randomBytes(16).toString("hex");
-    this.sessions.set(sid, { sid, token, tools, pending: new Map(), onCall });
+    this.sessions.set(sid, { sid, token, tools, pending: new Map(), onCall, ...(opts?.listedFile ? { listedFile: opts.listedFile } : {}) });
     return `http://127.0.0.1:${this.port}/mcp/${encodeURIComponent(sid)}/${token}`;
   }
 
@@ -205,6 +212,13 @@ export class McpServer {
       case "ping":
         return { jsonrpc: "2.0", id, result: {} };
       case "tools/list":
+        if (s.listedFile) {
+          try {
+            fs.writeFileSync(s.listedFile, "", { mode: 0o644 });
+          } catch {
+            /* the shim then waits ReadyWait and reports the tools unlisted */
+          }
+        }
         return {
           jsonrpc: "2.0",
           id,

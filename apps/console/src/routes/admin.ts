@@ -1673,12 +1673,22 @@ export function registerAdminRoutes(app: FastifyInstance): void {
         bad("invalid_request", (err as Error).message);
       }
     }
+    // docs/tui-worker-2026-11-08.md: a second node instance on a host, optionally the TUI worker on a chosen Claude Code version
+    const instance = str(b, "instance", { max: 24 });
+    if (instance && !/^[a-z][a-z0-9-]{0,23}$/.test(instance)) bad("invalid_request", "instance must be a short lowercase name");
+    const consolePort = num(b, "consolePort", { int: true, min: 1024, max: 65535 });
+    const claudeVersion = str(b, "claudeVersion", { max: 20 });
+    if (claudeVersion && !/^\d+\.\d+\.\d+$/.test(claudeVersion)) bad("invalid_request", "claudeVersion must look like 2.1.312");
     return {
       providerId,
       adminId: req.user!.id,
       name: str(b, "name", { max: 120 }),
       proxies,
       platformHttpBase: deployBase(req),
+      ...(instance ? { instance } : {}),
+      ...(consolePort ? { consolePort } : {}),
+      ...(b.tui === true ? { tui: true } : {}),
+      ...(claudeVersion ? { claudeVersion } : {}),
     };
   };
 

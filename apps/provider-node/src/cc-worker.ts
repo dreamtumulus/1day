@@ -174,6 +174,15 @@ export interface CcWorkerManagerOptions {
   /** Canonical worker (spec WP2): accept `mode:"canonical"` opens. Env CC_WORKER_CANONICAL=1. Default off. */
   canonical?: boolean;
   /**
+   * TUI worker (docs/tui-worker-2026-11-08.md): canonical opens run Claude Code's *interactive* mode behind the
+   * cc-tui-shim (third_party/magpie-claudetui) instead of `claude -p`: the shim speaks -p's stream-json on its stdio and
+   * drives the real interactive binary in a pseudo-terminal, so the upstream sees entrypoint `cli` and the interactive
+   * request scaffold. Env CC_WORKER_TUI=1; the shim path from CC_WORKER_TUI_SHIM (default /opt/cc-tui-shim/cc-tui-shim).
+   * Legacy opens on such a node still run `-p`.
+   */
+  tui?: boolean;
+  tuiShim?: string;
+  /**
    * Root for per-account config dirs and per-session scratch dirs. When workers
    * are privilege-dropped this must be traversable by that user, so the default
    * moves out of the node's (0700, root-owned) data dir: env CC_WORKER_ROOT or
@@ -222,6 +231,9 @@ export class CcWorkerManager {
   readonly tools: string[];
   /** spec WP2: canonical opens accepted (env CC_WORKER_CANONICAL=1). */
   readonly canonicalEnabled: boolean;
+  /** TUI worker (interactive Claude Code behind cc-tui-shim) for canonical opens; implies canonicalEnabled. */
+  readonly tuiEnabled: boolean;
+  readonly tuiShim: string;
   readonly workerRoot: string;
   private readonly sessionsDir: string;
   private readonly teamUsers = new Map<string, RunAs>();
@@ -287,6 +299,8 @@ export class CcWorkerManager {
     const toolsEnv = process.env.CC_WORKER_TOOLS;
     this.tools = opts.tools ?? (toolsEnv ? toolsEnv.split(",").map((t) => t.trim()).filter(Boolean) : []);
     this.canonicalEnabled = opts.canonical ?? process.env.CC_WORKER_CANONICAL === "1";
+    this.tuiEnabled = (opts.tui ?? process.env.CC_WORKER_TUI === "1") && this.canonicalEnabled;
+    this.tuiShim = opts.tuiShim ?? process.env.CC_WORKER_TUI_SHIM ?? "/opt/cc-tui-shim/cc-tui-shim";
     this.workerRoot = opts.workerRoot ?? process.env.CC_WORKER_ROOT ?? (this.runAs ? "/var/lib/1dayapi-cc-worker" : opts.dataDir);
     fs.mkdirSync(this.workerRoot, { recursive: true, mode: 0o711 });
     fs.mkdirSync(path.join(this.workerRoot, "cc-accounts"), { recursive: true, mode: 0o711 });
@@ -393,7 +407,23 @@ export class CcWorkerManager {
         return { version: null, error: `self_test_failed: ${this.claudeBin} --version exited ${r.status} ${where}: ${tail || "(no stderr)"}` };
       }
       const out = r.stdout?.toString().trim() ?? "";
-      return out ? { version: out, error: null } : { version: null, error: `self_test_failed: ${this.claudeBin} --version printed nothing ${where}` };
+      if (!out) return { version: null, error: `self_test_failed: ${this.claudeBin} --version printed nothing ${where}` };
+      if (this.tuiEnabled) {
+        // The shim must be runnable under the same identity as the binary it will wrap (it is exec'd through the same launcher).
+        const s = spawnSync(this.machineRuntime?.launcher ?? this.tuiShim, [...(this.machineRuntime ? [this.tuiShim] : []), "--version"], {
+          stdio: ["ignore", "pipe", "pipe"],
+          timeout: 15_000,
+          cwd: dir,
+          ...(!this.machineRuntime && this.runAs ? { uid: this.runAs.uid, gid: this.runAs.gid } : {}),
+          env: { PATH: process.env.PATH ?? "", HOME: dir, TMPDIR: dir, ...machineEnv },
+        });
+        const shimOut = s.stdout?.toString().trim() ?? "";
+        if (s.error || s.status !== 0 || !shimOut.startsWith("cc-tui-shim")) {
+          return { version: null, error: `tui_shim_unusable: ${this.tuiShim} --version ${where}: ${s.error?.message ?? `exit ${s.status}`} ${(s.stderr?.toString() ?? "").trim().slice(0, 200)}` };
+        }
+        return { version: `${out} (${shimOut})`, error: null };
+      }
+      return { version: out, error: null };
     } catch (e) {
       return { version: null, error: `self_test_failed: ${(e as Error).message}` };
     } finally {
@@ -413,7 +443,7 @@ export class CcWorkerManager {
     active: number;
     queued: number;
     pool: { live: number; idle: number; busy: number; awaitingTools: number; maxLive: number; rssMb: number; evictions: Record<string, number> };
-    canonical: { enabled: boolean; profiles: string[] };
+    canonical: { enabled: boolean; profiles: string[]; tui: boolean };
   } {
     let busy = 0;
     let awaiting = 0;
@@ -430,7 +460,7 @@ export class CcWorkerManager {
       maxConcurrency: this.maxConcurrency,
       active: this.sessions.size,
       queued: this.queue.length,
-      canonical: { enabled: this.canonicalEnabled, profiles: this.canonicalEnabled && this.claudeVersion && /\d+\.\d+\.\d+/.test(this.claudeVersion) ? [`cc-${/\d+\.\d+\.\d+/.exec(this.claudeVersion)![0]}-restricted`] : [] },
+      canonical: { enabled: this.canonicalEnabled, profiles: this.canonicalEnabled && this.claudeVersion && /\d+\.\d+\.\d+/.test(this.claudeVersion) ? [`cc-${/\d+\.\d+\.\d+/.exec(this.claudeVersion)![0]}-restricted`] : [], tui: this.tuiEnabled },
       pool: { live: this.procs.size, idle: this.procs.size - busy - awaiting, busy, awaitingTools: awaiting, maxLive: this.maxLive, rssMb: Math.round(rss / 1048576), evictions: { ...this.evictions } },
     };
   }
@@ -965,7 +995,7 @@ export class CcWorkerManager {
         const url = this.mcp.register(mcpKey, nativeTools, (call) => {
           if (procRef) this.onToolCall(procRef, call);
           else this.onToolCallOneShot(session, call);
-        });
+        }, canonical && this.tuiEnabled ? { listedFile: path.join(workDir, "mcp-listed") } : undefined);
         mcpConfigFile = path.join(workDir, "mcp-config.json");
         fs.writeFileSync(mcpConfigFile, JSON.stringify({ mcpServers: { caller: { type: "http", url } } }), { mode: 0o600 });
         this.chownTree(workDir, identity);
@@ -1095,7 +1125,17 @@ export class CcWorkerManager {
       // Claude Code's own "continue from where you left off" turn never runs.
       if (typeof msg.maxTokens === "number" && msg.maxTokens > 0) env.CLAUDE_CODE_MAX_OUTPUT_TOKENS = String(Math.floor(msg.maxTokens));
       const machineEnv = this.machineRuntime ? machineEnvironment(msg.accountId, configDir, this.machineRuntime, identity) : {};
-      const child = spawn(this.machineRuntime?.launcher ?? this.claudeBin, this.machineRuntime ? [this.claudeBin, ...args] : args, {
+      // TUI worker: the shim wraps the binary and turns the -p argv into the interactive mode's (cc-tui-shim, vendored
+      // magpie claudetui). It answers the trust dialog itself (the cwd is the account's own), and waits for the node's MCP
+      // server to have listed the caller tools (the marker file) before it pastes the first message.
+      const tui = canonical && this.tuiEnabled;
+      if (tui) {
+        env.ONEDAY_CC_TUI_TRUST = "1";
+        if (mcpConfigFile) env.ONEDAY_TUI_LISTED = path.join(workDir, "mcp-listed");
+      }
+      const program = tui ? this.tuiShim : this.claudeBin;
+      const programArgs = tui ? [this.claudeBin, ...args] : args;
+      const child = spawn(this.machineRuntime?.launcher ?? program, this.machineRuntime ? [program, ...programArgs] : programArgs, {
         stdio: ["pipe", "pipe", "pipe"],
         detached: true, // own process group so the whole tree (MCP children, shells) can be killed
         cwd: cwdDir,

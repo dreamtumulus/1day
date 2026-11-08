@@ -1,0 +1,37 @@
+Two 1dayAPI behaviours on top of upstream: keep a --session-id the node already passed (never append a second one), and read the "tools listed" marker file from ONEDAY_TUI_LISTED (the node's caller MCP server is HTTP, not a stdio helper named in --mcp-config).
+--- a/internal/claudetui/tui.go	2026-11-08 17:26:57.468358092 +0800
++++ b/internal/claudetui/tui.go	2026-11-08 17:26:57.483331868 +0800
+@@ -150,14 +150,20 @@
+ 	}
+ 	args = interactiveArgs(pargs[len(wslArgs(wsl)):])
+ 	s := &shim{out: os.Stdout, changed: make(chan struct{}, 1), rowsCh: make(chan struct{}, 1), exited: make(chan struct{}), readDone: make(chan struct{}), wsl: wsl, listed: mcpListed(args)}
+-	resume := ""
++	// 1dayAPI: the node names the native session itself (--session-id), so an id already given is kept
++	resume, given := "", ""
+ 	for i, a := range args {
+ 		if a == "--resume" && i+1 < len(args) {
+ 			resume = args[i+1]
+ 		}
++		if a == "--session-id" && i+1 < len(args) {
++			given = args[i+1]
++		}
+ 	}
+ 	if resume != "" {
+ 		s.sid = resume
++	} else if given != "" {
++		s.sid = given
+ 	} else {
+ 		s.sid = newUUID()
+ 		args = append(args, "--session-id", s.sid)
+@@ -679,6 +685,11 @@
+ // --mcp-config of args, to write once Claude Code has listed its tools;
+ // "" when it isn't told one.
+ func mcpListed(args []string) string {
++	// 1dayAPI: the caller MCP server is an HTTP server inside the node, not a stdio helper named in --mcp-config;
++	// the node names the file it touches once Claude Code has listed the tools
++	if v := os.Getenv("ONEDAY_TUI_LISTED"); v != "" {
++		return v
++	}
+ 	for i, a := range args {
+ 		if a != "--mcp-config" || i+1 >= len(args) {
+ 			continue

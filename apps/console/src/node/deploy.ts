@@ -1,10 +1,10 @@
 import { spawn, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { copyFileSync, mkdirSync, mkdtempSync, openSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, openSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
-import { isoIn, nowIso, one, randomHex, run, sha256Hex } from "@1dayapi/core";
+import { isoIn, nowIso, one, randomHex, repoRoot, run, sha256Hex } from "@1dayapi/core";
 import { ensureBundle, findBun } from "./bundle.js";
 import { generateNodeSecret, isNodeOnline, pushProxies } from "./registry.js";
 import { replaceNodeProxies, type ProxyInput } from "./proxies.js";
@@ -37,10 +37,31 @@ interface DeployCommon {
   name?: string;
   proxies?: ProxyInput[];
   platformHttpBase: string; // e.g. http://127.0.0.1:8401 or https://api.1dayapi.com
+  /**
+   * Second node on a host that already runs one (docs/tui-worker-2026-11-08.md): unit `1dayapi-node-<instance>`,
+   * app dir `~/.1dayapi-node-<instance>`, config dir, worker root and console port of its own. Default: the host's one node.
+   */
+  instance?: string;
+  /** Local console port for the instance (PROVIDER_CONSOLE_PORT); the default node keeps 16889. */
+  consolePort?: number;
+  /** TUI worker: install cc-tui-shim beside the binary and start the node with CC_WORKER_TUI=1. */
+  tui?: boolean;
+  /** Claude Code version to install for this node (default 2.1.312, the platform's pinned worker version). */
+  claudeVersion?: string;
 }
+
+export const DEFAULT_CLAUDE_VERSION = "2.1.312";
+/** Where the deployed TUI shim lives on a node (the binary must be runnable by the unprivileged worker user). */
+export const SHIM_INSTALL_PATH = "/opt/cc-tui-shim/cc-tui-shim";
 
 const SSH_TIMEOUT_MS = 420_000; // bun + claude (~270 MB) + bundle on a fresh host
 const ONLINE_WAIT_MS = 30_000;
+
+/** The TUI shim as built by third_party/magpie-claudetui/sync.sh (a static Linux amd64 binary, not committed). */
+export const SHIM_SOURCE = join(repoRoot, "third_party", "magpie-claudetui", "dist", "cc-tui-shim");
+export function shimPath(): string | null {
+  return existsSync(SHIM_SOURCE) ? SHIM_SOURCE : null;
+}
 
 export class DeployError extends Error {}
 
@@ -108,13 +129,30 @@ export function buildRemoteScript(opts: {
   providerId: string;
   secret: string;
   wsUrl: string;
+  /** docs/tui-worker-2026-11-08.md: second instance on the host, TUI shim, Claude Code version. */
+  instance?: string;
+  consolePort?: number;
+  tui?: boolean;
+  shimUrl?: string;
+  claudeVersion?: string;
 }): string {
+  if (opts.instance && !/^[a-z][a-z0-9-]{0,23}$/.test(opts.instance)) throw new DeployError("instance must be a short lowercase name");
+  const version = opts.claudeVersion ?? DEFAULT_CLAUDE_VERSION;
+  if (!/^\d+\.\d+\.\d+$/.test(version)) throw new DeployError("claudeVersion must look like 2.1.312");
   const prelude = [
     `NODE_BUNDLE_URL=${sq(opts.bundleUrl)}`,
     `NODE_ID=${sq(opts.nodeId)}`,
     `NODE_PROVIDER_ID=${sq(opts.providerId)}`,
     `NODE_SECRET=${sq(opts.secret)}`,
     `NODE_WS_URL=${sq(opts.wsUrl)}`,
+    // "" = the host's default node (unit 1dayapi-node, /opt/claude, worker root /var/lib/1dayapi-cc-worker); a named
+    // instance keeps every path of its own so it coexists with the default node.
+    `NODE_INSTANCE=${sq(opts.instance ?? "")}`,
+    `NODE_SUFFIX=${sq(opts.instance ? `-${opts.instance}` : "")}`,
+    `NODE_CONSOLE_PORT=${sq(String(opts.consolePort ?? 16889))}`,
+    `NODE_TUI=${sq(opts.tui ? "1" : "0")}`,
+    `NODE_SHIM_URL=${sq(opts.shimUrl ?? "")}`,
+    `CLAUDE_VERSION=${sq(version)}`,
   ].join("\n");
   return `${prelude}
 set -euo pipefail
@@ -142,27 +180,42 @@ echo "[deploy] bun $(bun --version)"
 # /var/lib/1dayapi-cc-worker; the claude binary must live where that user can
 # execute it (not under /root/.bun). Missing any of this = the 2026-10-16
 # EACCES incident, so the same self-test the node runs at startup gates the deploy.
-CLAUDE_VERSION=2.1.312
+# A named instance (or a non-default version) installs into /opt/claude-<version>/ and names the binary to the node
+# (CC_WORKER_CLAUDE_BIN); the host's default node keeps /opt/claude/claude and the /usr/local/bin/claude link untouched.
+if [ -n "$NODE_INSTANCE" ] || [ "$CLAUDE_VERSION" != "2.1.312" ]; then CLAUDE_DIR="/opt/claude-$CLAUDE_VERSION"; else CLAUDE_DIR=/opt/claude; fi
+CLAUDE_BIN="$CLAUDE_DIR/claude"
 if [ "$(id -u)" -eq 0 ]; then
-  if ! [ -x /opt/claude/claude ] || ! /opt/claude/claude --version 2>/dev/null | grep -q "$CLAUDE_VERSION"; then
-    echo "[deploy] installing claude $CLAUDE_VERSION via bun"
-    bun add -g "@anthropic-ai/claude-code@$CLAUDE_VERSION" >/dev/null 2>&1 || echo "[deploy] WARN: claude install failed; cc_worker mode will be disabled on this node"
-    REAL="$(readlink -f "$HOME/.bun/bin/claude" 2>/dev/null || true)"
+  if ! [ -x "$CLAUDE_BIN" ] || ! "$CLAUDE_BIN" --version 2>/dev/null | grep -q "$CLAUDE_VERSION"; then
+    echo "[deploy] installing claude $CLAUDE_VERSION via bun into $CLAUDE_DIR"
+    STAGE="$(mktemp -d)"
+    # a scratch install: the host's own ~/.bun/bin/claude (another node's version) is never replaced
+    (cd "$STAGE" && bun add "@anthropic-ai/claude-code@$CLAUDE_VERSION" >/dev/null 2>&1) || echo "[deploy] WARN: claude install failed; cc_worker mode will be disabled on this node"
+    REAL="$(readlink -f "$STAGE/node_modules/.bin/claude" 2>/dev/null || true)"
     if [ -n "$REAL" ] && [ -x "$REAL" ]; then
-      mkdir -p /opt/claude && cp -f "$REAL" /opt/claude/claude && chmod 755 /opt/claude/claude
+      mkdir -p "$CLAUDE_DIR" && cp -f "$REAL" "$CLAUDE_BIN" && chmod 755 "$CLAUDE_BIN"
     fi
+    rm -rf "$STAGE"
   fi
-  if [ -x /opt/claude/claude ]; then
-    ln -sfn /opt/claude/claude /usr/local/bin/claude
-    echo "[deploy] claude $(/opt/claude/claude --version 2>/dev/null | head -1) at /opt/claude/claude"
+  if [ -x "$CLAUDE_BIN" ]; then
+    [ -z "$NODE_INSTANCE" ] && ln -sfn "$CLAUDE_BIN" /usr/local/bin/claude
+    echo "[deploy] claude $("$CLAUDE_BIN" --version 2>/dev/null | head -1) at $CLAUDE_BIN"
+  fi
+  if [ "$NODE_TUI" = "1" ]; then
+    # TUI worker (docs/tui-worker-2026-11-08.md): the shim wraps the binary; 0755 under /opt so the worker user can exec it
+    [ -n "$NODE_SHIM_URL" ] || { echo "[deploy] ERROR: TUI node requested but the platform has no cc-tui-shim to hand out" >&2; exit 1; }
+    mkdir -p /opt/cc-tui-shim
+    curl -fsSL --retry 3 --connect-timeout 10 --max-time 300 "$NODE_SHIM_URL" -o /opt/cc-tui-shim/cc-tui-shim.new
+    chmod 755 /opt/cc-tui-shim/cc-tui-shim.new && mv -f /opt/cc-tui-shim/cc-tui-shim.new /opt/cc-tui-shim/cc-tui-shim
+    echo "[deploy] $(/opt/cc-tui-shim/cc-tui-shim --version) at /opt/cc-tui-shim/cc-tui-shim"
   fi
   if ! id ccworker >/dev/null 2>&1; then
     useradd --system --no-create-home --shell /usr/sbin/nologin ccworker && echo "[deploy] created service user ccworker"
   fi
-  mkdir -p /var/lib/1dayapi-cc-worker && chmod 711 /var/lib/1dayapi-cc-worker
-  SELFTEST=/var/lib/1dayapi-cc-worker/cc-sessions/install-selftest
+  WORKER_ROOT="/var/lib/1dayapi-cc-worker$NODE_SUFFIX"
+  mkdir -p "$WORKER_ROOT" && chmod 711 "$WORKER_ROOT"
+  SELFTEST="$WORKER_ROOT/cc-sessions/install-selftest"
   mkdir -p "$SELFTEST" && chmod 700 "$SELFTEST" && chown ccworker:ccworker "$SELFTEST"
-  if OUT="$(su -s /bin/sh ccworker -c "cd $SELFTEST && HOME=$SELFTEST TMPDIR=$SELFTEST CLAUDE_CONFIG_DIR=$SELFTEST /usr/local/bin/claude --version" 2>&1)"; then
+  if OUT="$(su -s /bin/sh ccworker -c "cd $SELFTEST && HOME=$SELFTEST TMPDIR=$SELFTEST CLAUDE_CONFIG_DIR=$SELFTEST $CLAUDE_BIN --version" 2>&1)"; then
     echo "[deploy] worker isolation self-test PASSED: ccworker ran claude $OUT"
   else
     echo "[deploy] ERROR: worker isolation self-test FAILED: $OUT" >&2
@@ -173,11 +226,11 @@ if [ "$(id -u)" -eq 0 ]; then
 else
   echo "[deploy] WARN: not root; skipping ccworker/claude setup (cc_worker mode needs a root deploy)"
 fi
-APP_DIR="$HOME/.1dayapi-node"
+APP_DIR="$HOME/.1dayapi-node$NODE_SUFFIX"
 mkdir -p "$APP_DIR" && chmod 700 "$APP_DIR"
 echo "[deploy] downloading node bundle"
 curl -fsSL --retry 3 --connect-timeout 10 --max-time 300 "$NODE_BUNDLE_URL" -o "$APP_DIR/node-bundle.js"
-CFG_DIR="$HOME/.config/1dayapi-provider-node"
+CFG_DIR="$HOME/.config/1dayapi-provider-node$NODE_SUFFIX"
 mkdir -p "$CFG_DIR" && chmod 700 "$CFG_DIR"
 cat > "$CFG_DIR/config.json" <<EOF
 {
@@ -189,19 +242,20 @@ cat > "$CFG_DIR/config.json" <<EOF
 }
 EOF
 chmod 600 "$CFG_DIR/config.json"
+UNIT_NAME="1dayapi-node$NODE_SUFFIX"
 if [ "$(id -u)" -eq 0 ]; then
-  UNIT=/etc/systemd/system/1dayapi-node.service
+  UNIT="/etc/systemd/system/$UNIT_NAME.service"
   WANTED=multi-user.target
   SYSCTL="systemctl"
 else
-  UNIT="$HOME/.config/systemd/user/1dayapi-node.service"
+  UNIT="$HOME/.config/systemd/user/$UNIT_NAME.service"
   mkdir -p "$HOME/.config/systemd/user"
   WANTED=default.target
   SYSCTL="systemctl --user"
 fi
 cat > "$UNIT" <<EOF
 [Unit]
-Description=1DayAPI provider node
+Description=1DayAPI provider node$NODE_SUFFIX
 After=network-online.target
 Wants=network-online.target
 
@@ -218,7 +272,22 @@ if [ "$(id -u)" -eq 0 ]; then
 fi
 # Canonical worker (spec WP2; default for every key since 2026-11-05): the node declares canonical_v1 only with this env.
 echo "Environment=CC_WORKER_CANONICAL=1" >> "$UNIT"
-if ! $SYSCTL daemon-reload || ! $SYSCTL enable --now 1dayapi-node; then
+if [ -n "$NODE_INSTANCE" ]; then
+  # a named instance names every path of its own (the default node keeps the historical defaults untouched)
+  {
+    echo "Environment=PROVIDER_CONFIG_PATH=$CFG_DIR/config.json"
+    echo "Environment=PROVIDER_CONSOLE_PORT=$NODE_CONSOLE_PORT"
+    echo "Environment=CC_WORKER_ROOT=/var/lib/1dayapi-cc-worker$NODE_SUFFIX"
+    echo "Environment=CC_WORKER_CLAUDE_BIN=$CLAUDE_BIN"
+  } >> "$UNIT"
+elif [ "$CLAUDE_VERSION" != "2.1.312" ]; then
+  echo "Environment=CC_WORKER_CLAUDE_BIN=$CLAUDE_BIN" >> "$UNIT"
+fi
+if [ "$NODE_TUI" = "1" ]; then
+  echo "Environment=CC_WORKER_TUI=1" >> "$UNIT"
+  echo "Environment=CC_WORKER_TUI_SHIM=/opt/cc-tui-shim/cc-tui-shim" >> "$UNIT"
+fi
+if ! $SYSCTL daemon-reload || ! $SYSCTL enable --now "$UNIT_NAME"; then
   echo "[deploy] WARN: systemd unavailable; starting node with nohup"
   if [ "$(id -u)" -eq 0 ]; then
     CC_WORKER_MACHINE_IDENTITY=1 CC_WORKER_CANONICAL=1 nohup "$HOME/.bun/bin/bun" "$APP_DIR/node-bundle.js" >> "$APP_DIR/node.log" 2>&1 &
@@ -232,7 +301,7 @@ else
       || echo "[deploy] WARN: loginctl enable-linger failed; the node stops when this user logs out"
   fi
 fi
-echo "[deploy] DONE node=$NODE_ID"
+echo "[deploy] DONE node=$NODE_ID unit=$UNIT_NAME claude=$CLAUDE_BIN tui=$NODE_TUI"
 `;
 }
 
@@ -332,6 +401,7 @@ function finishDeploy(
 /** SSH deploy: install bun + bundle + config + systemd on the remote host. */
 export async function deployNodeViaSsh(target: DeployTarget, common: DeployCommon): Promise<DeployOutcome> {
   await ensureBundle(); // fail fast before creating any records
+  if (common.tui && !shimPath()) throw new DeployError(`TUI node requested but ${SHIM_SOURCE} is missing on this server (build it with third_party/magpie-claudetui/sync.sh)`);
   const { nodeId, secret } = createNodeRecord(common.providerId, {
     method: "ssh",
     host: target.host,
@@ -341,14 +411,24 @@ export async function deployNodeViaSsh(target: DeployTarget, common: DeployCommo
     deployedAt: nowIso(),
     deployedBy: common.adminId,
     status: "deploying",
+    ...(common.instance ? { instance: common.instance, consolePort: common.consolePort ?? null } : {}),
+    ...(common.tui ? { tui: true } : {}),
+    claudeVersion: common.claudeVersion ?? DEFAULT_CLAUDE_VERSION,
   });
+  const base = common.platformHttpBase.replace(/\/+$/, "");
   const code = createBundleBindCode(common.providerId);
+  // the shim download consumes a one-time code of its own (the bundle's is spent by the bundle)
+  const shimCode = common.tui ? createBundleBindCode(common.providerId) : null;
   const script = buildRemoteScript({
-    bundleUrl: `${common.platformHttpBase.replace(/\/+$/, "")}/internal/provider/bundle?code=${code}`,
+    bundleUrl: `${base}/internal/provider/bundle?code=${code}`,
     nodeId,
     providerId: common.providerId,
     secret,
     wsUrl: wsUrlFromHttpBase(common.platformHttpBase),
+    ...(common.instance ? { instance: common.instance } : {}),
+    ...(common.consolePort ? { consolePort: common.consolePort } : {}),
+    ...(common.tui ? { tui: true, shimUrl: `${base}/internal/provider/cc-tui-shim?code=${shimCode}` } : {}),
+    ...(common.claudeVersion ? { claudeVersion: common.claudeVersion } : {}),
   });
   let res: SshRunResult;
   try {

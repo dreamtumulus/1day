@@ -97,6 +97,7 @@
 - X-42 ③ `CANONICAL_ENV_NOTE_V2`：↓（追加文字比 v1 更长）。同上，运营方 2026-11-08 已接受。
 - X-42 ④ 流式请求级拒绝不冷却账号：=（只影响我方调度，上游不可见）。
 - X-42 ⑤ 上游 refusal 原样下发客户（`stop_reason: "refusal"` + `stop_details`）：=（只影响下游响应形态，上游不可见）。
+- X-43 TUI worker（CCR 实例 `tui`）：入口 `sdk-cli`→`cli` ↑；identity 块回到 "Claude Code, Anthropic's official CLI" ↑；beta 列表回到交互集 ↑；节点版本 2.1.312→2.1.319 跟上主流 ↑；tap.js 以 `BUN_OPTIONS --preload` 进入 CC 进程、tee 主轮响应 ↓（只读、不改请求、不改头；运营方 11-08 书面接受："不钩 Bun 运行时、不改请求体、不改标签 这个限制可以放宽"）。
 
 ## 附：请求级拒绝不扩散（已做，2026-11-01，spec I12）
 

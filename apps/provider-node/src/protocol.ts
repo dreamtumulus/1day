@@ -76,7 +76,7 @@ export interface ProviderHeartbeat {
     active: number;
     queued: number;
     /** Canonical worker capability (spec WP2 §6.5): enabled by env CC_WORKER_CANONICAL=1; profiles the node's binary produces. */
-    canonical?: { enabled: boolean; profiles: string[] };
+    canonical?: { enabled: boolean; profiles: string[]; tui?: boolean };
   };
 }
 

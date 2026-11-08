@@ -303,3 +303,7 @@ Claude Code 2.1.300 已具备做持久会话所需的全部开关（worker-01 �
 - **T11（第三批）**：导入的 transcript（无 snapshot）**首次** resume 时 `--append-system-prompt-file` 生效（主提示词 5599→5657，marker 1 次，计费头/身份句保留，8 轮历史与工具对保真），
   且二进制随后把含 marker 的快照写回 transcript → 之后再 resume 同样忽略当次 append（"首次 resume 定终身"）。与网关设计一致：客户 system 随会话固定、变更即新会话。手写最小 `prompt_snapshot` 会**整块替换** system（丢掉内置主提示词），不可用。
 - **T12（第三批）**：`# Environment update … (was …)` 是 environment attachment 的 **diff 渲染**（仅当 workingDirectory 等与存储值不同才输出），导入 transcript（无 environment attachment）六种组合 0 次；节点把 transcript `cwd` 改写成本次 workDir 的做法保留；真正护栏是 stdin stream-json 续轮 + 不写陈旧 environment attachment。
+
+## 10. TUI worker（2026-11-08）
+
+节点 `CC_WORKER_TUI=1` 时 canonical 会话由 `cc-tui-shim` 以交互式 Claude Code 运行，协议、MCP 桥、会话记忆与本文完全相同；差异与部署见 `tui-worker-2026-11-08.md`。
