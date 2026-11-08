@@ -506,6 +506,9 @@ export interface ProxyFreeze {
 
 /** Freeze one account. Returns true when the row changed (was active). */
 export function freezeAccountForProxy(accountId: string, f: ProxyFreeze): boolean {
+  // settings account_freeze_on_proxy=0 (2026-11-06): never freeze; boundProxyDown keeps the account out of scheduling
+  // while its proxy is unusable and lets it back in as soon as the proxy is live again.
+  if (getSetting("account_freeze_on_proxy").trim() === "0") return false;
   const now = nowIso();
   const reason = f.reason.slice(0, 300);
   const changed = run(
@@ -543,7 +546,8 @@ export function releaseProxyFreeze(accountId: string, actorId: string | null, no
   const a = one<AccountRow>("SELECT * FROM accounts WHERE id = ?", accountId);
   if (!a) throw new ProxyFreezeError("account_not_found", "account not found");
   if (a.status !== "proxy_down") throw new ProxyFreezeError("not_proxy_down", `account status is ${a.status}, nothing to release`);
-  if (a.bound_proxy_id) {
+  // Freezing retired (account_freeze_on_proxy=0): release unconditionally; boundProxyDown gates scheduling live.
+  if (a.bound_proxy_id && getSetting("account_freeze_on_proxy").trim() !== "0") {
     const p = one<{ status: string; last_error: string | null; exit_ip: string | null }>("SELECT status, last_error, exit_ip FROM node_proxies WHERE id = ?", a.bound_proxy_id);
     if (!p) throw new ProxyFreezeError("proxy_missing", "the bound proxy no longer exists in the node pool; rebind the account to another proxy");
     if (p.status !== "live") throw new ProxyFreezeError("proxy_not_live", `the bound proxy is ${p.status}${p.last_error ? ` (${p.last_error})` : ""}; wait for a live heartbeat or rebind`);
@@ -725,8 +729,12 @@ export function boundProxyDown(a: Pick<AccountRow, "bound_proxy_id"> & { team_id
   if (!row || row.status !== "live") return true;
   const team = accountTeamId(a);
   if (!team) return false; // Legacy gate remains unchanged; candidate selection isolates OAuth separately.
-  if (row.team_id !== team || row.isolation_version !== 1 || !row.resource_key) return true;
+  // settings proxy_org_binding_enforce=0 (2026-11-06): the exit's organization tag and claim no longer gate the account;
+  // the proxy row keeps the first organization's tag, accounts of other organizations share the exit.
+  const orgBound = getSetting("proxy_org_binding_enforce").trim() !== "0";
+  if ((orgBound && row.team_id !== team) || row.isolation_version !== 1 || !row.resource_key) return true;
   if(a.node_id!==undefined && a.node_id!==row.node_id)return true;
   if (quarantineActive(row.resource_key, `proxy:${a.bound_proxy_id}`)) return true;
+  if (!orgBound) return false;
   return !one("SELECT 1 FROM proxy_team_claims WHERE resource_key=? AND team_id=?", row.resource_key, team);
 }

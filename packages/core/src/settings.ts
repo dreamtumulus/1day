@@ -73,6 +73,9 @@ export const SETTING_DEFAULTS = {
   // 授权失败后是否隔离(冻结)出口：1 = 上游判定类失败(EXIT_TAINTING_CODES)隔离出口并把代理标 dead；0 = 只释放槽位、不隔离
   // （2026-11-06 用户定："事实证明没什么作用"，且误杀过健康出口）。观测到的出口容量超限仍隔离。
   proxy_quarantine_on_failure: "1",
+  // 代理事件是否冻结账号（status proxy_down）：1 = 代理 dead / 出口变化 / 隔离 / 节点无代理时冻结其上账号（2026-11-01 铁律）；
+  // 0 = 不冻结（2026-11-06 用户定），调度门 boundProxyDown 照常跳过代理不可用的账号，代理恢复即自动回到调度。
+  account_freeze_on_proxy: "1",
   // ---- canonical 实施（docs/canonical-implementation-spec-2026-11-01.md WP1 / WP5 / WP8），全部三态，默认老行为 ----
   // 车道 A profile 严格模式：开 → 直连不再跨版本 pin（忽略 direct_cc_version_pin，客户版本必须有已采样 profile，否则按
   // cc_shape_policy 当 suspect 处理，missing=cc_profile_unknown）；归一化之后再过一遍形态 gate 并断言 profile 不变，
