@@ -21,6 +21,83 @@ import {
 import { useT } from "../i18n";
 import { apiFetch, unwrap } from "../lib/api";
 
+const onboardingDownloads = [
+  {
+    platform: "Windows",
+    requirement: "Windows 10 / 11 · 64 位",
+    file: "camoufox-pm-windows-x86_64-setup.exe",
+    action: "下载安装程序",
+  },
+  {
+    platform: "Mac · Apple 芯片",
+    requirement: "macOS · M1 / M2 / M3 / M4 等",
+    file: "camoufox-pm-macos-arm64.dmg",
+    action: "下载 DMG",
+  },
+  {
+    platform: "Mac · Intel 芯片",
+    requirement: "macOS · Intel x86_64",
+    file: "camoufox-pm-macos-x86_64.dmg",
+    action: "下载 DMG",
+  },
+];
+
+function OnboardingDownload() {
+  return (
+    <section className="pb-14 sm:pb-20 lg:pb-[108px]" id="onboarding-download">
+      <div className="container-x">
+        <div
+          className="rounded-2xl bg-surface-container-lowest p-6 shadow-md sm:p-8 lg:p-10"
+          style={{ border: "1px solid var(--outline-variant)" }}
+        >
+          <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
+            <div>
+              <div className="kicker">
+                <CubeIcon width={14} height={14} className="leading-none text-primary" />
+                上号器下载
+              </div>
+              <h2 className="mt-3 section-title">赵露思 上号系统</h2>
+              <p className="mt-3 text-[15px] leading-relaxed text-on-surface-variant">
+                已内置 Camoufox 指纹浏览器，安装后可直接使用。当前版本 v0.7.0。
+              </p>
+            </div>
+            <a
+              href="https://github.com/dreamtumulus/camoufox-profile-manager-custom/releases/tag/v0.7.0-zhaolusi4"
+              target="_blank"
+              rel="noreferrer"
+              className="inline-flex items-center gap-1.5 text-[13px] font-semibold text-primary hover:underline"
+            >
+              查看版本与校验信息
+              <ArrowRightIcon width={15} height={15} />
+            </a>
+          </div>
+          <div className="mt-8 grid gap-4 md:grid-cols-3">
+            {onboardingDownloads.map((item) => (
+              <div
+                key={item.file}
+                className="flex flex-col rounded-xl bg-surface-container-low p-5"
+                style={{ border: "1px solid var(--outline-variant)" }}
+              >
+                <h3 className="font-display text-[19px] font-bold text-on-surface">{item.platform}</h3>
+                <p className="mt-2 text-[13px] text-on-surface-variant">{item.requirement}</p>
+                <a
+                  href={`https://github.com/dreamtumulus/camoufox-profile-manager-custom/releases/download/v0.7.0-zhaolusi4/${item.file}`}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="wk-btn wk-btn-md wk-btn-primary mt-5 w-full"
+                >
+                  {item.action}
+                  <ArrowRightIcon width={16} height={16} />
+                </a>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+}
+
 export function Home() {
   return (
     <div>
@@ -31,6 +108,7 @@ export function Home() {
       <Cheaper />
       <ProviderBanner />
       <CtaBanner />
+      <OnboardingDownload />
     </div>
   );
 }
