@@ -1,6 +1,6 @@
 # TUI worker：节点以交互式 Claude Code 服务 canonical 会话（2026-11-08）
 
-> 状态：开发完成，首个节点部署在 CCR 机（217.216.46.202，实例 `tui`，Claude Code 2.1.319）。worker-01 / worker-02 不变。
+> 状态：首个节点已部署并上线（CCR 机 217.216.46.202，实例 `tui`，node_92f75594，Claude Code 2.1.319）；假上游探针全通；待运营方把节点加入 `TRUSTED_EXECUTION_NODE_IDS` 并上号。worker-01 / worker-02 不变。
 > 决策登记 X-43；真实性登记见 `iron-rules.md` 铁律 3。前史：`interactive-worker-plan-2026-11-05.md`（I0 探针）、X-36（入口计量）。
 
 ## 1. 为什么
@@ -34,7 +34,7 @@ gateway ──stream-json──▶ console ──tunnel──▶ node cc-worker 
 | 来源 | github.com/yetone/magpie `internal/claudetui`（MIT，commit 见 `UPSTREAM`）；2752 行 Go + 164 行 tap.js + 2273 行测试 + 5 个 2.1.316 屏幕录像 |
 | 依赖 | 上游内部包只用三个符号：`proc.Command`、`appdir.Getenv`、`wslrun.Tool.Linux`，以 stub 替代；外部仅 `golang.org/x/sys`、`x/text` |
 | 改名（`rename.sed`） | `MAGPIE_CLAUDE_*` → `ONEDAY_CC_*`，`magpie-claude-*` 临时目录前缀 → `oneday-cc-*`，`mcp__magpie` → `mcp__caller`，`MAGPIE_TUI_TEST` → `ONEDAY_TUI_TEST` |
-| 补丁（`patches/0001`） | ① 节点已传 `--session-id` 时沿用，不再追加第二个；② "工具已列出"标记文件改从 `ONEDAY_TUI_LISTED` 读（我们的 MCP 是 HTTP，不是它的 stdio 助手） |
+| 补丁（`patches/0001`、`0002`） | 0001：① 节点已传 `--session-id` 时沿用，不再追加第二个；② "工具已列出"标记文件改从 `ONEDAY_TUI_LISTED` 读（我们的 MCP 是 HTTP，不是它的 stdio 助手）。0002：2.1.319 Linux 构建不发 `x-claude-code-request-class` 头，tap.js 改为也按请求体里节点追加的系统文本（`ONEDAY_CC_TAP_MATCH`，节点传 "Environment note:"）识别主轮，排除启动额度探测、标题侧请求、`[SUGGESTION MODE` |
 | 不用的部分 | Windows / ConPTY / WSL 分支（编译时自动排除）、`/usage` 屏幕解析（节点永不发 `command` 消息）、第三方 400 回退 `-p`（在网关层属于拒绝，不回退） |
 | 同步 | `sync.sh <magpie 检出>`：复制 → sed → patch → vet → build `dist/cc-tui-shim`。上游测试在有 pty 的机器跑 `go test ./internal/claudetui/`，CCR 实测 11-08 全过（仅 `TestShimInWSL` 因 stub 失败，预期） |
 | 构建 | Go 1.26.10，静态 Linux amd64，4.6 MB；控制台从 `third_party/magpie-claudetui/dist/cc-tui-shim` 以一次性 code 下发（`GET /internal/provider/cc-tui-shim?code=`） |

@@ -257,8 +257,11 @@ fi
 # node ran with the defaults (the CCR instance tried port 16889 and the default worker root).
 UNIT_ENV=""
 if [ "$(id -u)" -eq 0 ]; then
+  # machine identity and per-team worker uids, as every platform node runs them (the console requires
+  # team_uid_isolation_v1 with REQUIRE_TEAM_UID_ISOLATION=1; until 2026-11-08 only hand-written drop-ins set it)
   UNIT_ENV="$UNIT_ENV
-Environment=CC_WORKER_MACHINE_IDENTITY=1"
+Environment=CC_WORKER_MACHINE_IDENTITY=1
+Environment=CC_WORKER_TEAM_UIDS=1"
 fi
 # Canonical worker (spec WP2; default for every key since 2026-11-05): the node declares canonical_v1 only with this env.
 UNIT_ENV="$UNIT_ENV
