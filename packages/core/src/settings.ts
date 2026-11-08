@@ -94,6 +94,11 @@ export const SETTING_DEFAULTS = {
   // canonical 外部历史导入（spec WP3 / G3）：开 → 带着外部多轮历史的 canonical 新会话由网关按 Claude Code transcript 格式构造
   // （剥掉 thinking：G3 证明零校验、真上游会 400）、节点写入后 --resume；关 → 409 history_import_unsupported。上游可见（导入的历史会上行）。
   canonical_history_import: "0",
+  // canonical 调用方工具隔离（2026-11-08，X-42）：开 → 客户带 tools 的 canonical 会话以 tools-disabled-canonical 档启动（--restricted --tools ""），
+  // 节点 CC 自带的 Read/Glob/Grep 等内建工具不再与客户的同名工具并存（11-08 事故：模型拿内建 Read 去读 Windows 客户的 F:\ 路径，
+  // 内建轮次被翻译层吞掉，客户只看到"我在 Linux 沙箱里读不到"）；同时换用加强版环境说明（内建工具只见沙箱、不复述沙箱路径）。
+  // 关 → restricted-default + 原说明。上游可见（带工具会话的 tools 列表少了内建工具）。
+  canonical_caller_tools_isolation: "0",
   // raw-v1（spec WP5.4）：原样透传账号的请求到节点出口也不补 Claude Code 指纹头（preserveHeaders）。默认 0 = 节点照旧补齐。上游可见。
   raw_preserve_headers: "0",
   telemetry_evidence_required: "0",

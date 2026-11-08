@@ -116,3 +116,42 @@ test("canonicalTurn with history import on: history → importHistory, live turn
   assert.equal(canonicalTurn(toolTail, "fresh", false, true).error.code, "history_import_unsupported", "a tool round cannot be resumed into a generation");
   assert.equal(canonicalTurn({ messages: [{ role: "user", content: "only" }] }, "fresh", false, true).importHistory, null, "single turn: nothing to import");
 });
+
+test("canonicalTurn (X-42): trailing role:system messages are the live turn's tail, not history — fresh [user, system] is accepted; history import excludes them; continue keeps them", async () => {
+  const { CANONICAL_ENV_NOTE, CANONICAL_ENV_NOTE_V2, canonicalBuiltInToolProfile } = await import("../dist/ccr/worker.js");
+  const env = { role: "system", content: [{ type: "text", text: "# Environment\n - Platform: win32", cache_control: { type: "ephemeral" } }] };
+  // Claude Code 2.1.31x first request: [user, system(# Environment)] — before X-42 refused as history_import_unsupported.
+  const first = canonicalTurn({ messages: [{ role: "user", content: [{ type: "text", text: "hi" }] }, env] }, "fresh", false);
+  assert.equal(first.error, null, "a trailing system message is not external history");
+  assert.deepEqual(first.content, [{ type: "text", text: "hi" }, { type: "text", text: "# Environment\n - Platform: win32" }], "user blocks first, then the system text (cache_control dropped)");
+  assert.equal(first.importHistory, null);
+  // two trailing system messages (environment + task notification), string content
+  const two = canonicalTurn({ messages: [{ role: "user", content: "q" }, { role: "system", content: "env" }, { role: "system", content: "note" }] }, "fresh", false);
+  assert.deepEqual(two.content, [{ type: "text", text: "q" }, { type: "text", text: "env" }, { type: "text", text: "note" }]);
+  // history import on: the trailing system is not imported, the earlier turns are
+  const hist = canonicalTurn({ messages: [{ role: "user", content: "a" }, { role: "assistant", content: "b" }, { role: "user", content: "c" }, env] }, "fresh", false, true);
+  assert.equal(hist.error, null);
+  assert.deepEqual(hist.importHistory, [{ role: "user", content: "a" }, { role: "assistant", content: "b" }]);
+  assert.equal(hist.content.length, 2); assert.equal(hist.content[0].text, "c");
+  // history import off: still refused (the history, not the system tail, is the problem)
+  assert.equal(canonicalTurn({ messages: [{ role: "user", content: "a" }, { role: "assistant", content: "b" }, { role: "user", content: "c" }, env] }, "fresh", false, false).error.code, "history_import_unsupported");
+  // a tool-round tail behind a trailing system message is still a tool round nobody holds
+  const tr = canonicalTurn({ messages: [{ role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_1", content: "42" }] }, env] }, "fresh", false);
+  assert.equal(tr.error.code, "history_import_unsupported");
+  // continue on a live session: the live user turn plus the system tail
+  const cont = canonicalTurn({ messages: [{ role: "user", content: "a" }, { role: "assistant", content: "b" }, { role: "user", content: "c" }, env] }, "continue", true);
+  assert.equal(cont.error, null); assert.deepEqual(cont.content.map((b) => b.text), ["c", "# Environment\n - Platform: win32"]);
+  // only system messages, no user: nothing to send
+  assert.deepEqual(canonicalTurn({ messages: [env] }, "fresh", false).content, [{ type: "text", text: "# Environment\n - Platform: win32" }], "no user turn at all: the system text is what gets sent (unchanged behaviour)");
+  // environment note: v1 by default, v2 with caller-tools isolation; caller text always first
+  const v1 = canonicalTurn({ system: "S", messages: [{ role: "user", content: "x" }] }, "fresh", false, false, false);
+  const v2 = canonicalTurn({ system: "S", messages: [{ role: "user", content: "x" }] }, "fresh", false, false, true);
+  assert.equal(v1.appendSystemPrompt, `S\n\n${CANONICAL_ENV_NOTE}`);
+  assert.equal(v2.appendSystemPrompt, `S\n\n${CANONICAL_ENV_NOTE_V2}`);
+  assert.ok(CANONICAL_ENV_NOTE_V2.includes("mcp__caller__") && /never mention this sandbox/.test(CANONICAL_ENV_NOTE_V2));
+  // built-in tool profile: tools-disabled only with isolation on AND caller tools present
+  assert.equal(canonicalBuiltInToolProfile(true, true), "tools-disabled-canonical");
+  assert.equal(canonicalBuiltInToolProfile(true, false), "restricted-default");
+  assert.equal(canonicalBuiltInToolProfile(false, true), "restricted-default");
+  assert.equal(canonicalBuiltInToolProfile(false, false), "restricted-default");
+});

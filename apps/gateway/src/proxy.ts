@@ -2170,11 +2170,13 @@ async function deliverStream(
       const message = streamError ?? readError ?? "upstream stream ended without a terminator";
       console.warn(`[proxy] ${ctx.requestId} account ${account.name}: stream failed: ${message}`);
       const schedulingLost = ctx.abort.signal.aborted && !clientGone;
-      if (!schedulingLost && account.raw_passthrough !== 1) markCcrFailure(ctx, account, `stream: ${message.slice(0, 300)}`); // raw relay (§4a): no cooldown
       // Claude Code's context overflow / safety refusal is the request's fault: log it as such and hand
       // the client Claude Code's own sentence (the auto-compact trigger) as an invalid_request_error.
       // `mode` here is the wire mode (passthrough-anthropic for a worker stream too): the CCR flag is ccrExecuted.
       const reqErr = ccrExecuted || isCcrMode(mode) ? classifyCcRequestError(message) : null;
+      // A request-level refusal is not the account's fault: no cooldown (2026-11-08: 162 streamed safeguards refusals of one
+      // key in three days each cooled the account that answered them). Raw relay (§4a): no cooldown either.
+      if (!schedulingLost && !reqErr && account.raw_passthrough !== 1) markCcrFailure(ctx, account, `stream: ${message.slice(0, 300)}`);
       ctx.streamTruncated = true;
       ctx.trace.failure = {
         scope: reqErr ? "request" : "transport",
