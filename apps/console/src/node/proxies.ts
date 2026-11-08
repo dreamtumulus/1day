@@ -39,7 +39,10 @@ export function validateProxies(input: unknown, defaultGroup?: unknown): ProxyIn
     // A bare "host:port[:user:pass]" / "user:pass@host:port" line is a socks5 proxy by default;
     // an explicit scheme (http(s)://, socks5(h)://) is kept as written.
     let normalized = url.trim();
-    if (!PROXY_URL_RE.test(normalized)) {
+    // "kept as written" only when it really is a URL: "http://IP:PORT:USER:PASS" (a scheme typed in front of the bare
+    // colon form) matched the regex, was stored verbatim and every node rejected the whole pool (2026-11-08, 15 proxies
+    // of the ccr-tui node); the loose parser reads that form with its scheme.
+    if (!PROXY_URL_RE.test(normalized) || !isUrl(normalized)) {
       const parsedLoose = parseProxyInput(normalized);
       if (!parsedLoose) throw new ProxyInputError("proxy url must be host:port[:user:pass], user:pass@host:port or an http(s):// / socks5(h):// URL");
       normalized = canonicalProxyUrl(parsedLoose);
@@ -57,6 +60,15 @@ export function validateProxies(input: unknown, defaultGroup?: unknown): ProxyIn
 }
 
 export class ProxyInputError extends Error {}
+
+function isUrl(s: string): boolean {
+  try {
+    const u = new URL(s);
+    return Boolean(u.hostname) && u.pathname.replace(/\/+$/, "") === "";
+  } catch {
+    return false;
+  }
+}
 
 export interface ProxySkips {
   /** Same URL appeared earlier in this batch (first occurrence wins). */

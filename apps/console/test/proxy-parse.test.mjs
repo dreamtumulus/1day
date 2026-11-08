@@ -60,3 +60,14 @@ test("garbage is rejected", () => {
     assert.equal(parseProxyInput(bad), null, JSON.stringify(bad));
   }
 });
+
+test("validateProxies: a scheme typed in front of the bare colon form is parsed, not kept verbatim (2026-11-08)", async () => {
+  const { validateProxies } = await import("../dist/node/proxies.js");
+  const [p] = validateProxies([{ url: "http://51.146.42.93:48465:alice:s3cret", group: "英国住宅02" }]);
+  assert.equal(p.url, "http://alice:s3cret@51.146.42.93:48465");
+  assert.equal(p.group, "英国住宅02");
+  // a real URL is still kept as written
+  assert.equal(validateProxies([{ url: "socks5h://u:p@proxy.example.com:9000" }])[0].url, "socks5h://u:p@proxy.example.com:9000");
+  // and a scheme with garbage after it is refused, not stored
+  assert.throws(() => validateProxies([{ url: "http://not a proxy" }]));
+});
