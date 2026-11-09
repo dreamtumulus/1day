@@ -109,6 +109,9 @@ export const SETTING_DEFAULTS = {
   // 渲染导入的折叠字符上限：超过则仍按 history_import_unsupported 回落 legacy（TUI 粘贴 / stdin 的安全边界）。11-09 实测：
   // 成功渲染的会话 32–53 万字符；仍回落的 22 次全是 61–101 万字符（321–462 条消息）的 Agent SDK 会话。
   canonical_rendered_import_max_chars: "600000",
+  // 关掉 canonical→legacy 回落（legacy 退场第一步，2026-11-09）：0 = 照旧回落；canary = 灰度组 Key / 账号的 canonical 拒绝原样回客户端
+  //（409/400 带原因），不再悄悄跑 legacy -p——TUI 稳定性测试要的就是"失败可见"；1 = 全站不回落。
+  canonical_no_legacy_fallback: "0",
   // raw-v1（spec WP5.4）：原样透传账号的请求到节点出口也不补 Claude Code 指纹头（preserveHeaders）。默认 0 = 节点照旧补齐。上游可见。
   raw_preserve_headers: "0",
   telemetry_evidence_required: "0",

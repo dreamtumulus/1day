@@ -1161,6 +1161,13 @@ async function proxyRequest(req: FastifyRequest, reply: FastifyReply, format: Cl
                 // account can serve this turn on the legacy worker. The 2.1.312 probe showed a tool round cannot be cold-
                 // imported into a new native session (the binary marks the pending tool_use interrupted), so hand it over.
                 if (canonicalWorker && err instanceof TunnelRequestError && CANONICAL_FALLBACK_CODES.has(err.nodeCode)) {
+                  // legacy 退场 (2026-11-09): settings canonical_no_legacy_fallback — for the canary group (TUI stability test)
+                  // or site-wide, the refusal reaches the client as it is instead of a silent legacy -p run.
+                  if (featureFor("canonical_no_legacy_fallback", { groupId: caller.groupId, accountId: account.id })) {
+                    bump("canonical_fallback_suppressed_total", { code: err.nodeCode });
+                    console.log(`[proxy] ${ctx.requestId} canonical cannot carry this turn (${err.nodeCode}) on ${account.name}: legacy fallback is off for this group, refusing`);
+                    throw err;
+                  }
                   bump("canonical_fallback_legacy_total", { code: err.nodeCode });
                   console.log(`[proxy] ${ctx.requestId} canonical cannot carry this turn (${err.nodeCode}) on ${account.name}: legacy worker takes it`);
                   res = await runCcrWorker({ ...workerInput, canonical: false });
