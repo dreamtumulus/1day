@@ -102,6 +102,10 @@ export const SETTING_DEFAULTS = {
   // ③ 加强版环境说明 CANONICAL_ENV_NOTE_V2（内建工具只见沙箱、不因沙箱看不到就断定路径不存在、不复述沙箱路径）。
   // 关 → 老行为。上游可见（更多首轮进 canonical；带工具会话的 tools 列表少了内建工具；追加 system 文本变化）。
   canonical_cc_client_compat: "0",
+  // canonical 渲染导入（方案 A，2026-11-09）：原生 transcript 接不住的历史——停在工具轮中间的会话、半路到达的会话、原会话已失——
+  // 不再回落 legacy，而是把整段对话按 legacy 的折叠格式渲染成**新原生会话的第一条用户消息**（magpie renderClaudePrompt 做法），
+  // 之后的工具轮在这条活会话上原生续。关 → 老行为（history_import_unsupported → legacy）。上游可见（这些轮次改走 canonical 进程）。
+  canonical_rendered_import: "0",
   // raw-v1（spec WP5.4）：原样透传账号的请求到节点出口也不补 Claude Code 指纹头（preserveHeaders）。默认 0 = 节点照旧补齐。上游可见。
   raw_preserve_headers: "0",
   telemetry_evidence_required: "0",

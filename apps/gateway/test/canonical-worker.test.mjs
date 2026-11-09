@@ -197,3 +197,29 @@ test("translator: an upstream refusal (HTTP 200, stop_reason refusal + stop_deta
   t3.push({ type: "result", subtype: "error_during_execution", is_error: true, result: "API Error: 529 overloaded" });
   assert.match(t3.error, /529 overloaded/);
 });
+
+test("canonicalTurn rendered import (方案 A): histories the transcript cannot take travel as the legacy fold in a new session", async () => {
+  const { RENDERED_IMPORT_LEAD } = await import("../dist/ccr/worker.js");
+  const fold = [{ type: "text", text: "[user]\nlist files" }, { type: "text", text: "[assistant]\n[tool_use toolu_1 mcp__caller__Bash]\n{\"command\":\"ls\"}" }, { type: "text", text: "[tool_result for toolu_1]\nREADME.md" }];
+  const midRound = { messages: [{ role: "user", content: "list files" }, { role: "assistant", content: [{ type: "tool_use", id: "toolu_1", name: "Bash", input: { command: "ls" } }] }, { role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_1", content: "README.md" }] }] };
+  // without the rendered fold: refused as before
+  assert.equal(canonicalTurn(midRound, "fresh", false, true).error.code, "history_import_unsupported");
+  // with it: the fold becomes the first turn, led by the carry-over note; no native import
+  const r = canonicalTurn(midRound, "fresh", false, true, false, fold);
+  assert.equal(r.error, null); assert.equal(r.rendered, true); assert.equal(r.importHistory, null);
+  assert.equal(r.content[0].text, RENDERED_IMPORT_LEAD); assert.deepEqual(r.content.slice(1), fold);
+  // a parked round whose session is gone: same treatment
+  assert.equal(canonicalTurn(midRound, "tool_result", false, true, false, fold).rendered, true);
+  // a plain-text history still prefers the native transcript import
+  const text = { messages: [{ role: "user", content: "a" }, { role: "assistant", content: "b" }, { role: "user", content: "c" }] };
+  const n = canonicalTurn(text, "fresh", false, true, false, fold);
+  assert.equal(n.rendered, undefined); assert.equal(n.importHistory.length, 2); assert.deepEqual(n.content, [{ type: "text", text: "c" }]);
+  // import disabled → rendered carries the text history too
+  assert.equal(canonicalTurn(text, "fresh", false, false, false, fold).rendered, true);
+  // a live session continue / a held tool round are untouched
+  assert.equal(canonicalTurn(text, "continue", true, true, false, fold).rendered, undefined);
+  assert.equal(canonicalTurn(midRound, "tool_result", true, true, false, fold).content, null);
+  // oversized fold → refused (TUI paste limit)
+  const huge = [{ type: "text", text: "x".repeat(700_000) }];
+  assert.equal(canonicalTurn(midRound, "fresh", false, true, false, huge).error.code, "history_import_unsupported");
+});

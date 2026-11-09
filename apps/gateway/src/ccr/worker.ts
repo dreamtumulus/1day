@@ -97,7 +97,22 @@ export function canonicalBuiltInToolProfile(ccClientCompat: boolean, hasCallerTo
   return ccClientCompat && hasCallerTools ? "tools-disabled-canonical" : "restricted-default";
 }
 
-export function canonicalTurn(body: Json, planMode: "fresh" | "continue" | "tool_result", hasLiveSession: boolean, allowHistoryImport = false, ccClientCompat = false): { appendSystemPrompt: string; content: Json[] | null; importHistory: Json[] | null; error: { code: string; message: string } | null } {
+/**
+ * Rendered import (方案 A, 2026-11-09, settings canonical_rendered_import): the lead text of the first user turn of a new
+ * native session that carries a whole conversation as a transcript — the legacy fold's headings, so the model treats
+ * it as its own history and continues from the last entry instead of narrating or re-issuing it.
+ */
+export const RENDERED_IMPORT_LEAD = [
+  "The conversation below was carried over from an earlier session as a transcript. Headings mark who said what: [user] is the",
+  "user, [assistant] is you, [tool_use …] lines are tool calls you made earlier and [tool_result for …] blocks are their results.",
+  "Treat it as your own history and continue from the last entry: if it ends with tool results, use them and carry on with the",
+  "task; call your tools normally when you need them. Never write transcript headings or tool-call lines yourself — answer as",
+  "the assistant, in plain content.",
+].join(" ");
+/** Above this the rendered transcript is not pasted into a native session (TUI paste / stdin limits); the turn is refused as before. */
+export const RENDERED_IMPORT_MAX_CHARS = 600_000;
+
+export function canonicalTurn(body: Json, planMode: "fresh" | "continue" | "tool_result", hasLiveSession: boolean, allowHistoryImport = false, ccClientCompat = false, renderedImport: Json[] | null = null): { appendSystemPrompt: string; content: Json[] | null; importHistory: Json[] | null; error: { code: string; message: string } | null; rendered?: boolean } {
   const msgs: Json[] = Array.isArray(body.messages) ? body.messages : [];
   const appendSystemPrompt = [callerSystemText(body), ccClientCompat ? CANONICAL_ENV_NOTE_V2 : CANONICAL_ENV_NOTE].filter(Boolean).join("\n\n");
   // Claude Code 2.1.31x closes a request with `role:"system"` messages after the live user turn (# Environment on the
@@ -132,6 +147,13 @@ export function canonicalTurn(body: Json, planMode: "fresh" | "continue" | "tool
   // live turn must be a plain user message (a tool round nobody holds cannot be resumed into a generation).
   if (planMode === "fresh" && history.length > 0 && allowHistoryImport && last?.role === "user" && !hasToolResult && own.length > 0) {
     return { appendSystemPrompt, content: raw, importHistory: history, error: null };
+  }
+  // 方案 A: whatever the native transcript cannot take — a tool round nobody holds, a conversation that arrived mid-task, a
+  // parked session that is gone — travels as text: the legacy fold of the whole conversation becomes the first user turn
+  // of a NEW native session; the tool rounds that follow continue natively on that live session (ends the legacy chain).
+  const needsRendered = (planMode === "fresh" && (history.length > 0 || hasToolResult)) || (planMode === "tool_result" && !hasLiveSession);
+  if (needsRendered && renderedImport && renderedImport.length > 0 && JSON.stringify(renderedImport).length <= RENDERED_IMPORT_MAX_CHARS) {
+    return { appendSystemPrompt, content: [{ type: "text", text: RENDERED_IMPORT_LEAD }, ...renderedImport], importHistory: null, error: null, rendered: true };
   }
   if (planMode === "fresh" && history.length > 0) {
     return { appendSystemPrompt, content: null, importHistory: null, error: { code: "history_import_unsupported", message: "This key runs on the canonical Claude Code worker, which carries only conversations it started: the request brings earlier turns no live session holds (a history from another upstream, or a resumed conversation). Start a new conversation here (one user message) and keep the same conversation going; external history import is not available yet." } };
@@ -297,7 +319,7 @@ export async function runCcrWorker(input: CcrWorkerInput): Promise<Response | nu
   const persistentBlocks = ephemeral ? persistentIdx.map((i) => fullBlocks[i]) : fullBlocks;
   const mem = reuseKey ? sessionMemory.get(reuseKey) : undefined;
   const msgs: Json[] = Array.isArray(body.messages) ? body.messages : [];
-  const plan: TurnPlan = reuseKey
+  let plan: TurnPlan = reuseKey
     ? (nativeTools ? planToolResult(mem, persistentBlocks, msgs) : null) ?? planTurn(mem, persistentBlocks)
     : { mode: "fresh", content: fullBlocks, hashes: [] };
   if (plan.mode === "fresh" && plan.diffAt !== undefined && mem) {
@@ -335,8 +357,16 @@ export async function runCcrWorker(input: CcrWorkerInput): Promise<Response | nu
   // anything the live process does not hold is refused up front, not re-folded.
   // Claude Code client compat (X-42): system tail = live turn, no built-in tools beside the caller's MCP tools, stronger environment note.
   const ccClientCompat = canonical && featureFor("canonical_cc_client_compat", { groupId: input.groupId, accountId: account.id });
-  const canon = canonical ? canonicalTurn(body, plan.mode, !!mem && !!reuseKey, featureFor("canonical_history_import", { groupId: input.groupId, accountId: account.id }), ccClientCompat) : null;
+  const renderedAllowed = canonical && !!reuseKey && featureFor("canonical_rendered_import", { groupId: input.groupId, accountId: account.id });
+  const canon = canonical ? canonicalTurn(body, plan.mode, !!mem && !!reuseKey, featureFor("canonical_history_import", { groupId: input.groupId, accountId: account.id }), ccClientCompat, renderedAllowed ? fullBlocks : null) : null;
   if (canon?.error) throw new TunnelRequestError(canon.error.code, canon.error.message);
+  if (canon?.rendered) {
+    // 方案 A: the whole conversation goes in as the first turn of a new native session; from here on the plan is a fresh
+    // turn whose history hashes are the full conversation, so the next tool_result continues natively.
+    bump("canonical_rendered_import_total", { from: plan.mode });
+    console.log(`[ccr-worker] ${input.requestId} canonical rendered import: ${fullBlocks.length} block(s) as a new native session (plan was ${plan.mode}${plan.reason ? ` ${plan.reason}` : ""})`);
+    if (plan.mode !== "fresh") plan = { ...planTurn(undefined, persistentBlocks), reason: "rendered_import" };
+  }
   // Native session (spec §6.3 / WP3): fresh = new id; continue / tool_result = the remembered session, resumed by the
   // node if its live process is gone; import = transcript built here, written and resumed on the node.
   const nativeSessionId = canonical ? (plan.mode !== "fresh" && mem?.native?.sessionId ? mem.native.sessionId : randomUUID()) : null;
