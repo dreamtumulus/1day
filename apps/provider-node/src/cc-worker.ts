@@ -1134,6 +1134,14 @@ export class CcWorkerManager {
       const tui = canonical && this.tuiEnabled;
       if (tui) {
         env.ONEDAY_CC_TUI_TRUST = "1";
+        // Interactive Claude Code moves an MCP tool call that is still running after 120 s to the background and hands
+        // the model a placeholder result ("MCP tool … is still running after 120s. It was moved to the background …"),
+        // so the turn goes on without the caller's answer; when the client's real tool_result arrives the session is
+        // no longer awaiting (502 session_lost "not awaiting" / "turn N != M", 5 of 347 tool rounds on ccr-tui,
+        // 2026-11-09 — every one with a >120 s client-side tool). The caller's tools are the parked MCP calls the node
+        // answers within TOOL_RESULT_WAIT_MS: never background them, and align the auto-background threshold.
+        env.CLAUDE_CODE_DISABLE_MCP_TASK_BACKGROUND = "1";
+        env.CLAUDE_CODE_AUTO_BACKGROUND_TIMEOUT_MS = String(TOOL_RESULT_WAIT_MS);
         if (mcpConfigFile) env.ONEDAY_TUI_LISTED = path.join(workDir, "mcp-listed");
         // The tap tells the main turn's requests apart by the environment note the gateway appends to every canonical
         // system prompt (CANONICAL_ENV_NOTE*, worker.ts); Claude Code 2.1.319 sends no request-class header.
