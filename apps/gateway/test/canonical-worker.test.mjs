@@ -222,4 +222,6 @@ test("canonicalTurn rendered import (方案 A): histories the transcript cannot 
   // oversized fold → refused (TUI paste limit)
   const huge = [{ type: "text", text: "x".repeat(700_000) }];
   assert.equal(canonicalTurn(midRound, "fresh", false, true, false, huge).error.code, "history_import_unsupported");
+  // a raised cap (settings canonical_rendered_import_max_chars) lets it through
+  assert.equal(canonicalTurn(midRound, "fresh", false, true, false, huge, 1_200_000).rendered, true);
 });

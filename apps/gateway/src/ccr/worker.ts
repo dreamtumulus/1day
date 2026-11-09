@@ -109,10 +109,16 @@ export const RENDERED_IMPORT_LEAD = [
   "task; call your tools normally when you need them. Never write transcript headings or tool-call lines yourself — answer as",
   "the assistant, in plain content.",
 ].join(" ");
-/** Above this the rendered transcript is not pasted into a native session (TUI paste / stdin limits); the turn is refused as before. */
+/** Default cap (settings canonical_rendered_import_max_chars): above it the rendered transcript is not pasted into a native session; the turn is refused as before. */
 export const RENDERED_IMPORT_MAX_CHARS = 600_000;
 
-export function canonicalTurn(body: Json, planMode: "fresh" | "continue" | "tool_result", hasLiveSession: boolean, allowHistoryImport = false, ccClientCompat = false, renderedImport: Json[] | null = null): { appendSystemPrompt: string; content: Json[] | null; importHistory: Json[] | null; error: { code: string; message: string } | null; rendered?: boolean } {
+/** settings canonical_rendered_import_max_chars; a non-number keeps the built-in default. */
+export function renderedImportMaxChars(): number {
+  const n = Number(getSetting("canonical_rendered_import_max_chars"));
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : RENDERED_IMPORT_MAX_CHARS;
+}
+
+export function canonicalTurn(body: Json, planMode: "fresh" | "continue" | "tool_result", hasLiveSession: boolean, allowHistoryImport = false, ccClientCompat = false, renderedImport: Json[] | null = null, renderedMaxChars = RENDERED_IMPORT_MAX_CHARS): { appendSystemPrompt: string; content: Json[] | null; importHistory: Json[] | null; error: { code: string; message: string } | null; rendered?: boolean } {
   const msgs: Json[] = Array.isArray(body.messages) ? body.messages : [];
   const appendSystemPrompt = [callerSystemText(body), ccClientCompat ? CANONICAL_ENV_NOTE_V2 : CANONICAL_ENV_NOTE].filter(Boolean).join("\n\n");
   // Claude Code 2.1.31x closes a request with `role:"system"` messages after the live user turn (# Environment on the
@@ -152,7 +158,7 @@ export function canonicalTurn(body: Json, planMode: "fresh" | "continue" | "tool
   // parked session that is gone — travels as text: the legacy fold of the whole conversation becomes the first user turn
   // of a NEW native session; the tool rounds that follow continue natively on that live session (ends the legacy chain).
   const needsRendered = (planMode === "fresh" && (history.length > 0 || hasToolResult)) || (planMode === "tool_result" && !hasLiveSession);
-  if (needsRendered && renderedImport && renderedImport.length > 0 && JSON.stringify(renderedImport).length <= RENDERED_IMPORT_MAX_CHARS) {
+  if (needsRendered && renderedImport && renderedImport.length > 0 && JSON.stringify(renderedImport).length <= renderedMaxChars) {
     return { appendSystemPrompt, content: [{ type: "text", text: RENDERED_IMPORT_LEAD }, ...renderedImport], importHistory: null, error: null, rendered: true };
   }
   if (planMode === "fresh" && history.length > 0) {
@@ -358,7 +364,7 @@ export async function runCcrWorker(input: CcrWorkerInput): Promise<Response | nu
   // Claude Code client compat (X-42): system tail = live turn, no built-in tools beside the caller's MCP tools, stronger environment note.
   const ccClientCompat = canonical && featureFor("canonical_cc_client_compat", { groupId: input.groupId, accountId: account.id });
   const renderedAllowed = canonical && !!reuseKey && featureFor("canonical_rendered_import", { groupId: input.groupId, accountId: account.id });
-  const canon = canonical ? canonicalTurn(body, plan.mode, !!mem && !!reuseKey, featureFor("canonical_history_import", { groupId: input.groupId, accountId: account.id }), ccClientCompat, renderedAllowed ? fullBlocks : null) : null;
+  const canon = canonical ? canonicalTurn(body, plan.mode, !!mem && !!reuseKey, featureFor("canonical_history_import", { groupId: input.groupId, accountId: account.id }), ccClientCompat, renderedAllowed ? fullBlocks : null, renderedImportMaxChars()) : null;
   if (canon?.error) throw new TunnelRequestError(canon.error.code, canon.error.message);
   if (canon?.rendered) {
     // 方案 A: the whole conversation goes in as the first turn of a new native session; from here on the plan is a fresh
