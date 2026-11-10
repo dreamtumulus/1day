@@ -12,6 +12,18 @@ if (args.includes("--version")) {
   process.exit(0);
 }
 const mode = process.env.FAKE_CLAUDE_MODE ?? "ok";
+// FAKE_CLAUDE_MINT_USERID=<id>: behave like a Claude Code that could not read its config and minted a new device id
+// (X-49): rewrite `userID` in $CLAUDE_CONFIG_DIR/.claude.json at startup.
+if (process.env.FAKE_CLAUDE_MINT_USERID && process.env.CLAUDE_CONFIG_DIR) {
+  const f = `${process.env.CLAUDE_CONFIG_DIR}/.claude.json`;
+  let j = {};
+  try {
+    j = JSON.parse(fs.readFileSync(f, "utf8"));
+  } catch {
+    /* first run */
+  }
+  fs.writeFileSync(f, JSON.stringify({ ...j, userID: process.env.FAKE_CLAUDE_MINT_USERID }), { mode: 0o600 });
+}
 if (mode === "fail") {
   console.error("fake: authentication_error: invalid session credentials");
   process.exit(1);

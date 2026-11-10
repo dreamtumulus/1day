@@ -14,7 +14,7 @@
 // path + random token, and a session's tool list is fixed for its lifetime.
 
 import crypto from "node:crypto";
-import fs from "node:fs";
+import { writeFileAtomic } from "./account-files.js";
 
 type Json = Record<string, unknown>;
 
@@ -50,6 +50,8 @@ interface McpSession {
    * (magpie's finding); the shim waits for this file before it pastes the first message.
    */
   listedFile?: string;
+  /** uid/gid the marker file gets (the identity the shim runs as). */
+  listedOwner?: { uid: number; gid: number } | null;
 }
 
 const PROTOCOL_VERSION = "2025-03-26";
@@ -85,9 +87,9 @@ export class McpServer {
   }
 
   /** Register a session's tool set; returns the URL to put in the process's mcp-config. */
-  register(sid: string, tools: McpToolDef[], onCall: (call: PendingToolCall) => void, opts?: { listedFile?: string }): string {
+  register(sid: string, tools: McpToolDef[], onCall: (call: PendingToolCall) => void, opts?: { listedFile?: string; listedOwner?: { uid: number; gid: number } | null }): string {
     const token = crypto.randomBytes(16).toString("hex");
-    this.sessions.set(sid, { sid, token, tools, pending: new Map(), onCall, ...(opts?.listedFile ? { listedFile: opts.listedFile } : {}) });
+    this.sessions.set(sid, { sid, token, tools, pending: new Map(), onCall, ...(opts?.listedFile ? { listedFile: opts.listedFile, listedOwner: opts.listedOwner ?? null } : {}) });
     return `http://127.0.0.1:${this.port}/mcp/${encodeURIComponent(sid)}/${token}`;
   }
 
@@ -214,7 +216,8 @@ export class McpServer {
       case "tools/list":
         if (s.listedFile) {
           try {
-            fs.writeFileSync(s.listedFile, "", { mode: 0o644 });
+            // The scratch dir belongs to the worker uid: never write through a name it could have replaced with a link.
+            writeFileAtomic(s.listedFile, "", { mode: 0o644, owner: s.listedOwner ?? null });
           } catch {
             /* the shim then waits ReadyWait and reports the tools unlisted */
           }

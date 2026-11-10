@@ -19,7 +19,7 @@ if(process.getuid?.()===0 && spawnSync('which',['useradd']).status===0) {
   pool.replaceAll(urls,{proxyTeams:Object.fromEntries(urls.map((u,i)=>[proxyId(u),teams[i]])),proxyAccounts:Object.fromEntries(urls.map((u,i)=>[proxyId(u),[`account${i}`]]))});
   const frames=[];
   const previous=process.env.CC_WORKER_TEAM_UIDS;process.env.CC_WORKER_TEAM_UIDS='1';
-  const manager=new CcWorkerManager({send:m=>(frames.push(m),true),identity:()=>({nodeId:'n',providerId:'p'}),isDraining:()=>false,pool,dataDir:dir,workerRoot:dir,runAsUser:null,claudeBin:process.execPath,claudeArgsPrefix:[fixture]});
+  const manager=new CcWorkerManager({send:m=>(frames.push(m),true),identity:()=>({nodeId:'n',providerId:'p'}),isDraining:()=>false,pool,dataDir:dir,workerRoot:dir,runAsUser:null,allowRoot:true,claudeBin:process.execPath,claudeArgsPrefix:[fixture]});
   try {
     for(const [i,teamId] of teams.entries())manager.handleOpen({type:'cc_worker.open',sessionId:`s${i}`,providerId:'p',nodeId:'n',accountId:`account${i}`,credentialBindingId:`account${i}`,proxyId:proxyId(urls[i]),deviceId:String(i+1).repeat(64),isolation:{teamId,conversationId:`c${i}`,generation:1},model:'claude-sonnet-5-5',prompt:'fixture',stream:true,cred:{accessToken:'synthetic-test-token'}});
     const deadline=Date.now()+10_000;

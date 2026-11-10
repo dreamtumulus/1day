@@ -36,6 +36,10 @@ function setup(opts = {}) {
     dataDir,
     claudeBin: process.execPath,
     claudeArgsPrefix: [FIXTURE],
+    // The fixture runs as the test user inside the temp dir, also when root runs the suite (never the node's real
+    // worker user / worker root); a root node without a worker user needs the explicit opt-in since X-49.
+    runAsUser: null,
+    allowRoot: true,
     ...opts,
   });
   return { manager, frames, dataDir, pool };
