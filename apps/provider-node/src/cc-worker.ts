@@ -1276,7 +1276,11 @@ export class CcWorkerManager {
       // Atomic replace: Claude Code rewrites the file itself (lock + rename); a torn file would break every later launch.
       const tmp = `${file}.trust-${process.pid}-${Date.now()}`;
       fs.writeFileSync(tmp, JSON.stringify(raw), { mode: 0o600 });
-      if (identity && !this.machineRuntime) fs.chownSync(tmp, identity.uid, identity.gid);
+      // The replacement must stay readable by the uid Claude Code runs as. With machine identity the launcher drops to
+      // the team uid itself, so "the node does not setuid" never meant "the file may stay root's": a root-owned 0600
+      // .claude.json reads as a first run and Claude Code mints a new userID (2026-11-10: 30 ccr-tui accounts, X-49).
+      const owner = fs.existsSync(file) ? fs.statSync(file) : identity ?? null;
+      if (owner && process.getuid?.() === 0) fs.chownSync(tmp, owner.uid, owner.gid);
       fs.renameSync(tmp, file);
     } catch (err) {
       this.log(`could not seed folder trust for ${cwdDir}: ${(err as Error).message}`);
