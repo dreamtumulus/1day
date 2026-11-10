@@ -1,3 +1,4 @@
+import { timingSafeEqual } from "node:crypto";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import {
   all,
@@ -9,6 +10,8 @@ import {
   encryptString,
   generateApiKey,
   getSetting,
+  isoIn,
+  sha256Hex,
   newId,
   nowIso,
   one,
@@ -31,7 +34,8 @@ import {
   str,
   type Body,
 } from "../http.js";
-import { requireConsumer } from "../session.js";
+import { recordAudit } from "../audit.js";
+import { SESSION_COOKIE, parseCookies, requireConsumer, sessionTokenHash } from "../session.js";
 import {
   API_KEY_SELECT,
   apiKeyShape,
@@ -55,6 +59,59 @@ function loadOwnKey(req: FastifyRequest, id: string): ApiKeyRow {
   const k = one<ApiKeyRow>(`${API_KEY_SELECT} WHERE k.id = ? AND k.user_id = ?`, id, req.user!.id);
   if (!k) notFound("key");
   return k;
+}
+
+// ---------- key reveal: re-authentication + rate limit (docs/auth.md §3b) ----------
+
+function envInt(name: string, fallback: number, min: number, max: number): number {
+  const n = Number(process.env[name]);
+  return Number.isFinite(n) && n >= min && n <= max ? Math.floor(n) : fallback;
+}
+
+/** A session this young counts as a fresh login (the user has just presented the login key). */
+const REVEAL_FRESH_SESSION_SEC = envInt("KEY_REVEAL_FRESH_SESSION_SEC", 600, 0, 86_400);
+/** Reveals per user per rolling hour; refused attempts have the same cap of their own. */
+const REVEAL_MAX_PER_HOUR = envInt("KEY_REVEAL_MAX_PER_HOUR", 10, 1, 1000);
+const REVEAL_PATH_LIKE = "/api/user/keys/%/reveal";
+
+/**
+ * The login key is the only credential of this auth model (no passwords), so "re-authenticate" means either
+ * the session was created in the last REVEAL_FRESH_SESSION_SEC seconds, or the request body repeats the
+ * caller's own login key (`loginKey`), checked against users.login_key_hash.
+ */
+function revealReauth(req: FastifyRequest, b: Body): { ok: true; method: "login_key" | "fresh_session" } | { ok: false; code: string; message: string } {
+  const provided = b.loginKey;
+  if (provided !== undefined && provided !== null && provided !== "") {
+    const row = one<{ login_key_hash: string }>("SELECT login_key_hash FROM users WHERE id = ? AND status = 'active'", req.user!.id);
+    const given = Buffer.from(sha256Hex(typeof provided === "string" ? provided.trim() : ""), "hex");
+    const stored = Buffer.from(row?.login_key_hash ?? "", "hex");
+    if (stored.length === given.length && timingSafeEqual(stored, given)) return { ok: true, method: "login_key" };
+    return { ok: false, code: "reauth_failed", message: "The login key does not match this account" };
+  }
+  const token = parseCookies(req.headers.cookie)[SESSION_COOKIE];
+  const session = token ? one<{ created_at: string }>("SELECT created_at FROM user_sessions WHERE token_hash = ?", sessionTokenHash(token)) : undefined;
+  const ageMs = session ? Date.now() - Date.parse(session.created_at) : NaN;
+  if (Number.isFinite(ageMs) && ageMs >= 0 && ageMs <= REVEAL_FRESH_SESSION_SEC * 1000) return { ok: true, method: "fresh_session" };
+  return {
+    ok: false,
+    code: "reauth_required",
+    message: "Enter your login key again to reveal an API key (send it as loginKey), or log in again first",
+  };
+}
+
+/** Counted from the audit trail, so the cap is shared by every console process and survives restarts. */
+function revealAttemptsLastHour(userId: string): { revealed: number; refused: number; retryAfterSec: number } {
+  const since = isoIn(-3_600_000);
+  const r = one<{ revealed: number | null; refused: number | null; oldest: string | null }>(
+    `SELECT SUM(status = 200) AS revealed, SUM(status <> 200) AS refused, MIN(at) AS oldest
+     FROM admin_audit WHERE user_id = ? AND method = 'POST' AND path LIKE ? AND at >= ?`,
+    userId,
+    REVEAL_PATH_LIKE,
+    since,
+  );
+  const oldestMs = r?.oldest ? Date.parse(r.oldest) : NaN;
+  const retryAfterSec = Number.isFinite(oldestMs) ? Math.max(1, Math.ceil((oldestMs + 3_600_000 - Date.now()) / 1000)) : 3600;
+  return { revealed: Number(r?.revealed ?? 0), refused: Number(r?.refused ?? 0), retryAfterSec };
 }
 
 /** Shared validation for key create/patch. `restrictGroups` = only groups the owner may use. */
@@ -388,11 +445,28 @@ export function registerUserRoutes(app: FastifyInstance): void {
     return { data: apiKeyShape(loadOwnKey(req, id)) };
   });
 
-  app.post("/api/user/keys/:id/reveal", pre, async (req) => {
+  // Reveal shows a stored API key again, so a session cookie alone is not enough (2026-11-10 review):
+  // fresh re-authentication, a per-user hourly cap, and an audit row for every reveal and every refused attempt.
+  app.post("/api/user/keys/:id/reveal", pre, async (req, reply) => {
     const { id } = req.params as { id: string };
+    const user = req.user!;
+    const audit = (status: number, summary: Record<string, unknown>): void =>
+      recordAudit({ userId: user.id, role: user.role, method: req.method, path: req.url.split("?")[0], status, ip: req.ip ?? null, summary: { action: "api_key_reveal", keyId: id, ...summary } });
     const k = loadOwnKey(req, id);
     if (!k.key_enc) bad("key_not_revealable", "This key was migrated from a login key and cannot be shown again");
-    return { data: { key: decryptString(k.key_enc) } };
+    const used = revealAttemptsLastHour(user.id);
+    if (used.revealed >= REVEAL_MAX_PER_HOUR || used.refused >= REVEAL_MAX_PER_HOUR) {
+      void reply.header("retry-after", String(used.retryAfterSec));
+      bad("reveal_rate_limited", `API keys can be revealed at most ${REVEAL_MAX_PER_HOUR} times per hour; try again later`, 429);
+    }
+    const auth = revealReauth(req, body(req));
+    if (!auth.ok) {
+      audit(403, { error: auth.code });
+      bad(auth.code, auth.message, 403);
+    }
+    const key = decryptString(k.key_enc);
+    audit(200, { keyName: k.name, keyPreview: k.key_preview, reauth: auth.method });
+    return { data: { key } };
   });
 
   app.delete("/api/user/keys/:id", pre, async (req) => {

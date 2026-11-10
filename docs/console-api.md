@@ -39,7 +39,7 @@
 | `GET /keys` | — | `ApiKey[]` |
 | `POST /keys` | `{name?, groupId?, quotaUsd?, expiresAt?}` | 201 `ApiKey & {key}`（明文仅此一次）；不给分组用 `default_group_id`（不可用时取第一个可用组）；超上限 400 `key_limit_reached`；分组不可用 400 `group_not_available` |
 | `PATCH /keys/:id` | `{name?, groupId?, quotaUsd?, expiresAt?(null 清除), status?: active\|disabled}` | `ApiKey` |
-| `POST /keys/:id/reveal` | — | `{key}`；legacy Key → 400 `key_not_revealable` |
+| `POST /keys/:id/reveal` | `{loginKey?}` | `{key}`；legacy Key → 400 `key_not_revealable`。需要重新认证（auth.md §3b）：会话 10 分钟内新登录，或带本人 `loginKey`；否则 403 `reauth_required` / `reauth_failed`；每用户每小时 10 次，超过 429 `reveal_rate_limited`；每次查看写审计 |
 | `DELETE /keys/:id` | — | `{ok}` |
 | `GET /usage` | `page,pageSize,from,to,keyId,model,status(ok\|error)` | 分页 `UsageRow` |
 | `GET /usage`（补充过滤） | `code`（error_code）、`mode`、`nodeId`、`statusCode`、`q`（error_message / error_code 模糊、request_id 精确） | 错误日志页用 |

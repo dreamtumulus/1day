@@ -60,6 +60,8 @@
 | 400 | `insufficient_balance` | 号商结算金额超过未结算余额 |
 | 400 | `key_limit_reached` / `group_not_available` | 建 Key 超上限 / 分组不存在或无权使用 |
 | 400 | `key_not_revealable` | legacy Key 不能再次查看 |
+| 403 | `reauth_required` / `reauth_failed` | 再次查看 API Key 需要重新认证：会话不是 10 分钟内新登录且未带 `loginKey` / `loginKey` 与本人不符（auth.md §3b） |
+| 429 | `reveal_rate_limited` | 每用户每小时查看 API Key 超过 10 次（带 `Retry-After`） |
 | 400 | `code_invalid_or_used` | 兑换码无效、已用、已停用或过期 |
 | 400 | `invalid_allowlist` | 白名单启用但为空、或格式错误 |
 | 400 | `group_protected` / `group_in_use` | 删除 / 停用默认组；分组仍有 Key |
