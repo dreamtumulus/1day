@@ -6,20 +6,60 @@ function limit(name: string, fallback: number): number {
   const n = Number(process.env[name]);
   return Number.isFinite(n) && n > 0 ? n : fallback;
 }
+/**
+ * Why a request was not admitted (X-55):
+ *  - insufficient_funds: balance + remaining credit is 0 or less;
+ *  - key_quota_exhausted: the API key has used up its quota;
+ *  - concurrency_cap: the user already has `maxInflight` requests in flight;
+ *  - reserved_spending_cap: in-flight requests already reserve the user's in-flight spending cap — which is the
+ *    available balance itself unless a lower cap is set (`capIsBalance`);
+ *  - key_quota_reserved: in-flight requests on this key already reserve what is left of its quota.
+ */
+export type AdmissionRefusalReason = "insufficient_funds" | "key_quota_exhausted" | "concurrency_cap" | "reserved_spending_cap" | "key_quota_reserved";
+export interface AdmissionRefusal {
+  ok: false;
+  reason: AdmissionRefusalReason;
+  /** The user's requests in flight / the cap that applies (null when the user or key row is gone). */
+  inFlight: number | null;
+  maxInflight: number | null;
+  /** USD reserved by the user's in-flight requests / the in-flight spending cap (null = no cap known). */
+  reservedUsd: number | null;
+  capUsd: number | null;
+  /** The cap is the user's available balance + credit, not a configured in-flight limit. */
+  capIsBalance: boolean;
+  availableUsd: number | null;
+  /** What is left of the key's quota (null = the key has no quota) and what its in-flight requests reserve. */
+  keyRemainingUsd: number | null;
+  keyReservedUsd: number | null;
+  /** What this request wanted to reserve. */
+  wantedUsd: number;
+}
+export type AdmissionDecision = { ok: true } | AdmissionRefusal;
+
 /** Shared admission limits include every gateway, API Key and in-flight request. */
 export function acquireRequestBudget(requestId: string, userId: string, apiKeyId: string, estimatedUsd: number): boolean {
+  return acquireRequestBudgetDetailed(requestId, userId, apiKeyId, estimatedUsd).ok;
+}
+
+/** `acquireRequestBudget` that says why it refused (same decision, same reservation). */
+export function acquireRequestBudgetDetailed(requestId: string, userId: string, apiKeyId: string, estimatedUsd: number): AdmissionDecision {
   if (!Number.isFinite(estimatedUsd) || estimatedUsd < 0) throw new RangeError("invalid request budget estimate");
-  return tx(() => {
+  return tx((): AdmissionDecision => {
     const now = Date.now();
     run("DELETE FROM gateway_request_budgets WHERE expires_at <= ?", now);
-    if (one("SELECT 1 FROM gateway_request_budgets WHERE request_id = ?", requestId)) return true;
+    if (one("SELECT 1 FROM gateway_request_budgets WHERE request_id = ?", requestId)) return { ok: true };
+    const num = (v: number | null | undefined): number | null => (typeof v === "number" && Number.isFinite(v) ? q8(v) : null);
     const funds = one<{ available: number; remaining: number | null; max_inflight: number | null; max_inflight_usd: number | null }>(`SELECT
       u.credit_limit_usd - u.credit_used_usd + u.balance_usd AS available,
       CASE WHEN k.quota_usd > 0 THEN k.quota_usd - k.used_usd ELSE NULL END AS remaining,
       u.max_inflight, u.max_inflight_usd
       FROM users u JOIN api_keys k ON k.user_id = u.id WHERE u.id = ? AND k.id = ?`, userId, apiKeyId);
     if (!funds || !Number.isFinite(funds.available) || funds.available <= 0
-      || (funds.remaining !== null && (!Number.isFinite(funds.remaining) || funds.remaining <= 0))) return false;
+      || (funds.remaining !== null && (!Number.isFinite(funds.remaining) || funds.remaining <= 0))) {
+      const noFunds = !funds || !Number.isFinite(funds.available) || funds.available <= 0;
+      return { ok: false, reason: noFunds ? "insufficient_funds" : "key_quota_exhausted", inFlight: null, maxInflight: null, reservedUsd: null, capUsd: null, capIsBalance: false,
+        availableUsd: num(funds?.available), keyRemainingUsd: num(funds?.remaining), keyReservedUsd: null, wantedUsd: q8(estimatedUsd) };
+    }
     const user = one<{ n: number; reserved: number }>("SELECT COUNT(*) AS n, COALESCE(SUM(reserved_usd),0) AS reserved FROM gateway_request_budgets WHERE user_id = ?", userId)!;
     const key = one<{ reserved: number }>("SELECT COALESCE(SUM(reserved_usd),0) AS reserved FROM gateway_request_budgets WHERE api_key_id = ?", apiKeyId)!;
     // Per-user overrides (migration 29, admin console → user → 并发上限); the env values stay the defaults.
@@ -31,11 +71,16 @@ export function acquireRequestBudget(requestId: string, userId: string, apiKeyId
     // One postpaid request may overrun its final balance; it reserves the whole
     // remaining budget so that concurrent requests cannot multiply that exposure.
     const reserve = q8(Math.min(Math.max(0.000001, estimatedUsd), cap, funds.remaining ?? Infinity));
-    if (user.n >= Math.floor(maxInflight) || user.reserved + reserve > cap + 1e-9
-      || (funds.remaining !== null && key.reserved + reserve > funds.remaining + 1e-9)) return false;
+    const reason: AdmissionRefusalReason | null = user.n >= Math.floor(maxInflight) ? "concurrency_cap"
+      : user.reserved + reserve > cap + 1e-9 ? "reserved_spending_cap"
+      : funds.remaining !== null && key.reserved + reserve > funds.remaining + 1e-9 ? "key_quota_reserved" : null;
+    if (reason) {
+      return { ok: false, reason, inFlight: user.n, maxInflight: Math.floor(maxInflight), reservedUsd: num(user.reserved), capUsd: num(cap), capIsBalance: cap >= funds.available,
+        availableUsd: num(funds.available), keyRemainingUsd: num(funds.remaining), keyReservedUsd: num(key.reserved), wantedUsd: reserve };
+    }
     run("INSERT INTO gateway_request_budgets(request_id,user_id,api_key_id,reserved_usd,expires_at) VALUES (?,?,?,?,?)",
       requestId, userId, apiKeyId, reserve, now + LEASE_MS);
-    return true;
+    return { ok: true };
   });
 }
 export function renewRequestBudget(requestId: string): void {
