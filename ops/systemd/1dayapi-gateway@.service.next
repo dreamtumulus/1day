@@ -1,0 +1,42 @@
+# NEW-LAYOUT TEMPLATE, NOT INSTALLED (docs/operations.md §4.2 "发布目录与 current 软链"). The unit in use is
+# 1dayapi-gateway@.service next to this file; this one replaces it in stage 2 of the migration plan.
+#
+# Differences from the current unit:
+#   - code runs from /opt/1dayapi-releases/current (a symlink to /opt/1dayapi-releases/<git sha>/ built and
+#     verified by ops/bin/release-build), not from the mutable checkout /opt/1dayapi;
+#   - DATA_DIR is explicit and outside the code tree, so a new release directory can never start with an empty
+#     data/ of its own (packages/core/src/paths.ts defaults DATA_DIR to <code root>/data);
+#   - the service refuses to start from a release that did not pass the gate (RELEASE_OK marker).
+# Stage 2 keeps DATA_DIR=/opt/1dayapi/data (no data move); stage 3 changes the one line to /var/lib/1dayapi/data.
+[Unit]
+Description=1dayAPI inference gateway on 127.0.0.1:%i (blue/green instance, fronted by nginx api.1dayapi.com)
+After=network.target 1dayapi-mock-upstream.service
+Wants=1dayapi-mock-upstream.service
+ConditionPathExists=/opt/1dayapi-releases/current/RELEASE_OK
+
+[Service]
+Type=simple
+User=1dayapi
+Group=1dayapi
+WorkingDirectory=/opt/1dayapi-releases/current
+ExecStart=/usr/local/bin/node apps/gateway/dist/index.js
+Environment=HOME=/var/lib/1dayapi
+Environment=BUN_PATH=/usr/local/bin/bun
+Environment=DATA_DIR=/opt/1dayapi/data
+Environment=HOST=127.0.0.1
+Environment=PORT=%i
+Environment=UPSTREAM_OPENAI_BASE=http://127.0.0.1:19001
+Environment=UPSTREAM_OPENAI_KEY=mock
+Environment=UPSTREAM_ANTHROPIC_BASE=http://127.0.0.1:19001
+Environment=UPSTREAM_ANTHROPIC_KEY=mock
+Environment=STREAM_IDLE_TIMEOUT_MS=300000
+Environment=TUNNEL_TRACE=1
+# Worker turn cap 20 min; the drain must outlast it (see the current unit for the history of these values).
+Environment=CCR_SESSION_TIMEOUT_MS=1200000
+Environment=DRAIN_TIMEOUT_MS=1500000
+TimeoutStopSec=1560
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

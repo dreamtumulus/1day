@@ -1,0 +1,31 @@
+# NEW-LAYOUT TEMPLATE, NOT INSTALLED (docs/operations.md §4.2). The console unit in use lives only on the server
+# (/etc/systemd/system/1dayapi-console.service + drop-ins) and is not in the repository; this template is the
+# target shape for stage 2 of the migration plan. Before installing it, copy every Environment= line of the
+# installed unit and its drop-ins (`systemctl cat 1dayapi-console`) into /etc/1dayapi/console.env: the values
+# below marked "installed value" are deployment data this repository does not hold.
+[Unit]
+Description=1dayAPI console API on 127.0.0.1:8401 (control plane, node tunnels)
+After=network.target
+ConditionPathExists=/opt/1dayapi-releases/current/RELEASE_OK
+
+[Service]
+Type=simple
+User=1dayapi
+Group=1dayapi
+WorkingDirectory=/opt/1dayapi-releases/current
+ExecStart=/usr/local/bin/node apps/console/dist/index.js
+Environment=HOME=/var/lib/1dayapi
+Environment=BUN_PATH=/usr/local/bin/bun
+Environment=DATA_DIR=/opt/1dayapi/data
+Environment=HOST=127.0.0.1
+Environment=PORT=8401
+Environment=TRUST_PROXY=127.0.0.1,::1
+Environment=COOKIE_SECURE=1
+Environment=REQUIRE_TEAM_UID_ISOLATION=1
+# PLATFORM_WS_URL, TRUSTED_EXECUTION_NODE_IDS and anything else the installed unit sets (installed values):
+EnvironmentFile=/etc/1dayapi/console.env
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
