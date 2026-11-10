@@ -87,7 +87,7 @@ CCR 实例：`1dayapi-node-tui`，端口 16890，Claude Code 2.1.319（latest �
 TUI 特有的 502：粘贴后提交失败 41（原因被 300 字 stderr 尾巴截掉）、信任对话框自动应答失败 ≈25、导入后 `--resume` 失败 17、图片路径粘贴 3。
 本次修复：`seedFolderTrust`（启动前预写 `projects[cwd].hasTrustDialogAccepted`）、`stderrCause`（引用 `claude-tui:` 原因行）、网关 session_lost 预读 + fresh 重开（`apps/gateway/src/ccr/worker.ts` / `proxy.ts`）。
 
-**版本升级注意**：垫片靠屏幕文本工作（trust 对话框、`[Pasted text #n`、`[Image #n]`、首次运行页、/usage 面板、transcript 字段）。升级 Claude Code 必须并排安装到 `/opt/claude-<ver>`，先在一台 TUI 节点 canary 半天看 502 分类，再推全量；`-p` 节点可以直接换二进制，TUI 节点不能。重建垫片需 Go 1.26（`go.mod`），两台服务器目前都没有 Go 工具链。
+**版本升级注意**：垫片靠屏幕文本工作（trust 对话框、`[Pasted text #n`、`[Image #n]`、首次运行页、/usage 面板、transcript 字段）。升级 Claude Code 必须并排安装到 `/opt/claude-<ver>`，先在一台 TUI 节点 canary 半天看 502 分类，再推全量；`-p` 节点可以直接换二进制，TUI 节点不能。重建垫片需 Go 1.26（`go.mod`）：2026-11-10 起主服务器装有 go1.26.10（`/root/.local/go/bin/go`，即 `sync.sh` 的默认路径；模块缓存 `/root/.local/gopath`），`cd /opt/1dayapi/third_party/magpie-claudetui && GO=/root/.local/go/bin/go ./sync.sh <magpie 检出>` 重新 vendor + 构建，产物 `dist/cc-tui-shim` 由控制台部署时下发到节点。
 
 ## 7. 待办
 
