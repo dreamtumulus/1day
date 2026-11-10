@@ -107,6 +107,7 @@ import { wait, responseBytes, renewWithRetry } from "./lifecycle.js";
 import { bump } from "./metrics.js";
 import { NETWORK_FAILURE_CLASS, capBeforeAttempt, httpFailureClass, newRetryState, noteFailureClass, upstreamErrorType, type CapReason, type RetryState } from "./retry-policy.js";
 import { credentialProblem, directAuthSignal } from "./direct-auth.js";
+import { LocalStreamError, decideStreamSettlement } from "./stream-settlement.js";
 import { disposalKinds, failureSignals, requestEchoText, signalText, workerFailureEvidence, type DisposalKind, type FailureSource, type SignalDecision } from "./ccr/failure-evidence.js";
 // Canonical worker turns the legacy worker takes over (2026-11-05, probe toolround-import): a tool round no live native
 // session holds / an external history canonical may not import, or canonical needing the persistent pool. The legacy
@@ -618,9 +619,43 @@ async function proxyAuthorized(req: FastifyRequest, reply: FastifyReply, format:
   catch (err) {
     if ((err as Error).message !== "conversation ownership changed") throw err;
     if (scope.responseCtx) { stopEarlyKeepalive(scope.responseCtx); stopNonStreamHeartbeat(scope.responseCtx); }
+    // Visible in the usage log and the journal (review 2026-11-09 F): before this the event left no trace at all.
+    logOwnershipChange(req, caller, endpoint, originalBody, scope);
+    // Client-visible behaviour is unchanged in this pass: the platform's reset notice, sent as an assistant message
+    // (HTTP 200, x-1day-context-reset: 1) — i.e. a platform-authored text in the place of a model answer.
     if (!reply.raw.writableEnded) sendResetNotice(reply, format, originalBody);
   }
   finally { clearInterval(renewal); conversationDone = true; releaseConversationLease(scope.row.id, token); }
+}
+
+/**
+ * The conversation's generation moved on (another request reset it, or its lease was lost) while this request was
+ * running: a zero-cost 409 `context_reset` failure row and one log line. Whatever upstream answer was in hand has
+ * been cancelled by the caller and is not billed.
+ */
+function logOwnershipChange(req: FastifyRequest, caller: CallerContext, endpoint: string, originalBody: Json, scope: ConversationScope): void {
+  const ctx = scope.responseCtx;
+  const account = ctx?.scopeLossAccount ?? null;
+  const message = `Conversation ownership changed while this request was running (conversation ${scope.row.id}, generation ${scope.row.generation}): ${account ? `the answer of account ${account.name} was discarded and its upstream body cancelled` : "no upstream answer was in hand"}; the client received the platform's reset notice as an assistant message, not a model answer.`;
+  bump("conversation_ownership_changed_total", { answer_in_hand: account ? "yes" : "no" });
+  console.warn(`[proxy] ${ctx?.requestId ?? lifecycles.get(req)?.requestId ?? "-"} key=${caller.apiKeyId} ${message}`);
+  if (ctx) {
+    ctx.trace.failure = { scope: "request", code: "context_reset", message: "conversation ownership changed", retryable: true, status: 409, credentialVersion: ctx.credentialVersion ?? undefined, executionSequence: ctx.executionSequence };
+    ctx.trace.upstreamStatus = null;
+    ctx.trace.upstreamMessage = null;
+    logFailure(ctx, account, 409, "context_reset", message);
+    return;
+  }
+  try {
+    settleRequest({
+      requestId: lifecycles.get(req)?.requestId ?? crypto.randomUUID(), userId: caller.userId, apiKeyId: caller.apiKeyId, groupId: caller.groupId, rateMultiplier: caller.rateMultiplier,
+      accountId: null, providerId: null, payoutRate: 0, model: (typeof originalBody.model === "string" && originalBody.model.trim()) || "-", upstreamModel: null, endpoint,
+      stream: originalBody.stream === true, statusCode: 409, errorCode: "context_reset", errorScope: "request", retryable: true,
+      usage: { input_tokens: 0, output_tokens: 0 }, usageEstimated: false, durationMs: 0, clientIp: clientIp(req), errorMessage: message,
+    });
+  } catch (err) {
+    console.error("[proxy] failed to log the ownership change:", err);
+  }
 }
 
 async function lockScope(scope: ConversationScope): Promise<void> {
@@ -1978,10 +2013,13 @@ function settleSuccess(
    * reported no usage, tokens are chars/4". Kept so call sites stay unchanged.
    */
   _ccrExecuted = false,
+  /** The stream stopped before its terminal event: bill max(reported, what was forwarded) and flag it estimated (E). */
+  partial = false,
 ): void {
   try {
     acc.observeRequest(ctx.body);
-    const { usage, estimated } = acc.finalize(ctx.body);
+    const { usage, estimated } = acc.finalize(ctx.body, { partial });
+    if (partial) console.warn(`[billing] ${ctx.requestId} partial stream settled on ${account.name}: output_tokens=${usage.output_tokens}${estimated ? " (estimated from the forwarded text; the upstream's final count never arrived)" : " (as reported)"}`);
     if (ctx.forceCacheBilling && usage.input_tokens > 0) {
       usage.cache_read_tokens = (usage.cache_read_tokens ?? 0) + usage.input_tokens;
       usage.input_tokens = 0;
@@ -2116,7 +2154,9 @@ async function deliver(
   } catch {
     /* non-JSON body: pass through untouched */
   }
-  assertScope(ctx.scope);
+  // The whole body is already read here (nothing left to cancel); name the account for the failure row (F).
+  try { assertScope(ctx.scope); }
+  catch (err) { ctx.scopeLossAccount = account; throw err; }
   try { settleSuccess(ctx, account, upstreamModel, acc, null, ccrExecuted); }
   catch { fail(ctx, account, 503, "settlement_unavailable", "The response could not be safely recorded. Contact the administrator with the request time before retrying.", "api_error"); return; }
 
@@ -2145,6 +2185,9 @@ async function deliver(
   }
   ctx.reply.status(200).header("content-type", "application/json").send(out);
 }
+
+/** How long a client may leave the socket's buffer full before its stream is given up (env CLIENT_WRITE_STALL_MS, default 30 s). */
+const CLIENT_WRITE_STALL_MS = (() => { const n = Number(process.env.CLIENT_WRITE_STALL_MS); return Number.isFinite(n) && n >= 1 ? Math.floor(n) : 30_000; })();
 
 interface SseEvent {
   raw: string;
@@ -2187,17 +2230,19 @@ async function deliverStream(
 
   const acc = new UsageAccumulator();
   const forwarded: Buffer[] = [];
-  const wantProof = !!teeProofRequested(ctx.req);
+  let wantProof = !!teeProofRequested(ctx.req);
   let firstTokenMs: number | null = null;
   let clientGone = ctx.clientGone;
   /** Upstream signalled failure inside the 200 stream (Anthropic `error` event, OpenAI `{error}` chunk, CCR executor error). */
   let streamError: string | null = null;
   /** The upstream stream reached its normal terminator (message_stop / [DONE] / response.completed). */
   let completed = false;
+  /** The request's scheduling lease was lost while the client was still there (not an upstream error). */
+  let leaseLost = false;
   let reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
   const onGone = () => {
     if (ctx.clientGone || reply.raw.destroyed) clientGone = true;
-    else streamError = "request scheduling lease lost";
+    else leaseLost = true;
     // Stop reading upstream right away so the account's concurrency slot is
     // not held by a stream nobody is listening to.
     reader?.cancel().catch(() => {});
@@ -2220,15 +2265,15 @@ async function deliverStream(
     const b = Buffer.from(s, "utf8");
     if (wantProof) {
       proofBytes += b.length;
-      if (proofBytes > 8_388_608) throw new Error("proof response exceeds 8 MiB");
+      if (proofBytes > 8_388_608) throw new LocalStreamError("gateway", "proof response exceeds 8 MiB");
       forwarded.push(b);
     }
     if (!reply.raw.write(b)) {
       await new Promise<void>((resolve, reject) => {
         const cleanup = () => { clearTimeout(timer); reply.raw.off("drain", ready); reply.raw.off("close", closed); ctx.abort.signal.removeEventListener("abort", closed); };
         const ready = () => { cleanup(); resolve(); };
-        const closed = () => { cleanup(); reject(new Error("client closed during backpressure")); };
-        const timer = setTimeout(() => { cleanup(); reject(new Error("client write stalled for 30s")); }, 30_000);
+        const closed = () => { cleanup(); reject(ctx.abort.signal.aborted && !ctx.clientGone && !reply.raw.destroyed ? new Error("request scheduling lease lost") : new LocalStreamError("client", "client closed during backpressure")); };
+        const timer = setTimeout(() => { cleanup(); reject(new LocalStreamError("client", `client write stalled for ${Math.round(CLIENT_WRITE_STALL_MS / 1000)}s`)); }, CLIENT_WRITE_STALL_MS);
         reply.raw.once("drain", ready); reply.raw.once("close", closed); ctx.abort.signal.addEventListener("abort", closed, { once: true });
         if (ctx.abort.signal.aborted || reply.raw.destroyed) closed();
       });
@@ -2241,6 +2286,11 @@ async function deliverStream(
   const toAnthropic = mode === "anthropic-via-chat" ? new OpenaiToAnthropicStream(ctx.model) : null;
   const rewriteModel = upstreamModel !== ctx.model;
 
+  /**
+   * An upstream-signalled error. Recorded only while the client is still there: once it has left, the executor's own
+   * "aborted" error event is the echo of our cancel, not an upstream failure, and nothing is forwarded any more.
+   */
+  const upstreamFailed = (message: string): void => { if (!clientGone) streamError = message; };
   const handle = async (ev: SseEvent): Promise<void> => {
     if (!ev.data) {
       if (!toOpenai && !toAnthropic && !toResponses) await write(`${ev.raw}\n\n`);
@@ -2267,9 +2317,9 @@ async function deliverStream(
             acc.addAnthropic(j.message?.usage);
           } else if (j.type === "message_delta") acc.addAnthropic(j.usage);
           else if (j.type === "content_block_start") acc.addAnthropicContent([j.content_block]);
-          else if (j.type === "content_block_delta") acc.addText(j.delta?.text ?? j.delta?.partial_json);
+          else if (j.type === "content_block_delta") acc.addText(j.delta?.text ?? j.delta?.partial_json ?? j.delta?.thinking);
           else if (j.type === "message_stop") completed = true;
-          else if (j.type === "error" || ev.event === "error") streamError = String(j.error?.message ?? j.message ?? "upstream error");
+          else if (j.type === "error" || ev.event === "error") upstreamFailed(String(j.error?.message ?? j.message ?? "upstream error"));
         }
         if (toOpenai) {
           if (j) for (const s of toOpenai.push(j)) await write(s);
@@ -2291,7 +2341,7 @@ async function deliverStream(
             acc.addText(choice?.delta?.content);
             acc.addOpenAIToolCalls(choice?.delta?.tool_calls ?? choice?.message?.tool_calls);
           }
-          if (j.error && !(Array.isArray(j.choices) && j.choices.length)) streamError = String(j.error?.message ?? j.error ?? "upstream error");
+          if (j.error && !(Array.isArray(j.choices) && j.choices.length)) upstreamFailed(String(j.error?.message ?? j.error ?? "upstream error"));
           else if (j.choices?.[0]?.finish_reason) completed = true;
         }
         if (toAnthropic) {
@@ -2312,11 +2362,11 @@ async function deliverStream(
             acc.addResponses(j.response.usage);
             for (const item of Array.isArray(j.response.output) ? j.response.output : []) acc.addResponsesItem(item);
             completed = !j.response.status || j.response.status === "completed";
-            if (!completed) streamError = `upstream response ended with status ${j.response.status}`;
+            if (!completed) upstreamFailed(`upstream response ended with status ${j.response.status}`);
           }
-          if (j.type === "response.incomplete" || j.type === "response.cancelled") streamError = "upstream response was incomplete";
+          if (j.type === "response.incomplete" || j.type === "response.cancelled") upstreamFailed("upstream response was incomplete");
           if (j.type === "response.output_text.delta") acc.addText(j.delta);
-          if (j.type === "error" || j.type === "response.failed") streamError = String(j.error?.message ?? j.response?.error?.message ?? "upstream error");
+          if (j.type === "error" || j.type === "response.failed") upstreamFailed(String(j.error?.message ?? j.response?.error?.message ?? "upstream error"));
         }
         await write(`${ev.raw}\n\n`);
         break;
@@ -2325,6 +2375,8 @@ async function deliverStream(
   };
 
   let readError: string | null = null;
+  /** The stream was stopped by the client's behaviour or by a gateway limit — not by the upstream. */
+  let localFault: LocalStreamError | null = null;
   try {
     if (!res.body) throw new Error("upstream stream has no body");
     reader = res.body.getReader();
@@ -2354,10 +2406,10 @@ async function deliverStream(
       while ((m = boundary.exec(pending)) !== null) {
         const chunk = pending.slice(0, m.index);
         pending = pending.slice(m.index + m[0].length);
-        if (Buffer.byteLength(chunk) > 2_097_152) throw new Error("upstream SSE event exceeds 2 MiB");
+        if (Buffer.byteLength(chunk) > 2_097_152) throw new LocalStreamError("gateway", "upstream SSE event exceeds 2 MiB");
         if (chunk.trim()) await handle(parseSseEvent(chunk));
       }
-      if (Buffer.byteLength(pending) > 2_097_152) throw new Error("upstream SSE event exceeds 2 MiB");
+      if (Buffer.byteLength(pending) > 2_097_152) throw new LocalStreamError("gateway", "upstream SSE event exceeds 2 MiB");
     }
     pending += decoder.decode();
     if (pending.trim()) await handle(parseSseEvent(pending));
@@ -2368,66 +2420,117 @@ async function deliverStream(
       await write(`event: tee.proof\ndata: ${JSON.stringify(proof)}\n\n`);
     }
   } catch (err) {
-    readError = (err as Error).message;
-    console.error(`[proxy] ${ctx.requestId} stream error:`, readError);
+    if (err instanceof LocalStreamError) {
+      localFault = err;
+      // A client that stopped reading is treated as gone from here on: nothing more is written to it.
+      if (err.fault === "client") clientGone = true;
+      // No proof will be issued for a stream the gateway cut: stop accounting for it, so the closing error event gets out.
+      else wantProof = false;
+    } else readError = (err as Error).message;
+    console.error(`[proxy] ${ctx.requestId} stream error:`, (err as Error).message);
   } finally {
     done();
     stopEarlyKeepalive(ctx);
     ctx.abort.signal.removeEventListener("abort", onGone);
-    // A stream that failed before reaching its terminator is not a served
-    // request: no charge, a failure row, a short cooldown (unless the client
-    // simply went away — then whatever upstream reported is billed as usual).
-    const failed = !clientGone && (streamError !== null || readError !== null || !completed);
-    if (clientGone && firstTokenMs === null) {
-      // Nothing ever reached the client: not a served request (the upstream work was cancelled above).
-      console.warn(`[proxy] ${ctx.requestId} account ${account.name}: client closed before the first byte; not billed`);
-      logFailure(ctx, account, 499, "client_closed", "Client closed the connection before the first byte");
-    } else if (failed) {
-      const message = streamError ?? readError ?? "upstream stream ended without a terminator";
-      console.warn(`[proxy] ${ctx.requestId} account ${account.name}: stream failed: ${message}`);
-      const schedulingLost = ctx.abort.signal.aborted && !clientGone;
-      // Claude Code's context overflow / safety refusal is the request's fault: log it as such and hand
-      // the client Claude Code's own sentence (the auto-compact trigger) as an invalid_request_error.
-      // `mode` here is the wire mode (passthrough-anthropic for a worker stream too): the CCR flag is ccrExecuted.
-      const reqErr = ccrExecuted || isCcrMode(mode) ? classifyCcRequestError(message) : null;
-      // A request-level refusal is not the account's fault: no cooldown (2026-11-08: 162 streamed safeguards refusals of one
-      // key in three days each cooled the account that answered them). Raw relay (§4a): no cooldown either.
-      // Worker / cloud stream: the provenance the executor recorded decides what the text may do (D). A direct-lane
-      // `error` event is the upstream's own structured answer.
-      if (!schedulingLost && !reqErr && account.raw_passthrough !== 1) markCcrFailure(ctx, account, `stream: ${message.slice(0, 300)}`, ccrExecuted ? workerFailureSource(ctx) : "http_body");
-      ctx.streamTruncated = true;
-      ctx.trace.failure = {
-        scope: reqErr ? "request" : "transport",
-        code: schedulingLost ? "scheduling_lease_lost" : reqErr?.code ?? "upstream_stream_error",
-        message,
-        retryable: !reqErr,
-        status: schedulingLost ? 503 : reqErr ? 400 : 502,
-        credentialVersion: ctx.credentialVersion ?? undefined,
-        executionSequence: ctx.executionSequence,
-      };
-      if (schedulingLost) logFailure(ctx, account, 503, "scheduling_lease_lost", message);
-      else if (reqErr) logFailure(ctx, account, 400, reqErr.code, reqErr.message);
-      else logFailure(ctx, account, 502, "upstream_stream_error", `Stream failed before its terminator: ${message.slice(0, 300)}`);
-      if (readError !== null || (!streamError && !completed) || reqErr) {
-        // Nothing upstream-shaped was forwarded for this failure: tell the client in its dialect.
-        const text = reqErr ? reqErr.message : `upstream: ${message}`;
-        const type = reqErr ? "invalid_request_error" : "api_error";
-        await write(
-          ctx.format === "anthropic"
-            ? `event: error\ndata: ${JSON.stringify({ type: "error", error: { type, message: text } })}\n\n`
-            : `data: ${JSON.stringify({ error: { message: text, type, param: null, code: null } })}\n\n`,
-        ).catch(() => {});
-      }
-    } else {
-      // A stream that reached its terminator is proof the account's credentials work.
-      if (completed) authFailures.clear(account.id);
+    // Whatever ended the stream, the upstream body is not left open: a worker stream's cancel stops the remote
+    // process, a direct one frees the socket (E — the local-fault paths used to leave the reader uncancelled).
+    void reader?.cancel().catch(() => {});
+    // The settlement table (stream-settlement.ts): one decision from the facts, then act on it.
+    const decision = decideStreamSettlement({
+      completed,
+      clientGone,
+      upstreamError: streamError !== null,
+      readError: readError !== null,
+      localFault: localFault?.fault ?? null,
+      leaseLost: leaseLost || (ctx.abort.signal.aborted && !clientGone && localFault?.fault !== "client"),
+      firstByteSent: firstTokenMs !== null,
+    });
+    const errorEvent = (text: string, type: string): string => ctx.format === "anthropic"
+      ? `event: error\ndata: ${JSON.stringify({ type: "error", error: { type, message: text } })}\n\n`
+      : `data: ${JSON.stringify({ error: { message: text, type, param: null, code: null } })}\n\n`;
+    const settle = async (partial: boolean): Promise<boolean> => {
       // Settle before ending the response so a client that sees the stream
       // finish can immediately observe the charge. (144faa3 put the completed
       // case in its own branch above this call: completed streams went unbilled
       // for ~10 h on 2026-10-17 — see docs/issues-and-decisions.md.)
-      try { settleSuccess(ctx, account, upstreamModel, acc, firstTokenMs, ccrExecuted); }
-      catch { await write(ctx.format === "anthropic" ? `event: error\ndata: ${JSON.stringify({ type: "error", error: { type: "api_error", message: "Settlement recording unavailable; contact the administrator before retrying." } })}\n\n` : `data: ${JSON.stringify({ error: { message: "Settlement recording unavailable; contact the administrator before retrying.", code: "settlement_unavailable" } })}\n\n`).catch(() => {}); }
+      try { settleSuccess(ctx, account, upstreamModel, acc, firstTokenMs, ccrExecuted, partial); return true; }
+      catch { await write(ctx.format === "anthropic" ? `event: error\ndata: ${JSON.stringify({ type: "error", error: { type: "api_error", message: "Settlement recording unavailable; contact the administrator before retrying." } })}\n\n` : `data: ${JSON.stringify({ error: { message: "Settlement recording unavailable; contact the administrator before retrying.", code: "settlement_unavailable" } })}\n\n`).catch(() => {}); return false; }
+    };
+    switch (decision.outcome) {
+      case "client_unserved":
+        // Nothing ever reached the client: not a served request (the upstream work was cancelled above).
+        console.warn(`[proxy] ${ctx.requestId} account ${account.name}: client closed before the first byte; not billed`);
+        logFailure(ctx, account, 499, "client_closed", "Client closed the connection before the first byte");
+        break;
+      case "success":
+        // A stream that reached its terminator is proof the account's credentials work.
+        authFailures.clear(account.id);
+        await settle(false);
+        break;
+      case "partial": {
+        // Cut short by the client (gone, or not reading) or by one of the gateway's own limits: what was produced is
+        // billed — at least the forwarded text and thinking — and the account, which did nothing wrong, is not cooled.
+        const why = localFault ? localFault.message : "client closed the connection";
+        console.warn(`[proxy] ${ctx.requestId} account ${account.name}: stream cut short (${why}); settling what was produced, account not cooled`);
+        bump("stream_partial_settled_total", { cause: localFault ? localFault.fault : "client_closed" });
+        ctx.streamTruncated = true;
+        await settle(true);
+        if (localFault?.fault === "gateway") await write(errorEvent(`gateway: ${localFault.message}`, "api_error")).catch(() => {});
+        break;
+      }
+      case "gateway_unserved": {
+        const message = localFault?.message ?? "gateway stream limit";
+        console.warn(`[proxy] ${ctx.requestId} account ${account.name}: ${message} before anything was forwarded; not billed, account not cooled`);
+        bump("stream_gateway_limit_total");
+        ctx.streamTruncated = true;
+        ctx.trace.failure = { scope: "request", code: "gateway_stream_limit", message, retryable: false, status: 502, credentialVersion: ctx.credentialVersion ?? undefined, executionSequence: ctx.executionSequence };
+        logFailure(ctx, account, 502, "gateway_stream_limit", `Stream stopped by a gateway limit: ${message}`);
+        await write(errorEvent(`gateway: ${message}`, "api_error")).catch(() => {});
+        break;
+      }
+      case "lease_lost": {
+        const message = "request scheduling lease lost";
+        console.warn(`[proxy] ${ctx.requestId} account ${account.name}: stream failed: ${message}`);
+        ctx.streamTruncated = true;
+        ctx.trace.failure = { scope: "transport", code: "scheduling_lease_lost", message, retryable: true, status: 503, credentialVersion: ctx.credentialVersion ?? undefined, executionSequence: ctx.executionSequence };
+        logFailure(ctx, account, 503, "scheduling_lease_lost", message);
+        break;
+      }
+      case "upstream_failure": {
+        // A stream that failed before reaching its terminator is not a served
+        // request: no charge, a failure row, a short cooldown.
+        const message = streamError ?? readError ?? "upstream stream ended without a terminator";
+        console.warn(`[proxy] ${ctx.requestId} account ${account.name}: stream failed: ${message}`);
+        // Claude Code's context overflow / safety refusal is the request's fault: log it as such and hand
+        // the client Claude Code's own sentence (the auto-compact trigger) as an invalid_request_error.
+        // `mode` here is the wire mode (passthrough-anthropic for a worker stream too): the CCR flag is ccrExecuted.
+        const reqErr = ccrExecuted || isCcrMode(mode) ? classifyCcRequestError(message) : null;
+        // A request-level refusal is not the account's fault: no cooldown (2026-11-08: 162 streamed safeguards refusals of one
+        // key in three days each cooled the account that answered them). Raw relay (§4a): no cooldown either.
+        // Worker / cloud stream: the provenance the executor recorded decides what the text may do (D). A direct-lane
+        // `error` event is the upstream's own structured answer.
+        if (decision.coolAccount && !reqErr && account.raw_passthrough !== 1) markCcrFailure(ctx, account, `stream: ${message.slice(0, 300)}`, ccrExecuted ? workerFailureSource(ctx) : "http_body");
+        ctx.streamTruncated = true;
+        ctx.trace.failure = {
+          scope: reqErr ? "request" : "transport",
+          code: reqErr?.code ?? "upstream_stream_error",
+          message,
+          retryable: !reqErr,
+          status: reqErr ? 400 : 502,
+          credentialVersion: ctx.credentialVersion ?? undefined,
+          executionSequence: ctx.executionSequence,
+        };
+        if (reqErr) logFailure(ctx, account, 400, reqErr.code, reqErr.message);
+        else logFailure(ctx, account, 502, "upstream_stream_error", `Stream failed before its terminator: ${message.slice(0, 300)}`);
+        if (readError !== null || (!streamError && !completed) || reqErr) {
+          // Nothing upstream-shaped was forwarded for this failure: tell the client in its dialect.
+          await write(errorEvent(reqErr ? reqErr.message : `upstream: ${message}`, reqErr ? "invalid_request_error" : "api_error")).catch(() => {});
+        }
+        break;
+      }
     }
-    if (!clientGone) reply.raw.end();
+    // A client that stopped reading is still connected: end() would wait on it forever, so its socket is closed.
+    if (localFault?.fault === "client" && !reply.raw.destroyed) reply.raw.destroy();
+    else if (!clientGone) reply.raw.end();
   }
 }
