@@ -37,6 +37,7 @@
 | `settings` | 键值配置 | — |
 | `affinity_bindings` | 网关粘性会话 / 设备池的落盘副本（跨蓝绿发布保持会话、设备 → 账号的对应） | 无外键（account_id 只是值） |
 | `worker_turn_memory` | 网关侧 worker 持久会话轮次记忆的落盘副本（reuseKey → JSON TurnMemory） | — |
+| `ccr_overhead_calibration` | CCR 通道平台提示词开销的校准状态（键 → 样本窗口 / p10 值），各网关实例共享（X-54，迁移 43） | — |
 
 索引：`api_keys(user_id)`、`accounts(owner_id)`、`usage_logs` 上 `(user_id,created_at)`、`(api_key_id,created_at)`、
 `(provider_id,created_at)`、`(account_id,created_at)`、`(created_at)`、`ledger(user_id,created_at)`；
@@ -127,6 +128,21 @@ console 定时任务每 `cache_refund_interval_sec`（默认 86400）跑一轮�
 `expires_at` unix 毫秒（= 进程内 TTL 10 min，与节点 idle TTL 一致）。只有网关读写；蓝绿切换后新实例据此对同一对话算出 `continue`，
 不再把全量历史折叠进新进程。同样不是账单数据，可清空（后果 = 下一轮 fresh）。
 
+### ccr_overhead_calibration（迁移 43，X-54，2026-11-10）
+
+worker / 云端通道「Claude Code 自己加的提示词有多少 token」的学习结果（ccr-supply.md §7.1，`packages/core/src/overhead-calibration.ts`）。
+
+| 列 | 类型 | 说明 |
+|---|---|---|
+| `key` | TEXT PK | `通道|工具|上游模型|Claude Code 版本`，如 `tui|none|claude-opus-5-5|2.1.322`；通道 `legacy` / `p` / `tui` / `cloud`，工具 `none` / `caller` / `caller-only`，版本未知为 `-` |
+| `samples` | TEXT | JSON `[[毫秒时间戳, token 数], …]`，最近 64 个样本（样本 = 上游提示词合计 − 客户提示词本地估算） |
+| `n` | INTEGER | 累计接受的样本数 |
+| `value` | INTEGER NULL | 窗口的 p10；窗口不足 8 个样本时为 NULL（此时用固定值 / 内置默认 / 旧基线） |
+| `updated_at` | TEXT | 最近一次写入（ISO 时间） |
+
+只有网关写（每个键最多 15 秒一次，事务内合并）、网关和控制台读。不是账单数据：清空（`DELETE /api/admin/ccr-overhead`）的后果只是各键回到
+固定值 / 内置默认，重新攒样本。45 天没更新的键在写入时顺带清掉。
+
 ### ledger
 - `kind`：`redeem | admin_adjust | payout | legacy_topup | cache_refund`（以及迁移来的旧 kind，如 `redeem`、`admin_adjust`）。
 - `amount_usd` 正入负出；`balance_after` 为变动后余额（迁移来的历史行记 0）。用量扣费**不**写 ledger。
@@ -171,8 +187,10 @@ console 定时任务每 `cache_refund_interval_sec`（默认 86400）跑一轮�
 | `proxy_release_cooldown_sec` | `86400` | 删除 error 状态账号（401 吊销 / on hold）释放的代理在此时长内不分配给新账号（`node_proxies.cooldown_until`）；0 = 关闭 |
 | `onboard_cooldown_min_sec` / `onboard_cooldown_max_sec` | `3720` / `4200` | 新号冷静期：授权完成后随机 62～70 分钟不参与调度（写 `temp_unschedulable_until`）；两项为 0 = 关闭 |
 | `window_passive_max_age_sec` | `21600` | 账号超过此秒数无任何窗口采样才主动探测 usage（被动优先，ccr-supply.md §7） |
-| `ccr_cache_baseline_worker` | `16600` | worker 模式身份上下文缓存基线（token），客户可见缓存 = 上游缓存 − 基线（ccr-supply.md §7.1） |
+| `ccr_cache_baseline_worker` | `16600` | worker 模式身份上下文缓存基线（token）。X-54 起是平台开销扣减的最后一级回落和下限（ccr-supply.md §7.1）；生产值 700 |
 | `ccr_cache_baseline_cloud` | `28000` | 云端会话模式同上 |
+| `ccr_overhead_calibration` | `on` | 平台提示词开销校准（X-54，ccr-supply.md §7.1）：`on` = 逐键从真实流量学习并使用；`off` = 不学习、不用学到的值（固定值 → 内置默认 → 上面两个基线） |
+| `ccr_overhead_pins` | 空 | 固定每次上游调用的平台开销：`lane[:tools[:model]]=tokens`，逗号 / 分号 / 换行分隔，最具体的一条生效，优先于学到的值和内置默认；基线仍是扣减下限 |
 | `ccr_cache_write_as_input` | `0` | CCR 路径超出基线的缓存写入怎么呈现和计费：`0`（默认，X-51）= 官方口径，报为 `cache_creation_input_tokens` + 5m / 1h 拆分并按写入价计；`1` = 逃生开关，并入 `input_tokens` 按输入价计（2026-10-17～11-10 的做法） |
 | `cache_refund_enabled` / `cache_refund_percent` / `cache_refund_interval_sec` | `1` / `80` / `86400` | 缓存重建返还（本节 cache_refunds）：是否自动跑、返还差额的百分比（0 = 只标记不返钱）、定时间隔（≥ 3600）。关闭只停定时任务，手动返还仍可用 |
 
@@ -267,6 +285,8 @@ console 定时任务每 `cache_refund_interval_sec`（默认 86400）跑一轮�
 | `onboarding_jobs.expires_at` | 新任务绝对预约截止；旧行不回填，v1 作业可按原时间派生期限，v0 作业不自动维护 |
 
 **迁移 32（控制面、调度与观测，2026-11-01）**：仅新增列与 `accounts_credential_version_update` 触发器；`accounts` 增加凭据版本及 profile/refresh/inference 检查时间，`usage_logs` 增加实际模型、选号耗时、流截断、工具统计和统一错误对象。旧账号/账本不回填、不修改；新库由 `SCHEMA_V3` 直接带列，触发器在迁移时创建。测试：`settings-revision.test.mjs`、`control-plane.test.mjs`、`merkle-affinity.test.mjs`、`tests/e2e/p0-p2.test.mjs`。
+
+**迁移 43（平台开销校准，X-54，2026-11-10）**：新表 `ccr_overhead_calibration`（本节同名小节）；`CREATE TABLE IF NOT EXISTS`，不动任何已有表。
 
 **迁移 41 / 42（缓存写入分档，X-51，2026-11-10）**：仅新增列，不回填、不改旧行。41：`usage_logs.cache_write_5m_tokens` /
 `cache_write_1h_tokens`（`INTEGER NOT NULL DEFAULT 0`）；42：`model_prices.cache_write_5m_per_m`（`REAL`，可空）。新库由 `SCHEMA_V3` 直接带列，

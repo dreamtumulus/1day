@@ -143,6 +143,15 @@ override 层（`withKeyPolicyOverride`），不动 auto。控制台 Key 页显�
 **`users.max_inflight` / `users.max_inflight_usd`**（控制台 → 用户 → 余额页「并发上限」）：覆盖 `USER_MAX_INFLIGHT`（默认 1000，2026-11-10 前为 4）与
 `USER_MAX_INFLIGHT_USD`（默认不设上限，此前为 10；预约仍受余额约束）；空 / 0 = 用默认。超出返回 429 `user_inflight_limit`（`packages/core/src/request-budget.ts`）。
 
+**准入被拒的可见性（X-55，2026-11-10）**：`acquireRequestBudgetDetailed` 返回拒绝原因和数字（`acquireRequestBudget` 仍是布尔值，行为不变）：
+`insufficient_funds`（余额 + 剩余授信 ≤ 0）/ `key_quota_exhausted`（Key 额度用完）/ `concurrency_cap`（在途请求数到了并发上限）/
+`reserved_spending_cap`（在途请求的预约额占满了在途消费上限——没单独设上限时就是可用余额本身）/ `key_quota_reserved`（该 Key 在途请求的预约额
+占满了 Key 剩余额度）。被拒时：① 响应仍是 429 `user_inflight_limit`，`message` 用白话说明是哪一种、该降并发还是该充值；
+② 计数器 `admission_refused_total{reason}`；③ 每个用户每分钟一行日志
+`[admission] user=<id8> key=<id8> refused: <reason> in_flight=<n>/<cap> reserved=<usd>/<cap> available=… wanted=…`；
+④ 尽力写一行零费用用量记录（`error_code=user_inflight_limit`，`error_message` 以原因开头并带数字），走零费用行的尽力写入路径
+（`settleRequestDurably`），写失败只计数，不影响结算日志的健康状态。此前这类 429 没有用量行、没有日志、没有计数器，只能在 nginx 里看到。
+
 ## 3. 选账户
 
 候选 = `listCandidates(groupId, model)`：Key 所在分组经 `account_groups` 挂入的账户中，`status=active`、`review_status=approved`、
@@ -397,8 +406,12 @@ Anthropic 订阅账户的每个上游响应（2xx 与 429）都读取 `anthropic
 - **CCR 路径缓存写入按官方口径呈现和计费（X-51，2026-11-10）**：settings `ccr_cache_write_as_input` 默认 `0`——超出身份基线的缓存写入报为
   `cache_creation_input_tokens`（含 5m / 1h 拆分）并按写入价计；`1` 是逃生开关（并入 input 按输入价，2026-10-17～11-10 的做法）。见 ccr-supply.md §7.1。
 - **部分流结算**（`usage_estimated`，stream-settlement.ts）：只抬高 output 计数，缓存读写及其拆分沿用已收到的 `message_start` 用量；上游一个 usage 都没报的估算行缓存三项全为 0。
-- CCR 路径（executor=ccr / ccr_worker）的 usage 由翻译层产出：input/output 为上游口径，缓存 = 上游缓存 − 身份上下文基线
-  （settings `ccr_cache_baseline_worker` / `ccr_cache_baseline_cloud`，ccr-supply.md §7.1），之后与直连走同一条结算管道。
+- CCR 路径（executor=ccr / ccr_worker）的 usage 由翻译层产出：客户可见的提示词用量 = 上游用量 − **平台开销**（X-54，2026-11-10）。
+  平台开销 = Claude Code 自己的系统提示词 / 工具说明 / 环境块，按「通道 | 工具 | 上游模型 | Claude Code 版本」逐键从真实流量学出
+  （p10，表 `ccr_overhead_calibration`），每次上游调用扣一次，先扣缓存读、再扣缓存写 1h / 5m、最后扣 input；客户自己的提示词至少保留
+  本地估算的一半，一句话的新请求最多显示 `6 × 估算 + 64` token；扣减不少于旧基线（`ccr_cache_baseline_worker` / `ccr_cache_baseline_cloud`），
+  所以任何一轮都不会比改动前贵。开关 `ccr_overhead_calibration`、固定值 `ccr_overhead_pins`；计数器 `ccr_overhead_*`；
+  每轮日志 `usage ledger: raw … | overhead … | visible …`。细节见 ccr-supply.md §7.1。之后与直连走同一条结算管道。
 - 客户端中途断开：停止读取上游，用已收到的数据结算。
 - 首 token 时间记入 `first_token_ms`，总耗时 `duration_ms`；首次取得账号租约耗时记 `selection_ms`。`upstream_model` 是请求映射后的模型，`actual_model` 是上游响应实际返回的模型；流未到终止符记 `stream_truncated=1`。`tool_calls` / `tool_results` 分别统计响应工具调用与请求工具结果，OpenAI delta 与 Responses output item 去重（迁移 32）。
 
