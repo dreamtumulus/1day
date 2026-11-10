@@ -26,6 +26,12 @@ let seq = 0;
 const uniq = () => `${Date.now()}-${seq++}`;
 const messages = (key, extra = {}, headers = {}) => post(key, "/v1/messages", { model: "claude-sonnet-5", max_tokens: 64, messages: [{ role: "user", content: `worker ${uniq()}` }], ...extra }, headers);
 
+// X-54: a prompt of more than 400 estimated tokens. The fake claude reports ~34.9k upstream prompt tokens whatever was
+// sent; for a one-sentence request the small-turn cap now shows only the customer's own few tokens (checked below), so
+// the checks that pin the baseline arithmetic and the X-51 cache-write presentation send a prompt that is not "small".
+const LONG = " The quick brown fox jumps over the lazy dog.".repeat(60);
+const longMsg = () => [{ role: "user", content: `worker ${uniq()}${LONG}` }];
+
 const admin = await session(pick("admin    login key"));
 const prov = await session(pick("provider login key"));
 const consumer = await session(pick("consumer login key"));
@@ -50,7 +56,7 @@ const wkey = (await consumer("POST", "/api/user/keys", { name: "worker-key", gro
 const lastUsage = async () => (await admin("GET", "/api/admin/usage?pageSize=1")).data.items[0];
 
 // ---- non-CC client -> worker mode ----
-let r = await messages(wkey);
+let r = await messages(wkey, { messages: longMsg() });
 let j = JSON.parse(r.text);
 check("messages via worker", r.status === 200 && j.content?.[0]?.text === "Hello from fake claude." && /^msg_[A-Za-z0-9_-]+$/.test(j.id ?? ""), r.text);
 // X-51 (official cache presentation, ccr_cache_write_as_input default 0): the identity cache baseline is excluded and the
@@ -63,7 +69,23 @@ check("billed on the worker account", u.accountName === "ccr-worker-1" && u.actu
 r = await messages(wkey, { stream: true });
 check("stream via worker", r.status === 200 && r.text.includes("event: message_start") && r.text.includes("Hello from fake claude.") && r.text.includes("event: message_stop") && r.text.includes('"output_tokens":7'), r.text.slice(0, 400));
 
-r = await post(wkey, "/v1/chat/completions", { model: "claude-sonnet-5", messages: [{ role: "user", content: `worker ${uniq()}` }] });
+// X-54: a one-sentence request shows the customer's own prompt, not Claude Code's prefix: the visible prompt total
+// (input + cache read + cache creation) is capped at 6 × the local estimate + 64 tokens (was 18337 here), in the
+// response and on the usage row alike; the sample it yields shows up in the admin overhead view under the turn's key
+// (legacy lane, no caller tools, upstream model, the node's Claude Code version).
+r = await messages(wkey);
+j = JSON.parse(r.text);
+{
+  const vis = (j.usage?.input_tokens ?? 0) + (j.usage?.cache_read_input_tokens ?? 0) + (j.usage?.cache_creation_input_tokens ?? 0);
+  u = await lastUsage();
+  check("one-sentence request via worker: visible prompt is the customer's own (X-54 small-turn cap)", r.status === 200 && vis >= 1 && vis <= 400 && j.usage?.output_tokens === 7 && u.inputTokens + u.cacheReadTokens + u.cacheWriteTokens === vis && u.actualCost > 0, { usage: j.usage, u });
+  const ov = await admin("GET", "/api/admin/ccr-overhead");
+  const k = ov.data?.keys?.find((x) => x.key === "legacy|none|claude-sonnet-5|2.1.300");
+  check("overhead calibration sample recorded under lane|tools|model|version (admin view)", ov.status === 200 && ov.data.calibration === "on" && !!k && k.samples >= 1 && k.min > 30000 && k.source === "baseline", ov.data);
+  check("overhead view is admin-only", (await consumer("GET", "/api/admin/ccr-overhead")).status === 403);
+}
+
+r = await post(wkey, "/v1/chat/completions", { model: "claude-sonnet-5", messages: longMsg() });
 j = JSON.parse(r.text);
 // OpenAI prompt_tokens = every billed prompt token: 12 input + 17125 cache read + 1200 cache creation (unchanged by X-51).
 check("chat via worker (ccr-chat)", r.status === 200 && j.choices?.[0]?.message?.content === "Hello from fake claude." && j.usage?.prompt_tokens === 18337 && j.usage?.prompt_tokens_details?.cached_tokens === 17125, r.text);
@@ -91,6 +113,20 @@ check("direct leg billed on the same account", u.accountName === "ccr-worker-1",
 r = await messages(wkey, { messages: [{ role: "user", content: "fixture-safeguards-refusal" }] });
 u = await lastUsage();
 check("non-stream safeguards refusal is request-scoped and non-retryable", r.status === 400 && u.errorCode === "safeguards_refusal" && u.errorScope === "request" && u.retryable === false, { r, u });
+
+// ---- X-55: a refused admission names its reason and leaves a usage row ----
+{
+  const me = (await admin("GET", "/api/admin/users?role=consumer&pageSize=50")).data.items.find((x) => x.name === "demo-consumer");
+  const setCap = (maxInflight) => admin("PATCH", `/api/admin/users/${me.id}`, { maxInflight });
+  check("set per-user concurrency cap to 1", (await setCap(1)).status === 200);
+  const burst = await Promise.all(Array.from({ length: 5 }, () => messages(wkey)));
+  const refused = burst.filter((x) => x.status === 429).map((x) => JSON.parse(x.text));
+  const code = (e) => e.error?.code ?? e.error?.type;
+  check("concurrent requests over the cap -> 429 user_inflight_limit that names the reason", burst.some((x) => x.status === 200) && refused.length >= 1 && refused.every((e) => JSON.stringify(e).includes("user_inflight_limit") && /already in flight and your limit is 1 concurrent requests/.test(e.error?.message ?? "")), burst.map((x) => [x.status, x.text.slice(0, 200)]));
+  const rows = (await admin("GET", "/api/admin/usage?pageSize=10")).data.items.filter((x) => x.errorCode === "user_inflight_limit");
+  check("refused admission leaves a zero-cost usage row with the reason", rows.length === refused.length && rows.every((x) => x.statusCode === 429 && x.actualCost === 0 && /^concurrency_cap: .*\[in_flight=1\/1 /.test(x.errorMessage ?? "")), rows.slice(0, 2));
+  check("clear the per-user concurrency cap", (await setCap(null)).status === 200);
+}
 
 // ---- node deploy_meta carries ccWorker telemetry (from fake-node heartbeats) ----
 await new Promise((r2) => setTimeout(r2, 1200));

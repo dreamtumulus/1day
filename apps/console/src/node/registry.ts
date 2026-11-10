@@ -33,6 +33,8 @@ export interface NodeConn {
   capabilities?: string[];
   runtimeTeamId?: string;
   reportedAccepting?: boolean;
+  /** Claude Code version of the node's worker, from its last heartbeat (X-54: part of the overhead calibration key). */
+  claudeVersion?: string | null;
 }
 
 interface TunnelChunk {
@@ -57,6 +59,17 @@ export interface TunnelSession {
 export interface OpenedTunnel {
   sessionId: string;
   nodeId: string;
+}
+
+/**
+ * What the gateway needs to know about the node that took a cc_worker open (X-54): interactive (TUI) node or not, and
+ * its Claude Code version. Both change the prompt Claude Code prepends, i.e. the platform overhead of the turn.
+ */
+export function nodeWorkerInfo(nodeId: string): { tui: boolean; claudeVersion: string | null } | null {
+  const conn = onlineNodes.get(nodeId);
+  if (!conn) return null;
+  const v = /\d+\.\d+\.\d+/.exec(conn.claudeVersion ?? "");
+  return { tui: !!conn.capabilities?.includes("tui_v1"), claudeVersion: v ? v[0] : null };
 }
 
 // ---------- state ----------
@@ -440,6 +453,7 @@ function handleNodeMessage(conn: NodeConn, msg: Record<string, unknown>): void {
           meta = {};
         }
         const cw = msg.ccWorker as Record<string, unknown>;
+        conn.claudeVersion = typeof cw.claudeVersion === "string" ? cw.claudeVersion : null;
         meta.ccWorker = {
           enabled: cw.enabled === true,
           claudeVersion: typeof cw.claudeVersion === "string" ? cw.claudeVersion : null,

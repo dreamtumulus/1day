@@ -916,9 +916,41 @@ export interface Settings {
   ccr_cache_write_as_input: string;
   window_passive_max_age_sec: string;
   ccr_cache_baseline_cloud: string;
+  ccr_overhead_calibration: "on" | "off";
+  ccr_overhead_pins: string;
   cache_refund_enabled: string;
   cache_refund_percent: string;
   cache_refund_interval_sec: string;
+}
+
+/** GET /api/admin/ccr-overhead (X-54): platform prompt overhead per lane / tools / model / Claude Code version. */
+export interface CcrOverheadKey {
+  key: string;
+  lane: string | null;
+  tools: string | null;
+  model: string | null;
+  version: string | null;
+  /** p10 of the window; null while it holds fewer than minSamples. */
+  learned: number | null;
+  samples: number;
+  n: number;
+  min: number | null;
+  max: number | null;
+  updatedAt: string | null;
+  /** The value in force for this key and where it comes from. */
+  value: number | null;
+  source: "pinned" | "learned" | "learned_version" | "learned_lane" | "inherited" | "default" | "baseline" | null;
+  matched: string | null;
+}
+export interface CcrOverhead {
+  calibration: "on" | "off";
+  window: number;
+  minSamples: number;
+  baseline: { worker: number; cloud: number };
+  pins: Array<{ spec: string; lane: string; tools: string | null; model: string | null; value: number }>;
+  pinErrors: string[];
+  defaults: Array<{ lane: string; tools: string; model: string | null; value: number }>;
+  keys: CcrOverheadKey[];
 }
 
 /** Platforms (mirror of packages/core/src/platforms.ts). */

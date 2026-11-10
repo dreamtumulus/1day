@@ -239,17 +239,72 @@ stream-json 消息族——`{type:"assistant", message:{id, content:[…], usage
   `model_cooldowns.*.until` 与 now（sub2api `IsSchedulable` 同），快照过了 `window_reset_at` 也直接放行；下一次被动采样或兜底探测回写后
   `window_exhausted_until` 清空。无 reset 时的 1h 兜底是本项目自加。
 
-### 7.1 双账本计费口径（2026-10-16 拍板，同日修订：缓存按基线扣除后计费）
+### 7.1 双账本计费口径（2026-10-16 拍板；2026-11-10 X-54：平台开销按键校准后扣除）
 
-CCR 路径（云端会话与 worker）每单携带官方客户端身份上下文开销（实测：一句两 token 的问答，worker 上游计量
-cache_read 16608–16777，云端约 28K，几乎全是 Claude Code 系统提示词与工具集）。因此拆两本账：
+CCR 路径（云端会话与 worker）的每次上游调用，都由真实的 Claude Code 在客户内容前面加上它自己的系统提示词、工具说明和环境块。
+这部分是**平台成本**，不是客户的用量。生产实测（claude-opus-5-5，一句话的请求，3–7 个输出 token）：TUI 节点（交互式 Claude Code
+2.1.319 / 2.1.322）上游提示词合计约 29,700–30,200 token，`-p` 节点（2.1.312 canonical `--restricted`）约 12,330；同样的请求官方 API
+只报 10–40 个输入 token。因此拆两本账：
 
-- **客户账（对外结算）**：`input_tokens`（上游口径，不含缓存，即客户内容的真实增量）+ `output_tokens`
-  + **客户自己的缓存用量**：`cache_read = max(0, 上游 cache_read − 基线)`，基线扣不完的部分再从 `cache_creation` 扣，
-  两者最低 0。基线 = 该执行模式的身份上下文 token 数，settings `ccr_cache_baseline_worker`（2026-10-17 起 **700**：worker 改用
-  `--system-prompt-file` 替换 Claude Code 默认系统提示词后固定前缀只剩约 710 token；此前 16600）/
-  `ccr_cache_baseline_cloud`（默认 28000），控制台「设置」可调，填 0 = 上游缓存全额计给客户。
-  **基线扣减顺序（X-51）**：先扣 `cache_read`，扣不完的部分从 `cache_creation` 的 **1 小时档**扣，再扣 **5 分钟档**，最后（缓存字段都没吸收掉的部分）扣
+- **客户账（对外结算）**：客户看到并付费的是**客户自己的提示词**——上游用量减去平台开销，`output_tokens` 不动。
+
+  **平台开销扣减（X-54，`apps/gateway/src/ccr/overhead.ts` + `packages/core/src/overhead-calibration.ts`）**
+
+  1. `上游提示词合计 P = input + cache_read + cache_creation`（本轮上游用量，即 `usageOut()` 的起点）。
+  2. **键** = `通道 | 工具 | 上游模型 | Claude Code 版本`，即会改变 Claude Code 自身提示词的维度，全部是网关每轮已知的事实：
+     - 通道：`legacy`（`-p`，平台替换了系统提示词）/ `p`（canonical `-p --restricted`，原生提示词）/ `tui`（canonical 且节点带
+       `tui_v1` 能力；本轮带图片 / 文档块时节点改跑普通进程（X-53），记 `p`，该对话此后也记 `p`）/ `cloud`（云端会话）；
+     - 工具：`none`（无客户工具，或 legacy 的围栏模拟——工具文本是客户自己的提示词）/ `caller`（客户工具经 MCP 原生调用，Claude Code
+       内置工具保留）/ `caller-only`（内置工具被去掉，`tools-disabled-canonical`）；
+     - 上游模型 id；Claude Code 版本 = 节点心跳上报的版本（console 在 `/internal/tunnel/open` 的应答里带回 `worker: {tui, claudeVersion}`；
+       云端会话未知，记 `-`）。
+     - 「首轮 / 续轮」**不进键**：续轮的每次上游调用带的是同一份前缀，而续轮没法取样（上游提示词里还有之前的对话），所以续轮直接用同一个键的值。
+  3. **每次上游调用的开销** `O` 按下面的顺序取第一个有的：
+     ① settings `ccr_overhead_pins` 的固定值（最具体的一条）→ ② 该键学到的值 → ③ 同通道同工具同模型、其他 Claude Code 版本里最近更新的那个
+     → ④ 同通道同工具、其他模型学到的值里**最小**的 → ⑤ 工具 = `caller` 时沿用同通道 `none` 的值（内置工具保留时提示词是无工具时的超集）
+     → ⑥ 代码内置默认 → ⑦ `ccr_cache_baseline_worker` / `ccr_cache_baseline_cloud`（旧的单一基线）。`ccr_overhead_calibration=off` 时跳过 ②–④
+     和 ⑤ 里学到的部分。
+     内置默认（实测值留约 100 token 余量，宁少扣）：TUI 无工具 opus-5-5 29600 / opus-4-8 28900 / opus-4-6 25700 / sonnet-5 34600，其他模型 25700；
+     TUI `caller-only` 3800；`-p` canonical 无工具 12200。legacy、cloud、`-p` 带客户工具没有内置默认（未实测），落到旧基线。
+  4. **一轮里有几次上游调用就扣几次**：`应扣 = O × N`。N = 翻译层本次响应计入用量的上游消息数（`message_start` 事件数 + 未流式的整行
+     `assistant` 消息数，按消息 id 去重；之前请求已交付的消息 id 不计）。`result.usage` 是整轮（持久会话为进程累计，做差后）各次调用之和，
+     每次调用都重读一遍前缀，所以只扣一次会把其余 N−1 份前缀留在客户账上。仓库里的抓包（`docs/evidence/cc-2.1.3xx`）没有一轮多次调用且带真实
+     用量的样本，这一条是按代码的累计方式推出的；N 数少了只会少扣（对平台保守）。
+  5. **客户可见合计** `V = min(上限, max(下限, P − 应扣))`：
+     - 下限 = `max(1, 客户提示词本地估算 × 0.5)`（估算 = `estimateRequestTokens` 只算 system + messages + tools）。开销估高了也不会把客户的
+       真实提示词扣成 0：2,000 token 的提示词至少显示 1,000。
+     - 上限只对「新会话、单条 user 消息、无工具结果、无图片文档、估算 ≤ 400、单次上游调用」的请求生效：`6 × 估算 + 64`。这类请求客户那部分
+       明确很小，所以无论该键有没有校准、Claude Code 是否刚升级、这个账号的前缀是否偏长，一句话的请求都不会显示成几千上万 token。
+       固定值生效或校准关闭时不设上限。
+     - **不涨价保证**：实际扣减 `= max(P − V, min(旧基线, P))`，即永远不少于 X-54 之前的扣法；扣减顺序不变，所以每一档都不高于旧值，
+       任何一轮的费用 ≤ 旧逻辑下的费用（`apps/gateway/test/overhead.test.mjs` 对 6 万组用量 × 键 × 开销取值做了性质测试）。
+  6. **扣减顺序不变**（见下条）：先 `cache_read`，再缓存写入 1 小时档、5 分钟档，最后 `input_tokens`。稳态下前缀是缓存命中，扣完后客户的
+     内容留在 `input_tokens`（以及少量 `cache_read`）；账号首次使用时前缀是缓存写入，同样先被扣掉——平台前缀的缓存**写入**不会按 X-51 的
+     2× 价格记到客户头上。
+  7. **校准（只用真实流量，不额外打上游）**：满足上限那条条件且成功结束的请求取一个样本 `P − 估算`；每个键保留最近 64 个样本，
+     取 **p10**（不足 11 个样本时就是最小值），窗口里满 8 个样本才采信。取低分位的理由：样本的误差是单向的——本地估算按字符数 / 4，
+     对中文偏低，也看不到 Claude Code 自己发的辅助调用，所以样本只会偏高；各账号的前缀还相差几百 token。低分位落在见过的最小开销附近，
+     结果是「宁可少扣一点，不多扣」；不用最小值是为了不让单个异常样本说了算。
+  8. **状态共享**：表 `ccr_overhead_calibration`（迁移 43，data-model.md）。样本先在网关内存里攒着，每个键最多 15 秒合并写一次
+     （事务内读出旧窗口、按时间合并、截到 64 个）；每个实例最多 15 秒重读一次表，蓝绿两个实例和重启后的实例看到同一份值。数据库出错
+     不影响请求：样本留在内存、本实例照常使用，表恢复后再写。
+  9. **可见性**：网关计数器 `ccr_overhead_calibrated_keys`（已校准键数）、`ccr_overhead_sample_accepted_total{lane}`、
+     `ccr_overhead_sample_rejected_total{reason}`（`not_small_fresh` / `multi_call` / `turn_failed` / `no_usage` / `out_of_range`）、
+     `ccr_overhead_source_total{lane,source}`（本轮用的是哪一级：`pinned` / `learned` / `learned_version` / `learned_lane` / `inherited` /
+     `default` / `baseline`）；控制台 `GET /api/admin/ccr-overhead` 与「设置」页的「平台提示词开销」表；每轮一行网关日志
+     `[ccr-worker] <requestId> usage ledger: raw … | overhead … → deducted … | visible …`。
+  10. **开关**：`ccr_overhead_calibration` = `on`（默认）/ `off`；`ccr_overhead_pins` = `lane[:tools[:model]]=tokens`，逗号分隔，
+      例 `tui:none=29000, tui:caller-only=3800`。旧基线始终是扣减的下限；把四条通道都固定为 0（`legacy=0, p=0, tui=0, cloud=0`）即完全回到
+      X-54 之前的口径。
+
+  **仍然不精确的地方**：没有官方分词器，客户那部分只能由「上游合计 − 学到的开销」得出；学到的开销在不同账号之间有几百 token 的出入
+  （环境块、账号信息长度不同），所以一个较长的请求可能多显示或少显示几百 token；一句话的请求由上限兜住，显示几十到一百多 token。
+
+  旧基线：settings `ccr_cache_baseline_worker`（代码默认 16600，生产自 2026-10-17 起为 **700**——那时 legacy worker 用
+  `--system-prompt-file` 替换了系统提示词，固定前缀约 710 token；canonical / TUI 保留原生提示词后它远小于真实开销）/
+  `ccr_cache_baseline_cloud`（默认 28000）。现在只作为最后一级回落和扣减下限。
+
+  **扣减顺序（X-51，X-54 沿用）**：先扣 `cache_read`，扣不完的部分从 `cache_creation` 的 **1 小时档**扣，再扣 **5 分钟档**，最后（缓存字段都没吸收掉的部分）扣
   `input_tokens`，各项最低 0。先扣 1 小时档的依据：`docs/evidence/cc-2.1.301 / 312 / 316` 的请求抓包里，Claude Code 给自己的系统提示词块、工具集和消息尾部
   打的 `cache_control` 全部是 `{type: "ephemeral", ttl: "1h"}`（带 `extended-cache-ttl-2025-04-11` beta），没有一处 5 分钟标记——平台前置的身份前缀是按 1 小时档写入的。
   **未能从抓包证实的部分**：这些抓包的上游是本地 mock，`usage` 里没有 `cache_creation` 嵌套对象，`stdoutTail` 又在约 300 字符处截断，所以「真实 Claude Code 的
@@ -267,12 +322,13 @@ cache_read 16608–16777，云端约 28K，几乎全是 Claude Code 系统提示
   翻译层 `usageOut()` 输出即客户可见 usage（JSON、`message_start`、`message_delta` 同一组数字，含 `cache_creation` 拆分），结算管道不变（网关把这份 Anthropic 形状的
   usage 再解析成 `cache_write_tokens` + 5m / 1h 两档 × 模型标准价 × 分组倍率；`-p` legacy、canonical、TUI、云端会话，流式与非流式，Chat / Responses 转换都经同一个 `usageOut()`），
   客户可见 token 与扣费同源一致。**此前（同日上午）客户可见缓存恒为 0，客户内容被缓存命中时少计费，已修正。**
-- **平台账（对内）**：`result.modelUsage`（含 costUSD、cache 全量）为账号经济流水口径，翻译层保留 `translator.upstreamUsage`，
-  执行器完成时打一行网关日志摘要；本期不落新库字段。
+- **平台账（对内）**：`result.modelUsage`（含 costUSD、cache 全量）为账号经济流水口径，翻译层保留 `translator.upstreamUsage`
+  与扣减前的 `translator.rawPrompt`，执行器完成时打两行网关日志：`upstream modelUsage: …` 和 `usage ledger: raw … | overhead … | visible …`
+  （X-54：上游原始用量、扣了多少、依据哪个键和来源、客户看到多少）；不落新库字段。
 - `usage_logs.usage_estimated` 自此只表示"上游一个 usage 都没报，token 按 chars/4 估算"；CCR 行不再强制置 1。
 - 直连模式（含 CC 直通）不受影响：请求上下文是客户自己发的，按上游 usage 全额结算（现状不变）。
-- 基线校准：Claude Code 升级后系统提示词长度会变，用一条两 token 的问答看 `[ccr-worker] … upstream modelUsage` 里的
-  `cacheReadInputTokens`，取最小值回填 settings。基线偏大 → 客户缓存少计；偏小 → 客户为身份上下文买单。
+- 开销校准是自动的（上文 7）。Claude Code 升级后版本号变了就是新键：先沿用旧版本学到的值，攒够 8 个样本后换成自己的。
+  运营核对：`[ccr-worker] … usage ledger` 日志里的 raw 数字是平台账口径；控制台「设置 → 平台提示词开销」看每个键的值、样本数和来源。
 
 ## 8. 组件落位
 

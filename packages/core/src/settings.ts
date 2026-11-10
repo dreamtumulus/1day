@@ -125,6 +125,14 @@ export const SETTING_DEFAULTS = {
   // 基线 = 真 Claude Code 系统提示词 + 工具集的 token 数，按执行模式实测（worker 2026-10-16：16608–16777）；0 = 上游缓存全额计给客户。
   ccr_cache_baseline_worker: "16600",
   ccr_cache_baseline_cloud: "28000",
+  // 平台提示词开销校准（X-54，docs/ccr-supply.md §7.1，core/overhead-calibration.ts）：worker / 云端通道里 Claude Code 自己的系统提示词、
+  // 工具说明、环境块是平台成本，按「通道 | 工具 | 上游模型 | Claude Code 版本」逐键从真实流量学出每次上游调用的开销并从客户可见用量里扣掉。
+  // on（默认）= 学习并使用学到的值；off = 不学习、不用学到的值（固定值 → 代码内置默认 → ccr_cache_baseline_*）。
+  ccr_overhead_calibration: "on",
+  // 固定值（优先于学到的值和内置默认）：`lane[:tools[:model]]=tokens`，逗号 / 分号 / 换行分隔，最具体的一条生效。
+  // lane = legacy | p | tui | cloud；tools = none | caller | caller-only。例：`tui:none=29000, tui:caller-only=3800`。
+  // 每条通道都固定为 0（`legacy=0, p=0, tui=0, cloud=0`）= 回到只扣 ccr_cache_baseline_* 的旧口径。
+  ccr_overhead_pins: "",
   // CCR 路径超出身份基线的 cache_creation 怎么呈现和计费（X-51，2026-11-10 运营方决定与官方 API 对齐）：
   // "0"（默认）= 官方口径：报为 cache_creation_input_tokens（含 cache_creation 的 5m / 1h 拆分），按写入价计（5m 1.25× / 1h 2×）；
   // "1" = 逃生开关，回到 2026-10-17 的做法：并入 input_tokens 按普通输入价（1.0×），响应里 cache_creation 恒为 0。

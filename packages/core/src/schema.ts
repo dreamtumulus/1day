@@ -336,6 +336,15 @@ CREATE TABLE node_proxy_shares (
 );
 CREATE INDEX idx_node_proxy_shares_node ON node_proxy_shares(node_id);
 
+-- migration 43 (X-54, docs/ccr-supply.md §7.1): learned platform prompt overhead of the CCR lanes, shared by the gateways.
+CREATE TABLE ccr_overhead_calibration (
+  key TEXT PRIMARY KEY,
+  samples TEXT NOT NULL DEFAULT '[]',
+  n INTEGER NOT NULL DEFAULT 0,
+  value INTEGER,
+  updated_at TEXT NOT NULL
+);
+
 -- Account onboarding jobs (docs/onboarding.md §5): async authorize-and-import
 -- pipeline state. payload_enc holds the sessionKey / PKCE verifier+state
 -- (encrypted) and is cleared when the job reaches done/failed.

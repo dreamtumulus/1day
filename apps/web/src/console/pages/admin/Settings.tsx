@@ -1,15 +1,18 @@
 import { useEffect, useState } from "react";
-import { api, type Group, type Settings } from "../../api";
+import { api, type CcrOverhead, type Group, type Settings } from "../../api";
 import { useCT } from "../../i18n";
 import {
   Async,
   Button,
   Card,
+  DataTable,
   Field,
   Input,
   PageHeader,
   Select,
   Textarea,
+  fmtDateTime,
+  fmtNum,
   fmtPct,
   useAsync,
   useToast,
@@ -29,6 +32,43 @@ export function AdminSettings() {
         {([settings, groups]) => <SettingsForm initial={settings} groups={groups} onSaved={state.reload} />}
       </Async>
     </>
+  );
+}
+
+/** X-54: what comes off worker / cloud usage as Claude Code's own prompt, per learned key, with the shipped defaults. */
+function OverheadCard() {
+  const { t } = useCT();
+  const state = useAsync(() => api.get<CcrOverhead>("/api/admin/ccr-overhead"), []);
+  const d = state.data;
+  const source = (s: string | null) => (s === "pinned" ? t("admin.overhead.sourcePinned") : s === "default" ? t("admin.overhead.sourceDefault") : s === "baseline" ? t("admin.overhead.sourceBaseline") : s === "inherited" ? t("admin.overhead.sourceInherited") : s ? t("admin.overhead.sourceLearned") : "—");
+  type Row = { key: string; value: number | null; samples: string; updatedAt: string | null; source: string };
+  const rows: Row[] = d
+    ? [
+        ...d.keys.map((k) => ({ key: k.key, value: k.value, samples: `${k.samples} / ${k.n}`, updatedAt: k.updatedAt, source: source(k.source) + (k.source === "learned_version" || k.source === "learned_lane" || k.source === "inherited" ? ` (${k.matched ?? ""})` : "") })),
+        ...d.pins.map((p) => ({ key: p.spec.split("=")[0], value: p.value, samples: "—", updatedAt: null, source: source("pinned") })),
+        ...d.defaults.map((x) => ({ key: `${x.lane}|${x.tools}|${x.model ?? "*"}|*`, value: x.value, samples: "—", updatedAt: null, source: source("default") })),
+      ]
+    : [];
+  return (
+    <Card title={t("admin.overhead.title")} desc={d ? t("admin.overhead.desc", { state: d.calibration === "on" ? t("admin.settings.overheadCalibrationOn") : t("admin.settings.overheadCalibrationOff"), min: d.minSamples, window: d.window, worker: fmtNum(d.baseline.worker), cloud: fmtNum(d.baseline.cloud) }) : undefined} bodyClassName="p-0">
+      {state.error ? <div className="p-5 text-[13px] text-on-surface-variant">{state.error}</div> : (
+        <DataTable<Row>
+          dense
+          minWidth={560}
+          loading={!d}
+          rows={rows}
+          rowKey={(r) => `${r.key}:${r.source}`}
+          empty={t("admin.overhead.empty")}
+          columns={[
+            { key: "key", header: t("admin.overhead.key"), render: (r) => <code className="font-mono text-[12px]">{r.key}</code> },
+            { key: "value", header: t("admin.overhead.value"), align: "right", render: (r) => (r.value === null ? "—" : fmtNum(r.value)) },
+            { key: "samples", header: t("admin.overhead.samples"), align: "right", render: (r) => r.samples },
+            { key: "updated", header: t("admin.overhead.updatedAt"), render: (r) => (r.updatedAt ? fmtDateTime(r.updatedAt) : "—") },
+            { key: "source", header: t("admin.overhead.source"), render: (r) => r.source },
+          ]}
+        />
+      )}
+    </Card>
   );
 }
 
@@ -275,6 +315,19 @@ function SettingsForm({ initial, groups, onSaved }: { initial: Settings; groups:
             <Field label={t("admin.settings.cacheBaselineCloud")} hint={t("admin.settings.cacheBaselineHint")} error={baselineValid ? undefined : "≥ 0"}>
               <Input type="number" min={0} step="100" value={s.ccr_cache_baseline_cloud ?? "0"} onChange={(e) => set("ccr_cache_baseline_cloud", e.target.value)} />
             </Field>
+            <Field label={t("admin.settings.overheadCalibration")} hint={t("admin.settings.overheadCalibrationHint")}>
+              <Select
+                value={s.ccr_overhead_calibration ?? "on"}
+                onChange={(e) => set("ccr_overhead_calibration", e.target.value as Settings["ccr_overhead_calibration"])}
+                options={[
+                  { value: "on", label: t("admin.settings.overheadCalibrationOn") },
+                  { value: "off", label: t("admin.settings.overheadCalibrationOff") },
+                ]}
+              />
+            </Field>
+            <Field label={t("admin.settings.overheadPins")} hint={t("admin.settings.overheadPinsHint")}>
+              <Input value={s.ccr_overhead_pins ?? ""} onChange={(e) => set("ccr_overhead_pins", e.target.value)} placeholder="tui:none=29000, tui:caller-only=3800" maxLength={2000} />
+            </Field>
             <Field label={t("admin.settings.cacheWriteAsInput")} hint={t("admin.settings.cacheWriteAsInputHint")}>
               <Select
                 value={s.ccr_cache_write_as_input ?? "0"}
@@ -313,6 +366,7 @@ function SettingsForm({ initial, groups, onSaved }: { initial: Settings; groups:
           </Field>
         </div>
       </Card>
+      <OverheadCard />
       <Card title={t("admin.settings.opsTitle")}>
         <ul className="space-y-3 text-[13.5px] leading-relaxed text-on-surface-variant">
           {(["ops1", "ops2", "ops3"] as const).map((k) => (

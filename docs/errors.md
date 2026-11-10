@@ -31,6 +31,7 @@
 | 404 | `model_not_found` | not_found_error | 模型不在注册表或已下架 |
 | 404 | `not_found` | not_found_error | 未知路由 |
 | 429 | `quota_exhausted` | billing_error | Key 额度用尽 |
+| 429 | `user_inflight_limit` | rate_limit_error | 准入被拒：在途请求或在途预约额到了上限。`message` 说明具体原因（X-55）：**并发上限**（"Too many requests at the same time: N are already in flight and your limit is M…"——降并发或等在途请求结束）；**在途预约额占满可用余额 / 在途消费上限**（"The requests you already have in flight reserve your whole available balance / your in-flight spending limit…"——充值、降并发或调小 `max_tokens`）；**在途预约额占满 Key 剩余额度**（调高 Key 额度或降并发）；**余额与授信用完**、**Key 额度用完**（与认证阶段的 402 `insufficient_balance` / 429 `quota_exhausted` 同因，只在认证之后余额才变化时出现）。带 `Retry-After: 10`。用量行：`error_code=user_inflight_limit`，`error_message` = `<reason>: <message> [in_flight=n/cap reserved=usd/cap available=… wanted=…]`，reason ∈ `insufficient_funds` / `key_quota_exhausted` / `concurrency_cap` / `reserved_spending_cap` / `key_quota_reserved` |
 | 429 | `upstream_rate_limited` | rate_limit_error | 尝试过的账户最后都是账号/窗口限流 |
 | 429 | `upstream_request_rejected` | rate_limit_error | 直连上游把请求本身拒绝（客户端版本、请求权益/形态等，**以及裸 `{"type":"rate_limit_error","message":"Error"}`** —— 2026-11-01 封号事故里伪造/校验码不符的 CC 请求的标准拒绝，spec I12，2026-11-01 起归请求级）：不换账号、不冷却、不在其他账号上重试，客户端修正后再试；用量行 `error_scope=request`、`retryable=false` |
 | 429（用量行） | `upstream_model_rate_limited` | — | 模型额度/权益限制：只冷却该账号的 `model:<id>`，其他模型仍可调度，换账号重试；用量行 `error_scope=account_model` |

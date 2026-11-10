@@ -16,6 +16,7 @@ import { CcrClient, CcrHttpError } from "./client.js";
 import { CcrSessionPool, type PoolEntry } from "./session-pool.js";
 import { SessionTranslator, buildSessionEvents, messagesToPrompt } from "./translate.js";
 import type { EventPayload, SessionEvent, TurnFacts } from "./types.js";
+import { overheadLogLine, planOverhead, recordOverheadSample, type OverheadPlan } from "./overhead.js";
 
 type Json = Record<string, any>;
 
@@ -158,6 +159,8 @@ export async function runCcr(input: CcrRunInput): Promise<Response> {
 
   let entry = pool.acquire(account.id, input.upstreamModel, stickyKey);
   let sessionId = ""; // assigned on every path that reaches past the catch
+  /** X-54: a session created for this request (a pooled warm session already holds earlier turns). */
+  let freshSession = false;
   try {
     const envId = await ensureEnvironment(client, account, cred);
     if (entry) {
@@ -190,6 +193,7 @@ export async function runCcr(input: CcrRunInput): Promise<Response> {
       sessionId = session.id;
       await client.pushEvents(sessionId, buildSessionEvents(sessionId, input.upstreamModel, prompt));
       entry = pool.register(account.id, input.upstreamModel, stickyKey, sessionId, warmCap, archiveCtx);
+      freshSession = true;
     }
   } catch (err) {
     if (entry) pool.release(entry, true);
@@ -198,6 +202,14 @@ export async function runCcr(input: CcrRunInput): Promise<Response> {
     return toResponse(err);
   }
   console.log(`[ccr] ${input.requestId} session ${sessionId} on ${account.name} ${pool.logLine()}`);
+  // X-54: the cloud session's own Claude Code context is the platform's cost (ccr/overhead.ts); tools are simulated in
+  // the prompt (the customer's own text), the Claude Code version of the cloud environment is not known here.
+  const overheadPlan: OverheadPlan = planOverhead({ key: { lane: "cloud", tools: "none", model: input.upstreamModel, version: null }, body, fresh: freshSession, baselineSetting: "ccr_cache_baseline_cloud" });
+  translator.setOverhead(overheadPlan);
+  const ledger = (): void => {
+    recordOverheadSample(overheadPlan, { raw: translator.rawPrompt, calls: translator.upstreamCallCount, failed: false, hasUsage: translator.hasUsage });
+    if (translator.hasUsage) console.log(`[ccr] ${input.requestId} usage ledger: ${overheadLogLine(overheadPlan, translator.rawPrompt, translator.upstreamCallCount, translator.overheadApplied)}`);
+  };
 
   let poolDone = false;
   const finishPool = (error: boolean): void => {
@@ -242,6 +254,7 @@ export async function runCcr(input: CcrRunInput): Promise<Response> {
       return errorResponse(502, `ccr: ${translator.error}`);
     }
     if (translator.upstreamUsage) console.log(`[ccr] ${input.requestId} upstream modelUsage: ${JSON.stringify(translator.upstreamUsage).slice(0, 400)}`);
+    ledger();
     noteTurnFacts(input, translator, account.name, "ccr");
     finishPool(false);
     return new Response(JSON.stringify(translator.message()), { status: 200, headers: { "content-type": "application/json" } });
@@ -276,6 +289,7 @@ export async function runCcr(input: CcrRunInput): Promise<Response> {
           await write(`event: error\ndata: ${JSON.stringify({ type: "error", error: { type: "api_error", message: `ccr: ${translator.error}` } })}\n\n`);
         } else {
           if (translator.upstreamUsage) console.log(`[ccr] ${input.requestId} upstream modelUsage: ${JSON.stringify(translator.upstreamUsage).slice(0, 400)}`);
+          ledger();
           noteTurnFacts(input, translator, account.name, "ccr");
           finishPool(false);
           await write(translator.end());

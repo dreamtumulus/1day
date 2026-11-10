@@ -37,7 +37,7 @@ import {
   recordWindowUsage,
   rejectedWindow,
   settleRequestDurably as settleRequest,
-  acquireRequestBudget, renewRequestBudget, releaseRequestBudget,
+  acquireRequestBudgetDetailed, renewRequestBudget, releaseRequestBudget, type AdmissionRefusal,
   sha256Hex,
   sessionUuidFromHash,
   sessionMetadataUserId,
@@ -506,6 +506,51 @@ function sendSyntheticMessage(reply: FastifyReply, format: ClientFormat, body: J
   else send({ id: `resp_${id}`, object: "response", status: "completed", output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: text, annotations: [] }] }], usage: { input_tokens: 0, output_tokens: 0, total_tokens: 0 } });
 }
 
+const usd = (v: number | null): string => (v === null ? "-" : !Number.isFinite(v) ? "unlimited" : v.toFixed(v !== 0 && Math.abs(v) < 0.01 ? 6 : 2));
+
+/** `in_flight=<n>/<cap> reserved=<usd>/<cap>` (+ balance and key quota when they decided). */
+export function admissionRefusalNumbers(r: AdmissionRefusal): string {
+  return [
+    `in_flight=${r.inFlight ?? "-"}/${r.maxInflight ?? "-"}`,
+    `reserved=${usd(r.reservedUsd)}/${usd(r.capUsd)}`,
+    `available=${usd(r.availableUsd)}`,
+    ...(r.keyRemainingUsd !== null ? [`key_remaining=${usd(r.keyRemainingUsd)}`, `key_reserved=${usd(r.keyReservedUsd)}`] : []),
+    `wanted=${usd(r.wantedUsd)}`,
+  ].join(" ");
+}
+
+/** The 429 `user_inflight_limit` message: which limit refused the request and what to do about it, in plain words. */
+export function admissionRefusalMessage(r: AdmissionRefusal): string {
+  switch (r.reason) {
+    case "insufficient_funds":
+      return "Your balance and remaining credit are used up, so no new request can be started. Top up (or settle your credit line) and retry.";
+    case "key_quota_exhausted":
+      return "This API key has used up its quota, so no new request can be started. Raise the key's quota or use another key.";
+    case "concurrency_cap":
+      return `Too many requests at the same time: ${r.inFlight} are already in flight and your limit is ${r.maxInflight} concurrent requests. Lower your concurrency or retry when one of them finishes.`;
+    case "reserved_spending_cap":
+      return r.capIsBalance
+        ? `The requests you already have in flight reserve your whole available balance (${usd(r.reservedUsd)} of ${usd(r.capUsd)} USD reserved; this request needs about ${usd(r.wantedUsd)} USD more). Top up, lower your concurrency or max_tokens, or retry when a request finishes.`
+        : `The requests you already have in flight reserve your in-flight spending limit (${usd(r.reservedUsd)} of ${usd(r.capUsd)} USD reserved; this request needs about ${usd(r.wantedUsd)} USD more). Lower your concurrency or max_tokens, or retry when a request finishes.`;
+    case "key_quota_reserved":
+      return `The requests already in flight on this API key reserve what is left of its quota (${usd(r.keyReservedUsd)} of ${usd(r.keyRemainingUsd)} USD remaining; this request needs about ${usd(r.wantedUsd)} USD more). Raise the key's quota, lower your concurrency or max_tokens, or retry when a request finishes.`;
+  }
+}
+
+const admissionLogAt = new Map<string, number>();
+const ADMISSION_LOG_INTERVAL_MS = 60_000;
+
+/** Counter for every refusal; one log line per user per minute (with the number of refusals it stands for). */
+export function noteAdmissionRefusal(userId: string, apiKeyId: string, r: AdmissionRefusal, now = Date.now(), log: (line: string) => void = console.warn): boolean {
+  bump("admission_refused_total", { reason: r.reason });
+  const last = admissionLogAt.get(userId);
+  if (last !== undefined && now - last < ADMISSION_LOG_INTERVAL_MS) return false;
+  if (admissionLogAt.size > 5000) for (const [k, t] of admissionLogAt) if (now - t >= ADMISSION_LOG_INTERVAL_MS) admissionLogAt.delete(k);
+  admissionLogAt.set(userId, now);
+  log(`[admission] user=${userId.slice(0, 8)} key=${apiKeyId.slice(0, 8)} refused: ${r.reason} ${admissionRefusalNumbers(r)}`);
+  return true;
+}
+
 /** Gateways take short metadata leases; normal execution remains parallel and epoch-fenced. */
 const lifecycles = new WeakMap<FastifyRequest, { requestId: string; abort: AbortController }>();
 export async function proxy(req: FastifyRequest, reply: FastifyReply, format: ClientFormat, endpoint: string): Promise<void> {
@@ -518,8 +563,38 @@ export async function proxy(req: FastifyRequest, reply: FastifyReply, format: Cl
   const maxOut = Number(body.max_tokens ?? body.max_completion_tokens ?? body.max_output_tokens ?? 4096);
   const estimatedOutput = Math.min(modelEntry?.maxOutputTokens ?? 128_000, Number.isFinite(maxOut) && maxOut > 0 ? Math.ceil(maxOut) : 4096);
   const estimate = prices ? (estimateRequestTokens(body) * prices.inputPerM + estimatedOutput * prices.outputPerM) / 1_000_000 * caller.rateMultiplier : 0.01;
-  if (!acquireRequestBudget(requestId, caller.userId, caller.apiKeyId, estimate)) {
-    sendError(reply, format, 429, "user_inflight_limit", "Concurrent requests or reserved spending reached the account limit. Retry after an active request finishes.", "rate_limit_error");
+  const admission = acquireRequestBudgetDetailed(requestId, caller.userId, caller.apiKeyId, estimate);
+  if (!admission.ok) {
+    // X-55: say why (to the customer, the log, a counter and a zero-cost usage row) — until 2026-11-10 these 429s were
+    // only visible in nginx.
+    const message = admissionRefusalMessage(admission);
+    noteAdmissionRefusal(caller.userId, caller.apiKeyId, admission);
+    try {
+      settleRequest({
+        requestId,
+        userId: caller.userId,
+        apiKeyId: caller.apiKeyId,
+        groupId: caller.groupId,
+        rateMultiplier: caller.rateMultiplier,
+        accountId: null,
+        providerId: null,
+        payoutRate: 0,
+        model: (typeof body.model === "string" && body.model.trim()) || "-",
+        upstreamModel: null,
+        endpoint,
+        stream: body.stream === true,
+        statusCode: 429,
+        errorCode: "user_inflight_limit",
+        usage: { input_tokens: 0, output_tokens: 0 },
+        usageEstimated: false,
+        durationMs: 0,
+        clientIp: clientIp(req),
+        errorMessage: `${admission.reason}: ${message} [${admissionRefusalNumbers(admission)}]`,
+      });
+    } catch (err) {
+      console.error("[proxy] failed to log admission refusal:", err);
+    }
+    sendError(reply, format, 429, "user_inflight_limit", message, "rate_limit_error");
     return;
   }
   const abort = new AbortController();

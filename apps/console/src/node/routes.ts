@@ -36,6 +36,7 @@ import {
   writeTunnel,
   type CcWorkerParams,
   type IsolationContext,
+  nodeWorkerInfo,
 } from "./registry.js";
 
 // Node <-> platform control plane and gateway tunnel endpoints
@@ -396,7 +397,8 @@ export function registerNodeRoutes(app: FastifyInstance): void {
         return reply;
       }
       if(!opened)return sendError(reply,503,"no_online_node","No online node accepted the session");
-      return {sessionId:opened.sessionId,nodeId:opened.nodeId};
+      const workerInfo = kind === "cc_worker" ? nodeWorkerInfo(opened.nodeId) : null;
+      return {sessionId:opened.sessionId,nodeId:opened.nodeId,...(workerInfo?{worker:workerInfo}:{})};
     } finally {
       request.raw.removeListener("aborted",disconnected);
       reply.raw.removeListener("close",disconnected);
