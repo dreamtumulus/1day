@@ -94,3 +94,5 @@ for (const r of db.prepare("SELECT substr(node_id,6,8) node, online, accepting_s
   console.log(`-- node ${r.node}: online=${r.online} accepting=${r.acc} in_flight=${r.in_flight} worker active/queued/max=${cw.active??"?"}/${cw.queued??"?"}/${cw.maxConcurrency??"?"} claude=${cw.claudeVersion??"?"} heartbeat ${age===null?"never":age+"s ago"}`);
 }
 JS
+# Retention / disk / db size / backup freshness / settlement journal (warn-only lines; 2026-11-10).
+"$(dirname "$(readlink -f "$0")")/health-extra" 2>/dev/null || true
