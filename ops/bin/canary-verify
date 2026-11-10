@@ -79,7 +79,7 @@ say "== 5. journald, last 24 h (must be empty)"
 if command -v journalctl >/dev/null 2>&1; then
   j=$(journalctl -u '1dayapi-gateway@*' -u 1dayapi-console --since '24 hours ago' --no-pager 2>/dev/null | grep -E '\[cc-profile\].*mismatch|\[ALERT\]\[org\]|rate_limit_error.{0,40}"message":"Error"|organization has disabled|suspended for this organization' | tail -20)
   if [ -n "$j" ]; then say "$j" | sed 's/^/  !! /'; fail=1; else say "  ok (nothing)"; fi
-  # "Nothing in 24 h" only means something when journald still holds 24 h (docs/operations.md §7.3: production
+  # "Nothing in 24 h" only means something when journald still holds 24 h (docs/operations.md §7.0: production
   # was found keeping about 4 h before ops/systemd/journald-1dayapi.conf).
   first=$(journalctl -q -u '1dayapi-gateway@*' --no-pager -o short-unix 2>/dev/null | awk '$1 ~ /^[0-9]/ {print int($1); exit}')
   if [ -n "${first:-}" ]; then

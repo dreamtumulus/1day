@@ -276,8 +276,8 @@ console 定时任务每 `cache_refund_interval_sec`（默认 86400）跑一轮�
 | 文件 | 说明 |
 |---|---|
 | `1dayapi.db`（+ `-wal`/`-shm`） | 数据库 |
-| `provider-cred.key` | 凭证主钥（0600，自动生成；`PROVIDER_CRED_KEY` 覆盖）。丢失则所有账户凭证与可查看 Key 无法解密 |
-| `internal.key` | gateway → console 内部令牌（0600，自动生成；`INTERNAL_TOKEN` 覆盖）。两个进程必须读到同一份 |
+| `provider-cred.key` | 凭证主钥（0600；`PROVIDER_CRED_KEY` 覆盖）。丢失则所有账户凭证与可查看 Key 无法解密。只在库里还没有任何密文时自动生成；已有密文而文件缺失 → 拒绝启动（`ALLOW_NEW_MASTER_KEY=1` 才新建）。`settings.__master_key_check__` 保存它的校验值，启动时由 `verifyMasterKey()` 比对（operations.md §5.2） |
+| `internal.key` | gateway → console 内部令牌（0600，自动生成；`INTERNAL_TOKEN` 覆盖）。两个进程必须读到同一份；在已有库旁边重建时会打印告警 |
 | `admin-key.txt` | 首次启动无管理员时生成的登录密钥（0600） |
 | `settlement-journal/` | 0600 结算意图文件；只能在确认已记账后由幂等恢复删除，不得当缓存清空 |
 | `backups/` | v3 重构前的源码 / 数据库快照 |

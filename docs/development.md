@@ -158,6 +158,8 @@ pnpm build && pnpm test:e2e          # 端到端：bash tests/e2e/run.sh
 | `DB_PATH` | `$DATA_DIR/1dayapi.db` | 库文件 |
 | `PROVIDER_CRED_KEY` | `$DATA_DIR/provider-cred.key` | 凭证加密主钥 |
 | `INTERNAL_TOKEN` | `$DATA_DIR/internal.key` | 网关 → console 内部令牌 |
+| `ALLOW_NEW_MASTER_KEY` | 未设 | `1` = 允许在库里已有密文时新建 / 更换主密钥（旧密文作废）。只用于一次启动；平时缺密钥文件会拒绝启动（operations.md §5.2） |
+| `KEY_REVEAL_FRESH_SESSION_SEC` / `KEY_REVEAL_MAX_PER_HOUR` | `600` / `10` | 再次查看 API Key：多新的会话算刚登录 / 每用户每小时次数（auth.md §3b） |
 
 已删除：`UPSTREAM_ANTHROPIC_*`、`UPSTREAM_OPENAI_*`、`PROVIDER_TUNNEL_ENABLED`、`SEED_BALANCE_USD`。
 
@@ -168,6 +170,9 @@ provider-node 的环境变量见 `provider-node.md`。
 - **改了 core / catalog 没重建**：服务仍跑旧 `dist`。
 - **两个进程的 `DATA_DIR` 不一致**：网关读不到账户、内部令牌对不上（隧道 403 `forbidden`）、凭证解密失败。
 - **丢了 `provider-cred.key`**：所有账户凭证与可查看的 API Key 都解不开（迁移时会跳过无法解密的账户）。
+  2026-11-10 起库里已有密文而密钥文件不在时，进程拒绝启动（`MasterKeyError`，写明期望路径），不再悄悄生成一把新的；
+  本地想重来就删掉整个 `data/`，或设 `ALLOW_NEW_MASTER_KEY=1` 启动一次。
+- **测试默认数据目录**：没设 `DATA_DIR` 的测试会用 `<repo>/data`；`pnpm gate` 会给一个临时目录，直接 `pnpm -r test` 则会在检出目录里留下 `data/`。
 - **粘性会话**：同一把 Key、同一模型、同一首条消息会固定到上次的账户；测试故障转移时换提示词。
 - **新分组没挂账户**：Key 绑到没有账户的分组会得到 503 `no_available_account`。
 - **模型必须在注册表里**：第三方中转提供的非目录模型要先在"模型定价"里添加并定价，否则 404 `model_not_found`。
