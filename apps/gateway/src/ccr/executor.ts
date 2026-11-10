@@ -7,7 +7,7 @@
 // warm session (turns/idle/error caps, archive on retire); stateless requests
 // still create a fresh session per request and archive it on completion.
 
-import { noteTurnFacts } from "./worker.js";
+import { noteFailureSource, noteTurnFacts } from "./worker.js";
 import { encryptJson, sha256Hex, nowIso, run, INTERNAL_HEADER, internalToken, accountBaseUrl, getSetting, one, readCredential, writeCredential, type AccountRow, type Credential } from "@1dayapi/core";
 import { wait, StreamDemand } from "../lifecycle.js";
 import { config } from "../config.js";
@@ -194,6 +194,7 @@ export async function runCcr(input: CcrRunInput): Promise<Response> {
   } catch (err) {
     if (entry) pool.release(entry, true);
     else if (sessionId) void archivePoolEntry({ accountId: account.id, model: input.upstreamModel, stickyKey: "", sessionId, turns: 0, consumedEvents: new Set(), busy: false, hadError: true, createdAt: Date.now(), lastUsedAt: Date.now(), archiveCtx });
+    noteFailureSource(input, err instanceof CcrHttpError ? "http_body" : "process");
     return toResponse(err);
   }
   console.log(`[ccr] ${input.requestId} session ${sessionId} on ${account.name} ${pool.logLine()}`);
@@ -232,10 +233,12 @@ export async function runCcr(input: CcrRunInput): Promise<Response> {
       }
     } catch (err) {
       finishPool(true);
+      noteFailureSource(input, err instanceof CcrHttpError ? "http_body" : "process");
       return toResponse(err);
     }
     if (translator.error) {
       finishPool(true);
+      noteFailureSource(input, translator.errorSource ?? "process");
       return errorResponse(502, `ccr: ${translator.error}`);
     }
     if (translator.upstreamUsage) console.log(`[ccr] ${input.requestId} upstream modelUsage: ${JSON.stringify(translator.upstreamUsage).slice(0, 400)}`);
@@ -252,6 +255,7 @@ export async function runCcr(input: CcrRunInput): Promise<Response> {
     first = await pollNew();
   } catch (err) {
     finishPool(true);
+    noteFailureSource(input, err instanceof CcrHttpError ? "http_body" : "process");
     return toResponse(err);
   }
   const demand = new StreamDemand();
@@ -268,6 +272,7 @@ export async function runCcr(input: CcrRunInput): Promise<Response> {
         }
         if (translator.error) {
           finishPool(true);
+          noteFailureSource(input, translator.errorSource ?? "process");
           await write(`event: error\ndata: ${JSON.stringify({ type: "error", error: { type: "api_error", message: `ccr: ${translator.error}` } })}\n\n`);
         } else {
           if (translator.upstreamUsage) console.log(`[ccr] ${input.requestId} upstream modelUsage: ${JSON.stringify(translator.upstreamUsage).slice(0, 400)}`);
@@ -277,6 +282,7 @@ export async function runCcr(input: CcrRunInput): Promise<Response> {
         }
       } catch (err) {
         finishPool(true);
+        noteFailureSource(input, "process");
         await write(`event: error\ndata: ${JSON.stringify({ type: "error", error: { type: "api_error", message: `ccr: ${(err as Error).message}` } })}\n\n`).catch(() => {});
       } finally {
         demand.close(controller);

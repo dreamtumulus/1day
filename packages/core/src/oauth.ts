@@ -158,21 +158,28 @@ export async function refreshOAuthCredential(
       return null;
     }
   }
-  try {
-    signal?.throwIfAborted();
-    return await refreshOAuthCredentialLocked(account, cred, transport, signal);
-  } finally {
-    releaseRefreshLock(account.id);
-  }
+  // Nothing has been sent yet: a caller that left while waiting for the lock simply gives it back.
+  if (signal?.aborted) { releaseRefreshLock(account.id); signal.throwIfAborted(); }
+  // From here on the refresh belongs to the account, not to the caller (2026-11-09 review, item B). The token
+  // endpoint rotates the refresh token as soon as it sees the request, so the call and the write of its answer
+  // run to the end on their own timeout; a caller's signal only ends that caller's wait. Aborting the call
+  // itself lost the new pair, and the next refresh replayed the old token and revoked the grant.
+  const work = refreshOAuthCredentialLocked(account, cred, transport).finally(() => releaseRefreshLock(account.id));
+  work.catch(() => {});
+  return cancellable(work, signal);
+}
+
+/** Token-endpoint call timeout (env OAUTH_REFRESH_TIMEOUT_MS, default 20 s) — the only thing that ends the call early. */
+function refreshTimeoutMs(): number {
+  const n = Number(process.env.OAUTH_REFRESH_TIMEOUT_MS);
+  return Number.isFinite(n) && n > 0 ? n : 20_000;
 }
 
 async function refreshOAuthCredentialLocked(
   account: Pick<AccountRow, "id" | "platform">,
   cred: Credential,
   transport?: OAuthTransport,
-  signal?: AbortSignal,
 ): Promise<Credential | null> {
-  signal?.throwIfAborted();
   if (!cred.refreshToken) return null;
   const platform = account.platform === "openai" ? "openai" : "anthropic";
   const ep = OAUTH_ENDPOINTS[platform];
@@ -193,12 +200,14 @@ async function refreshOAuthCredentialLocked(
             client_id: ep.clientId,
             scope: "openid profile email",
           }).toString();
-    signal?.throwIfAborted();
-    const timeout = AbortSignal.timeout(20_000);
-    const requestSignal = signal ? AbortSignal.any([signal, timeout]) : timeout;
-    const res = transport
-      ? await transport(ep.tokenUrl, { headers, body, signal: requestSignal })
-      : await fetch(ep.tokenUrl, { method: "POST", headers, body, signal: requestSignal });
+    const requestSignal = AbortSignal.timeout(refreshTimeoutMs());
+    // Raced against the timeout as well: a transport that ignores its signal must not hold the account's refresh forever.
+    const res = await cancellable(
+      transport
+        ? transport(ep.tokenUrl, { headers, body, signal: requestSignal })
+        : fetch(ep.tokenUrl, { method: "POST", headers, body, signal: requestSignal }),
+      requestSignal,
+    );
     if (!res) {
       console.warn(`[oauth] refresh for account ${account.id} failed: transport unavailable`);
       return null;
@@ -224,43 +233,34 @@ async function refreshOAuthCredentialLocked(
       expiresAt: isoIn(Number(json.expires_in ?? 3600) * 1000),
     };
     // Once the provider has rotated the grant, persist the returned credential
-    // even if the client disconnected while the response was being decoded.
+    // whatever happened to the caller that asked for it.
     writeCredential(account.id, next);
     try { run("UPDATE accounts SET last_refresh_at = ?, refresh_cooldown_until = NULL WHERE id = ?", nowIso(), account.id); } catch { /* pre-migration dev DB */ }
-    signal?.throwIfAborted();
     console.log(`[oauth] refreshed access token for account ${account.id}`);
     return next;
   } catch (err) {
-    signal?.throwIfAborted();
     console.warn(`[oauth] refresh for account ${account.id} errored: ${(err as Error).message}`);
     return null;
   }
 }
 
-const refreshing = new Map<string, { promise: Promise<Credential | null>; signal?: AbortSignal }>();
+const refreshing = new Map<string, Promise<Credential | null>>();
 
-/** Credential ready for use; refreshes coalesce, while each caller can cancel its wait. */
+/**
+ * Credential ready for use. Refreshes of one account coalesce into a single shared run that no caller's signal
+ * reaches (it has its own lock-wait and network timeouts); `signal` only ends this caller's wait for it.
+ */
 export async function freshCredential(account: AccountRow, force = false, transport?: OAuthTransport, signal?: AbortSignal): Promise<Credential> {
   signal?.throwIfAborted();
   const cred = readCredential(account);
   if (account.type !== "oauth" || (!force && !credentialNeedsRefresh(cred))) return cred;
-  let entry = refreshing.get(account.id);
-  if (!entry) {
-    const promise = refreshOAuthCredential(account, cred, transport, signal).finally(() => refreshing.delete(account.id));
-    entry = { promise, signal };
-    refreshing.set(account.id, entry);
+  let shared = refreshing.get(account.id);
+  if (!shared) {
+    shared = refreshOAuthCredential(account, cred, transport).finally(() => refreshing.delete(account.id));
+    shared.catch(() => {});
+    refreshing.set(account.id, shared);
   }
-  try { return (await cancellable(entry.promise, signal)) ?? cred; }
-  catch (err) {
-    signal?.throwIfAborted();
-    // The first coalesced caller can disappear while another still needs the
-    // account. That surviving caller retries under the normal cross-process lock.
-    if (entry.signal?.aborted) {
-      try { await entry.promise; } catch { /* original owner's cancellation */ }
-      return freshCredential(account, force, transport, signal);
-    }
-    throw err;
-  }
+  return (await cancellable(shared, signal)) ?? cred;
 }
 
 export function canRefresh(account: AccountRow): boolean {

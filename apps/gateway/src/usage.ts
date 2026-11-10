@@ -108,12 +108,25 @@ export class UsageAccumulator {
     this.toolCalls++;
   }
 
-  /** Final usage; estimates (chars / 4) when upstream never reported usage. */
-  finalize(requestBody: unknown): { usage: TokenUsage; estimated: boolean } {
+  /**
+   * Final usage; estimates (chars / 4) when upstream never reported usage.
+   *
+   * `partial` (review 2026-11-09 E): the stream stopped before its terminal event. On the Anthropic wire the
+   * output count seen so far is message_start's placeholder (≈1 token) — the real figure only arrives with the
+   * final message_delta — so the reported output is raised to the estimate of the text and thinking that was
+   * actually forwarded, and the row is flagged estimated. Never lowered: a reported count above the estimate stands.
+   */
+  finalize(requestBody: unknown, opts: { partial?: boolean } = {}): { usage: TokenUsage; estimated: boolean } {
     const usage = { input_tokens: this.input, output_tokens: this.output,
       cache_read_tokens: this.cacheRead, cache_write_tokens: this.cacheWrite };
     try { validateTokenUsage(usage); } catch { this.invalid = true; }
-    if (this.seen && !this.invalid) return { usage, estimated: false };
+    if (this.seen && !this.invalid) {
+      if (opts.partial) {
+        const produced = Math.min(MAX_USAGE_TOKENS, estimateTokens(this.text));
+        if (produced > usage.output_tokens) return { usage: { ...usage, output_tokens: produced }, estimated: true };
+      }
+      return { usage, estimated: false };
+    }
     return {
       usage: {
         input_tokens: estimateRequestTokens(requestBody),

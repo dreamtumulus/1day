@@ -331,7 +331,10 @@ import { pinnedTunnelTransport, type IsolationContext } from "./tunnel.js";
 
 export function freshCredential(account: AccountRow, force = false, isolation?: IsolationContext, signal?: AbortSignal): Promise<Credential> {
   if (isolation && readCredential(account).orgUuid?.toLowerCase() !== isolation.teamId) return Promise.reject(new Error("account organization does not match conversation"));
-  const transport = account.route === "node" ? pinnedTunnelTransport(account.id, account.bound_proxy_id, isolation, signal) : (signal ? (url: string, init: { headers: Record<string, string>; body: string }) => fetch(url, { ...init, method: "POST", signal: AbortSignal.any([signal, AbortSignal.timeout(30_000)]) }) : undefined);
+  // The token-endpoint call never carries the request's abort signal (review 2026-11-09 B): refresh tokens rotate, so a
+  // client that disconnects mid-refresh must not cancel the call or the write of its answer. `signal` ends this
+  // caller's wait only; core bounds the call with its own timeout (OAUTH_REFRESH_TIMEOUT_MS).
+  const transport = account.route === "node" ? pinnedTunnelTransport(account.id, account.bound_proxy_id, isolation) : undefined;
   return abortable(coreFreshCredential(account, force, transport, signal), signal);
 }
 export { canRefresh } from "@1dayapi/core";

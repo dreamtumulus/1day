@@ -88,18 +88,67 @@ test("cancelled lock waiter stops promptly and cannot release another owner's lo
   run("DELETE FROM oauth_refresh_locks WHERE account_id=?", a.id);
 });
 
-test("one coalesced caller cancelling does not strand another live caller", async () => {
+test("one coalesced caller cancelling does not strand another live caller: both share ONE token-endpoint call", async () => {
   const cred = { accessToken: "at-old", refreshToken: "rt-old", expiresAt: new Date(Date.now() + 60_000).toISOString() };
   const a = account(cred), row = one("SELECT * FROM accounts WHERE id=?", a.id), controller = new AbortController();
-  const first = core.freshCredential(row, true, (_url, init) => new Promise((_, reject) => init.signal.addEventListener("abort", () => reject(init.signal.reason), { once: true })), controller.signal);
+  let calls = 0, sawAbort = false;
+  const transport = async (_url, init) => { calls++; init.signal.addEventListener("abort", () => { sawAbort = true; }); await sleep(200); return tokenResponse("live"); };
+  const first = core.freshCredential(row, true, transport, controller.signal);
   const rejected = assert.rejects(first, { name: "AbortError" });
-  let liveCalls = 0;
-  const second = core.freshCredential(row, true, async () => { liveCalls++; return tokenResponse("live"); });
+  const second = core.freshCredential(row, true, async () => { calls += 100; return tokenResponse("second"); });
+  await sleep(20);
   controller.abort();
   await rejected;
-  assert.equal((await second).refreshToken, "rt-live");
-  assert.equal(liveCalls, 1);
+  assert.equal((await second).refreshToken, "rt-live", "the surviving caller gets the shared refresh's result");
+  assert.equal(calls, 1, "the rotating refresh token is sent exactly once");
+  assert.equal(sawAbort, false, "the caller's abort never reaches the token-endpoint call");
   assert.equal(one("SELECT COUNT(*) c FROM oauth_refresh_locks WHERE account_id=?", a.id).c, 0);
+});
+
+// Review 2026-11-09 B: the upstream rotates the refresh token on receipt. Whenever the caller leaves — before the
+// answer, while it is decoded, as sole or coalesced caller — the call finishes and the new pair is stored.
+for (const c of [
+  { name: "refreshOAuthCredential, abort while the call is in flight", via: "refresh", abortAt: 30 },
+  { name: "freshCredential (sole caller), abort while the call is in flight", via: "fresh", abortAt: 30 },
+  { name: "freshCredential, abort right after the call started", via: "fresh", abortAt: 0 },
+]) {
+  test(`client abort cannot lose a rotated token: ${c.name}`, async () => {
+    const cred = { accessToken: "at-old", refreshToken: "rt-old", expiresAt: new Date(Date.now() + 60_000).toISOString() };
+    const a = account(cred), row = one("SELECT * FROM accounts WHERE id=?", a.id), controller = new AbortController();
+    let calls = 0, aborted = false;
+    const transport = async (_url, init) => { calls++; init.signal.addEventListener("abort", () => { aborted = true; }); await sleep(150); return tokenResponse(`kept-${a.id}`); };
+    const p = c.via === "refresh" ? refreshOAuthCredential(a, cred, transport, controller.signal) : core.freshCredential(row, true, transport, controller.signal);
+    const rejected = assert.rejects(p, { name: "AbortError" });
+    await sleep(c.abortAt);
+    const t0 = Date.now();
+    controller.abort();
+    await rejected;
+    assert.ok(Date.now() - t0 < 100, "the caller's wait ends at once");
+    assert.equal(readCredential(one("SELECT credential_enc FROM accounts WHERE id=?", a.id)).refreshToken, "rt-old", "answer not in yet");
+    await sleep(300);
+    assert.equal(calls, 1);
+    assert.equal(aborted, false, "token-endpoint call was not aborted");
+    assert.equal(readCredential(one("SELECT credential_enc FROM accounts WHERE id=?", a.id)).refreshToken, `rt-kept-${a.id}`, "rotated pair persisted after the caller left");
+    assert.equal(one("SELECT COUNT(*) c FROM oauth_refresh_locks WHERE account_id=?", a.id).c, 0, "lock released by the refresh itself");
+    // the next request uses the stored pair; the old refresh token is never replayed
+    const again = await core.freshCredential(one("SELECT * FROM accounts WHERE id=?", a.id), false, async () => { calls++; return tokenResponse("replay"); });
+    assert.equal(again.refreshToken, `rt-kept-${a.id}`);
+    assert.equal(calls, 1);
+  });
+}
+
+test("the token-endpoint call is bounded by its own timeout only (OAUTH_REFRESH_TIMEOUT_MS), even when the transport ignores its signal", async () => {
+  const cred = { accessToken: "at-old", refreshToken: "rt-old", expiresAt: new Date(Date.now() + 60_000).toISOString() };
+  const a = account(cred);
+  process.env.OAUTH_REFRESH_TIMEOUT_MS = "80";
+  const keepAlive = setTimeout(() => {}, 5_000); // AbortSignal.timeout is unref'd: keep the loop alive for the test
+  try {
+    const t0 = Date.now();
+    const r = await refreshOAuthCredential(a, cred, () => new Promise(() => {}));
+    assert.equal(r, null);
+    assert.ok(Date.now() - t0 < 1000);
+    assert.equal(one("SELECT COUNT(*) c FROM oauth_refresh_locks WHERE account_id=?", a.id).c, 0);
+  } finally { clearTimeout(keepAlive); delete process.env.OAUTH_REFRESH_TIMEOUT_MS; }
 });
 
 test("a received rotated credential is saved even when cancellation races JSON decoding", async () => {

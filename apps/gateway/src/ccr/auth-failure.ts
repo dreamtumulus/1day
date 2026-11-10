@@ -57,6 +57,11 @@ export class AuthFailureTracker {
     this.hits.delete(accountId);
   }
 
+  /** Tests only. */
+  reset(): void {
+    this.hits.clear();
+  }
+
   count(accountId: string): number {
     const t = this.now();
     return (this.hits.get(accountId) ?? []).filter((x) => t - x < this.windowMs).length;

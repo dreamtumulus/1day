@@ -642,6 +642,12 @@ export class SessionTranslator {
    */
   private stopDetails: Json | null = null;
   private errorMessage: string | null = null;
+  /**
+   * Whether `errorMessage` is Claude Code's own structured verdict (`result.is_error` / an error subtype) or only an
+   * assistant text that looks like one ("API Error: …", "hit your … limit") which `result` did not confirm — a model
+   * can be asked to write those words (review 2026-11-09 D). Account-level disposal trusts only the former outright.
+   */
+  private errorFrom: "cc_result" | "model_text" | null = null;
   /** A held "API Error: …" assistant text (see case "assistant"); surfaces as the session error at `result`. */
   private heldApiError: string | null = null;
   /** The session's `result` event, condensed for logs (subtype / is_error / text head). */
@@ -741,6 +747,11 @@ export class SessionTranslator {
    */
   get error(): string | null {
     return this.errorMessage;
+  }
+
+  /** Provenance of `error` (null when there is none): see `errorFrom`. */
+  get errorSource(): "cc_result" | "model_text" | null {
+    return this.errorMessage === null ? null : this.errorFrom;
   }
 
   get result(): { subtype: string; isError: boolean; text: string | null } | null {
@@ -1256,6 +1267,8 @@ export class SessionTranslator {
         if (isError && (subtype !== "error_max_turns" || !produced || held !== null)) {
           const text = resultText ?? `session ended with ${subtype}`;
           this.errorMessage = produced ? `${text} (after partial output)` : text;
+          // Claude Code itself called the turn an error → its structured verdict. Only the held look-alike text → model text.
+          this.errorFrom = r.is_error === true || (typeof r.subtype === "string" && r.subtype.startsWith("error")) ? "cc_result" : "model_text";
         } else if (!refused && !produced && resultText) {
           // No assistant message observed (schema drift?) — fall back to the summarized result text.
           out += this.appendText(r.result);
