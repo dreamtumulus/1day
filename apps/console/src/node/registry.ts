@@ -1,8 +1,9 @@
 import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { WebSocketServer, type WebSocket } from "ws";
-import { all, boundProxyDown, decryptString, ensureDeviceId, isConversationGenerationActive, nowIso, one, run, sha256Hex, type AccountRow, freezeAccountsOnProxy, freezeAccountForProxy, recordProxyTeamEvent } from "@1dayapi/core";
-import { nodeProxyConfig, recordNodeProxyExit, NODE_PROXIES_IN_POOL_SQL, PROXY_IN_POOL_SQL } from "./proxies.js";
+import { all, boundProxyDown, decryptString, ensureDeviceId, isConversationGenerationActive, nowIso, one, run, sha256Hex, type AccountRow, freezeAccountForProxy, recordProxyTeamEvent } from "@1dayapi/core";
+import { nodeProxyConfig, recordNodeProxyExit, freezeNodeAccountsOnProxy, NODE_PROXIES_IN_POOL_SQL, PROXY_IN_POOL_SQL } from "./proxies.js";
 import { isTrustedExecutionNode } from "./trust.js";
+import { oncePer } from "../log-limit.js";
 
 export interface IsolationContext { teamId: string; conversationId: string; generation: number }
 export function validIsolation(value: unknown): value is IsolationContext {
@@ -155,6 +156,19 @@ export function verifyNodeSecret(
   const b = Buffer.from(sha256Hex(secret));
   if (a.length !== b.length || !timingSafeEqual(a, b)) return null;
   return { nodeId, providerId: row.provider_id };
+}
+
+/**
+ * Boot only (review fix 2026-11-10): `nodes.online` / `in_flight` are written by the control socket, which died with
+ * the previous process. Every node without a live socket in THIS process shows offline with nothing in flight until it
+ * reconnects (seconds for a healthy node). Returns the number of rows corrected.
+ */
+export function resetNodePresence(): number {
+  const live = [...onlineNodes.keys()];
+  return run(
+    `UPDATE nodes SET online = 0, in_flight = 0 WHERE (online <> 0 OR in_flight <> 0)${live.length ? ` AND node_id NOT IN (${live.map(() => "?").join(",")})` : ""}`,
+    ...live,
+  ).changes;
 }
 
 /** Close a node's control connection (unbind / provider disabled). */
@@ -550,62 +564,139 @@ export function isNodeOnline(nodeId: string): boolean {
   return onlineNodes.has(nodeId);
 }
 
-/** Heartbeat write-back: proxies[{id,live,latencyMs,error?}] and assignments{accountId:proxyId}. */
+const IGNORED_LOG_MS = 10 * 60_000;
+
+/**
+ * A sharing (non-home) node's last verdict on a shared proxy (2026-11-10). The one `node_proxies` row belongs to the home
+ * node; `node_proxy_shares` has no health columns, so the sharer's view is kept in memory (lost on a console restart,
+ * rebuilt by the next heartbeat) and shown next to the home row's status.
+ */
+export interface SharerProxyView { live: boolean | null; error: string | null; exitIp: string | null; at: string }
+const sharerViews = new Map<string, Map<string, SharerProxyView>>();
+export function sharerProxyView(nodeId: string, proxyId: string): SharerProxyView | null {
+  return sharerViews.get(nodeId)?.get(proxyId) ?? null;
+}
+
+/**
+ * Heartbeat write-back: proxies[{id,live,latencyMs,error?}] and assignments{accountId:proxyId}.
+ *
+ * Review fix 2026-11-10: a proxy row has ONE home node. Only the home node's verdict is written to the row (status,
+ * exit IP); a node that merely holds a share reports its own view, which is remembered per node and only ever freezes
+ * that node's own accounts. Accounts are frozen only when the report came from a trusted execution node and — for the
+ * home node — the row update actually applied. Before this, every holder overwrote the same row and one node's blip
+ * froze the accounts of another node; two nodes measuring different exits triggered "exit IP changed" freezes.
+ */
 function recordProxyHealth(nodeId: string, msg: Record<string, unknown>): void {
   if (Array.isArray(msg.proxies)) {
     const now = nowIso();
+    const trusted = isTrustedExecutionNode(nodeId);
     let pushNeeded = false;
+    const seenShared = new Set<string>();
     for (const p of msg.proxies) {
       if (!p || typeof p !== "object") continue;
-      const id = (p as Record<string, unknown>).id;
-      if (typeof id !== "string" || !id) continue;
+      const rawId = (p as Record<string, unknown>).id;
+      if (typeof rawId !== "string" || !rawId) continue;
+      const id = rawId.slice(0, 40);
       const live = (p as Record<string, unknown>).live;
       const err = (p as Record<string, unknown>).error;
+      const errText = typeof err === "string" && err ? err : null;
+      const row = one<{ node_id: string; status: string; exit_ip: string | null; isolation_version: number }>(
+        `SELECT node_id, status, exit_ip, isolation_version FROM node_proxies WHERE ${NODE_PROXIES_IN_POOL_SQL} AND id = ?`, nodeId, nodeId, id);
+      if (!row) {
+        if (oncePer(`px-nopool:${nodeId}:${id}`, IGNORED_LOG_MS)) console.warn(`[registry] proxy report ignored: ${id.slice(0, 12)} is not in node ${nodeId}'s pool`);
+        continue;
+      }
+      if (row.isolation_version !== 1) continue; // legacy rows are history: heartbeats never maintain them
+      const ip = (p as Record<string, unknown>).exitIp;
+      const exitIp = typeof ip === "string" && ip ? ip : null;
+      if (row.node_id !== nodeId) {
+        // ---- sharing node: its view never flips the home row ----
+        seenShared.add(id);
+        const views = sharerViews.get(nodeId) ?? new Map<string, SharerProxyView>();
+        views.set(id, { live: live === true ? true : live === false ? false : null, error: errText?.slice(0, 300) ?? null, exitIp, at: now });
+        sharerViews.set(nodeId, views);
+        if (live !== true && live !== false) continue;
+        if (live === false) {
+          if (!trusted) {
+            if (oncePer(`px-untrusted:${nodeId}:${id}`, IGNORED_LOG_MS)) console.warn(`[registry] proxy report ignored: node ${nodeId} is not a trusted execution node; its dead verdict on shared proxy ${id.slice(0, 12)} freezes nothing`);
+            continue;
+          }
+          const frozen = freezeNodeAccountsOnProxy(id, nodeId, false, `node ${nodeId} reported the shared proxy dead${errText ? `: ${errText.slice(0, 200)}` : ""}`);
+          if (frozen.length) console.warn(`[registry] shared proxy ${id.slice(0, 12)} dead on ${nodeId} → ${frozen.length} account(s) of that node frozen (proxy_down): ${frozen.join(",")}`);
+          if (row.status !== "dead" && oncePer(`px-share-dead:${nodeId}:${id}`, IGNORED_LOG_MS))
+            console.warn(`[registry] proxy report ignored for the row: sharing node ${nodeId} says ${id.slice(0, 12)} is dead; home node ${row.node_id} keeps status ${row.status}`);
+          continue;
+        }
+        // live === true. A row its home node cannot verify right now (home offline, never probed) may be initialised by
+        // the sharer — never changed: an existing verdict or exit stays the home node's.
+        const homeOffline = !onlineNodes.has(row.node_id);
+        if (homeOffline && row.status === "unknown") {
+          run("UPDATE node_proxies SET status = 'live', last_check_at = ?, last_error = NULL WHERE id = ? AND status = 'unknown' AND isolation_version = 1", now, id);
+          console.info(`[registry] shared proxy ${id.slice(0, 12)}: first verdict taken from sharing node ${nodeId} (home node ${row.node_id} is offline)`);
+        } else if (row.status !== "live" && oncePer(`px-share-live:${nodeId}:${id}`, IGNORED_LOG_MS)) {
+          console.info(`[registry] proxy report ignored for the row: sharing node ${nodeId} says ${id.slice(0, 12)} is live; home node ${row.node_id} keeps status ${row.status}`);
+        }
+        if (exitIp && !row.exit_ip && homeOffline) {
+          recordNodeProxyExit(nodeId, id, exitIp);
+          pushNeeded = true;
+        } else if (exitIp && row.exit_ip && row.exit_ip !== exitIp && oncePer(`px-share-exit:${nodeId}:${id}:${exitIp}`, IGNORED_LOG_MS)) {
+          console.warn(`[registry] proxy report ignored: sharing node ${nodeId} measured exit ${exitIp} for ${id.slice(0, 12)}, home node ${row.node_id} recorded ${row.exit_ip}; the home row is unchanged`);
+        }
+        continue;
+      }
+      // ---- home node ----
       if (live !== true && live !== false) {
         // Not probed yet (node just (re)started or pool just replaced). Keep the
         // last known live/dead verdict until the node re-probes: flipping every
         // bound account to "proxy unknown" on each node restart would take them
         // all out of scheduling for the whole probe pass.
-        run(`UPDATE node_proxies SET status = 'unknown' WHERE ${NODE_PROXIES_IN_POOL_SQL} AND id = ? AND isolation_version=1 AND status NOT IN ('live', 'dead')`, nodeId, nodeId, id.slice(0, 40));
+        run("UPDATE node_proxies SET status = 'unknown' WHERE node_id = ? AND id = ? AND isolation_version=1 AND status NOT IN ('live', 'dead')", nodeId, id);
         continue;
       }
-      // A shared proxy (2026-11-08) is probed by every node that holds it; each verdict is written to the one row.
-      run(
-        `UPDATE node_proxies SET status = ?, last_check_at = ?, last_error = ? WHERE ${NODE_PROXIES_IN_POOL_SQL} AND id = ? AND isolation_version=1`,
+      const applied = run(
+        "UPDATE node_proxies SET status = ?, last_check_at = ?, last_error = ? WHERE node_id = ? AND id = ? AND isolation_version=1",
         live ? "live" : "dead",
         now,
-        typeof err === "string" && err ? err.slice(0, 300) : null,
+        errText ? errText.slice(0, 300) : null,
         nodeId,
-        nodeId,
-        id.slice(0, 40),
-      );
+        id,
+      ).changes > 0;
       if (live === false) {
         // Operator rule 2026-11-01: a dead proxy freezes its accounts (status proxy_down) until an operator
         // releases or rebinds them — the account never silently comes back or moves to another exit.
-        const frozen = freezeAccountsOnProxy(id.slice(0, 40), `node ${nodeId} reported the bound proxy dead${typeof err === "string" && err ? `: ${err.slice(0, 200)}` : ""}`);
-        if (frozen.length) console.warn(`[registry] proxy ${id.slice(0, 12)} on ${nodeId} dead → ${frozen.length} account(s) frozen (proxy_down): ${frozen.join(",")}`);
-      }
-      const isolated = one<{ exit_ip: string | null }>(`SELECT exit_ip FROM node_proxies WHERE ${NODE_PROXIES_IN_POOL_SQL} AND id=? AND isolation_version=1`, nodeId, nodeId, id);
-      if (isolated && live === true) {
-        const ip = (p as Record<string, unknown>).exitIp;
-        if (typeof ip !== "string" || !ip) {
-          // The node reports the proxy alive without an exit measurement: its pool copy was
-          // just replaced (fresh health, probe pass not finished) or a served request called
-          // markAlive. A proxy whose exit was already verified keeps that identity until the
-          // next measured heartbeat (a changed or conflicting IP is still handled below);
-          // treating it as "identity unavailable" marked every bound proxy dead and pushed
-          // the pool again, which reset the node's probe and restarted the loop (2026-10-28).
-          // An exit that was never measured is still refused: it cannot carry a team.
-          if (!isolated.exit_ip && !recordNodeProxyExit(nodeId, id, "")) pushNeeded = true;
-          continue;
+        if (!applied) {
+          if (oncePer(`px-noapply:${nodeId}:${id}`, IGNORED_LOG_MS)) console.warn(`[registry] proxy report ignored: dead verdict for ${id.slice(0, 12)} from ${nodeId} did not apply to a row; nothing frozen`);
+        } else if (!trusted) {
+          if (oncePer(`px-untrusted:${nodeId}:${id}`, IGNORED_LOG_MS)) console.warn(`[registry] proxy ${id.slice(0, 12)} reported dead by ${nodeId}, which is not a trusted execution node: status recorded, no account frozen`);
+        } else {
+          const frozen = freezeNodeAccountsOnProxy(id, nodeId, true, `node ${nodeId} reported the bound proxy dead${errText ? `: ${errText.slice(0, 200)}` : ""}`);
+          if (frozen.length) console.warn(`[registry] proxy ${id.slice(0, 12)} on ${nodeId} dead → ${frozen.length} account(s) frozen (proxy_down): ${frozen.join(",")}`);
         }
-        const accepted = recordNodeProxyExit(nodeId, id, ip);
-        if (!accepted || isolated.exit_ip !== ip) pushNeeded = true;
-        const country = (p as Record<string, unknown>).exitCountry;
-        if (typeof country === "string" && /^[A-Z]{2}$/.test(country)) {
-          run(`UPDATE node_proxies SET exit_country = ? WHERE ${NODE_PROXIES_IN_POOL_SQL} AND id = ? AND (exit_country IS NULL OR exit_country <> ?)`, country, nodeId, nodeId, id.slice(0, 40), country);
-        }
+        continue;
       }
+      if (!exitIp) {
+        // The node reports the proxy alive without an exit measurement: its pool copy was
+        // just replaced (fresh health, probe pass not finished) or a served request called
+        // markAlive. A proxy whose exit was already verified keeps that identity until the
+        // next measured heartbeat (a changed or conflicting IP is still handled below);
+        // treating it as "identity unavailable" marked every bound proxy dead and pushed
+        // the pool again, which reset the node's probe and restarted the loop (2026-10-28).
+        // An exit that was never measured is still refused: it cannot carry a team.
+        if (!row.exit_ip && !recordNodeProxyExit(nodeId, id, "")) pushNeeded = true;
+        continue;
+      }
+      const accepted = recordNodeProxyExit(nodeId, id, exitIp);
+      if (!accepted || row.exit_ip !== exitIp) pushNeeded = true;
+      const country = (p as Record<string, unknown>).exitCountry;
+      if (typeof country === "string" && /^[A-Z]{2}$/.test(country)) {
+        run("UPDATE node_proxies SET exit_country = ? WHERE node_id = ? AND id = ? AND (exit_country IS NULL OR exit_country <> ?)", country, nodeId, id, country);
+      }
+    }
+    // A share that left the report (removed from the pool) has no view any more.
+    const views = sharerViews.get(nodeId);
+    if (views) {
+      for (const k of [...views.keys()]) if (!seenShared.has(k)) views.delete(k);
+      if (!views.size) sharerViews.delete(nodeId);
     }
     // One pool push per heartbeat at most: pushing inside the loop (once per changed proxy)
     // replaced the node's pool a dozen times per heartbeat.
@@ -613,16 +704,30 @@ function recordProxyHealth(nodeId: string, msg: Record<string, unknown>): void {
   }
   if (msg.assignments && typeof msg.assignments === "object" && !Array.isArray(msg.assignments)) {
     const now = nowIso();
-    const entries = Object.entries(msg.assignments as Record<string, unknown>).filter(
+    const reported = Object.entries(msg.assignments as Record<string, unknown>).filter(
       (e): e is [string, string] => typeof e[1] === "string" && !!e[0] && !!e[1],
-    ).filter(([accountId, proxyId]) => isTrustedExecutionNode(nodeId) && !!one(
+    );
+    // Review fix 2026-11-10: an untrusted node's report, or one with no entry matching the platform's own binding,
+    // used to pass the filter as "empty" and the DELETE below then wiped every mapping of the node. Such a report is
+    // now ignored (and said so); mappings only change on a trusted report with at least one valid entry.
+    if (!isTrustedExecutionNode(nodeId)) {
+      if (reported.length && oncePer(`asg-untrusted:${nodeId}`, IGNORED_LOG_MS)) console.warn(`[registry] assignments report ignored: node ${nodeId} is not a trusted execution node (${reported.length} entr${reported.length === 1 ? "y" : "ies"})`);
+      return;
+    }
+    const entries = reported.filter(([accountId, proxyId]) => !!one(
       "SELECT 1 FROM accounts WHERE id=? AND node_id=? AND team_id IS NOT NULL AND bound_proxy_id=?", accountId, nodeId, proxyId,
     ));
+    if (entries.length < reported.length) {
+      const valid = new Set(entries.map(([a]) => a));
+      const rejected = reported.filter(([a]) => !valid.has(a));
+      if (oncePer(`asg-mismatch:${nodeId}:${rejected.map(([a, p]) => `${a}=${p}`).sort().join(",").slice(0, 400)}`, IGNORED_LOG_MS))
+        console.warn(`[registry] assignments report from ${nodeId}: ${rejected.length} entr${rejected.length === 1 ? "y" : "ies"} ignored (not a managed account of this node, or bound to another proxy): ${rejected.slice(0, 10).map(([a, p]) => `${a.slice(0, 8)}→${p.slice(0, 12)}`).join(", ")}`);
+    }
+    if (!entries.length) return; // nothing valid: keep the existing mappings
     // Heartbeats maintain only the new managed namespace. Legacy mappings are history.
     run(
-      `DELETE FROM node_proxy_assignments WHERE node_id = ? AND account_id IN (SELECT id FROM accounts WHERE team_id IS NOT NULL AND node_id=?)${
-        entries.length ? ` AND account_id NOT IN (${entries.map(() => "?").join(",")})` : ""
-      }`,
+      `DELETE FROM node_proxy_assignments WHERE node_id = ? AND account_id IN (SELECT id FROM accounts WHERE team_id IS NOT NULL AND node_id=?)
+         AND account_id NOT IN (${entries.map(() => "?").join(",")})`,
       nodeId,
       nodeId,
       ...entries.map(([a]) => a),
@@ -669,6 +774,59 @@ async function waitForNodeConn(providerId: string, nodeId: string | null): Promi
   return null;
 }
 
+// ---------- device identity mismatch alerts (review fix 2026-11-10, X-49 follow-up) ----------
+// A node reporting a deviceId / teamId / accountUuid that differs from the registered one (or a deviceId another
+// account already uses) used to be dropped without a trace. Now: counted in memory (GET /api/admin/health/identity),
+// logged as an ALERT line and written to proxy_team_events (event device_identity_mismatch) — log and event at most
+// once per account per 10 minutes, the counters on every report.
+
+const IDENTITY_ALERT_MS = 10 * 60_000;
+export interface IdentityMismatch {
+  at: string; nodeId: string; nodeName: string; accountId: string; teamId: string | null;
+  kind: "team" | "device" | "account_uuid" | "device_in_use";
+  /** First 8 characters only: enough to compare, not a usable identity. */
+  reported: string; registered: string;
+}
+const identityStats = { total: 0, byKind: { team: 0, device: 0, account_uuid: 0, device_in_use: 0 } as Record<IdentityMismatch["kind"], number>, since: nowIso() };
+const identityByAccount = new Map<string, { count: number; lastAt: string; kind: IdentityMismatch["kind"]; nodeId: string }>();
+const identityRecent: IdentityMismatch[] = [];
+
+function nodeLabel(nodeId: string): string {
+  return one<{ name: string | null }>("SELECT json_extract(deploy_meta, '$.name') AS name FROM nodes WHERE node_id = ?", nodeId)?.name || nodeId;
+}
+const short8 = (v: string | null | undefined) => (v ? v.slice(0, 8) : "-");
+
+function noteIdentityMismatch(m: { nodeId: string; accountId: string; teamId: string | null; kind: IdentityMismatch["kind"]; reported: string | null; registered: string | null }): void {
+  const at = nowIso();
+  identityStats.total++;
+  identityStats.byKind[m.kind]++;
+  const prev = identityByAccount.get(m.accountId);
+  if (!prev && identityByAccount.size >= 2000) identityByAccount.delete(identityByAccount.keys().next().value!);
+  identityByAccount.set(m.accountId, { count: (prev?.count ?? 0) + 1, lastAt: at, kind: m.kind, nodeId: m.nodeId });
+  if (!oncePer(`ccid-alert:${m.accountId}`, IDENTITY_ALERT_MS)) return;
+  const name = nodeLabel(m.nodeId);
+  identityRecent.push({ at, nodeId: m.nodeId, nodeName: name, accountId: m.accountId, teamId: m.teamId, kind: m.kind, reported: short8(m.reported), registered: short8(m.registered) });
+  if (identityRecent.length > 50) identityRecent.splice(0, identityRecent.length - 50);
+  console.warn(`[registry] ALERT device identity mismatch node=${name} account=${m.accountId.slice(0, 8)} reported=${short8(m.reported)} registered=${short8(m.registered)} kind=${m.kind}`);
+  try {
+    recordProxyTeamEvent({ resourceKey: `account:${m.accountId}`, nodeId: m.nodeId, teamId: m.teamId, accountId: m.accountId, event: "device_identity_mismatch",
+      reason: `${m.kind}: node reported ${short8(m.reported)}, registered ${short8(m.registered)}; the report was not applied` });
+  } catch (err) {
+    console.error(`[registry] device identity mismatch event not recorded: ${(err as Error)?.message ?? err}`);
+  }
+}
+
+/** Counters since process start + the last 50 alerts (newest first) for GET /api/admin/health/identity. */
+export function identityHealth() {
+  return {
+    since: identityStats.since,
+    mismatches: identityStats.total,
+    byKind: { ...identityStats.byKind },
+    accounts: [...identityByAccount.entries()].map(([accountId, v]) => ({ accountId, ...v })).sort((a, b) => b.lastAt.localeCompare(a.lastAt)).slice(0, 200),
+    recent: [...identityRecent].reverse(),
+  };
+}
+
 /**
  * Heartbeat `ccIdentities`: the node's Claude Code config dirs are the source of
  * truth for an account's device identity (docs/claude-code-compat.md §8). Only
@@ -688,10 +846,30 @@ function recordCcIdentities(nodeId: string, msg: Record<string, unknown>): void 
     const accountUuid = typeof uuid === "string" && /^[0-9a-f-]{32,36}$/i.test(uuid) ? uuid : null;
     if (!deviceId && !accountUuid) continue;
     const acc = one<{ team_id: string | null; device_id: string | null; account_uuid: string | null }>("SELECT team_id,device_id,account_uuid FROM accounts WHERE id=? AND node_id=?", accountId, nodeId);
-    if (!acc || !acc.team_id || !isTrustedExecutionNode(nodeId)) continue;
-    if (acc.team_id && ((v as Record<string, unknown>).teamId !== acc.team_id || (acc.device_id && deviceId !== acc.device_id) ||
-      (acc.account_uuid && accountUuid && acc.account_uuid !== accountUuid) ||
-      (deviceId && one("SELECT 1 FROM accounts WHERE device_id=? AND id<>?", deviceId, accountId)))) continue;
+    if (!acc || !acc.team_id || !isTrustedExecutionNode(nodeId)) {
+      // Not an identity conflict, but no longer silent: the report cannot be used at all.
+      if (oncePer(`ccid-skip:${nodeId}:${accountId}`, 3_600_000))
+        console.warn(`[registry] device identity report ignored node=${nodeLabel(nodeId)} account=${accountId.slice(0, 8)}: ${!acc ? "account is not bound to this node" : !acc.team_id ? "legacy account without an organization" : "node is not a trusted execution node"}`);
+      continue;
+    }
+    const reportedTeam = (v as Record<string, unknown>).teamId;
+    const other = deviceId ? one<{ id: string }>("SELECT id FROM accounts WHERE device_id=? AND id<>?", deviceId, accountId) : undefined;
+    const kind: IdentityMismatch["kind"] | null =
+      reportedTeam !== acc.team_id ? "team"
+      : acc.device_id && deviceId && deviceId !== acc.device_id ? "device"
+      : acc.account_uuid && accountUuid && acc.account_uuid !== accountUuid ? "account_uuid"
+      : other ? "device_in_use"
+      : null;
+    if (kind) {
+      const [reported, registered] = kind === "team" ? [typeof reportedTeam === "string" ? reportedTeam : null, acc.team_id]
+        : kind === "account_uuid" ? [accountUuid, acc.account_uuid]
+        : kind === "device_in_use" ? [deviceId, other!.id]
+        : [deviceId, acc.device_id];
+      noteIdentityMismatch({ nodeId, accountId, teamId: acc.team_id, kind, reported, registered });
+      continue;
+    }
+    // A report that omits the device while one is registered updates nothing (unchanged behaviour, not a conflict).
+    if (acc.device_id && !deviceId) continue;
     const r = run(
       "UPDATE accounts SET device_id = COALESCE(?, device_id), account_uuid = COALESCE(?, account_uuid) WHERE id = ? AND node_id = ?",
       deviceId,

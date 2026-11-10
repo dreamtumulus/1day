@@ -4,8 +4,9 @@ import { HttpError, sendError } from "./http.js";
 import { startWindowPoller } from "./ccr/window-poll.js";
 import { startCacheRefundScheduler } from "./cache-refund-scheduler.js";
 import { startKeyPolicyJudge } from "./key-policy-judge.js";
-import { sweepStaleJobs, startOnboardingMaintenance } from "./onboard/jobs.js";
+import { failInterruptedJobs, sweepStaleJobs, startOnboardingMaintenance } from "./onboard/jobs.js";
 import { registerNodeRoutes } from "./node/routes.js";
+import { resetNodePresence } from "./node/registry.js";
 import { registerAdminRoutes } from "./routes/admin.js";
 import { registerOnboardingRoutes } from "./routes/onboarding.js";
 import { registerOnboarderRoutes } from "./routes/onboarder.js";
@@ -31,7 +32,10 @@ export async function buildApp(): Promise<FastifyInstance> {
   await app.register(cors, { origin: origins, credentials: true });
 
   app.setErrorHandler((err: FastifyError | HttpError, req, reply) => {
-    if (err instanceof HttpError) return sendError(reply, err.status, err.code, err.message);
+    if (err instanceof HttpError) {
+      if (err.details === undefined) return sendError(reply, err.status, err.code, err.message);
+      return reply.status(err.status).send({ error: { code: err.code, message: err.message, type: err.status === 403 ? "permission_error" : "invalid_request_error", details: err.details } });
+    }
     const status = err.statusCode && err.statusCode >= 400 && err.statusCode < 500 ? err.statusCode : 500;
     if (status >= 500) req.log.error(err);
     return sendError(
@@ -52,6 +56,12 @@ export async function buildApp(): Promise<FastifyInstance> {
   }, 3_600_000).unref();
   // Audit trail for admin / provider mutations and failed logins (docs/auth.md §3a).
   registerAuditHook(app);
+  // Restart hygiene (review fix 2026-11-10): nothing that lived in the previous process is still true. Jobs it was
+  // running are failed without tainting their exits; nodes show offline until their control socket is back.
+  const interrupted = failInterruptedJobs();
+  if (interrupted) app.log.warn(`onboarding: ${interrupted} job(s) interrupted by the restart marked failed (console_restarted; reservations released, exits not quarantined)`);
+  const stale = resetNodePresence();
+  if (stale) app.log.warn(`registry: ${stale} node(s) were still marked online from the previous process; reset to offline until they reconnect`);
   const swept = sweepStaleJobs();
   const stopOnboardingMaintenance = startOnboardingMaintenance();
   const stopArchiveCleanup = startArchiveCleanup();

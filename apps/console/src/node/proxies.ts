@@ -1,7 +1,9 @@
 import { isIP } from "node:net";
-import { all, claimProxyResource, decryptString, encryptString, ensureUpstreamTeam, getSetting, isoIn, liftQuarantine, normalizeTeamId, nowIso, one, quarantineActive, quarantineResource, recordProxyTeamEvent, run, tx, freezeAccountsOnProxy } from "@1dayapi/core";
+import { all, claimProxyResource, decryptString, encryptString, ensureUpstreamTeam, getSetting, isoIn, liftQuarantine, normalizeTeamId, nowIso, one, quarantineActive, quarantineResource, recordProxyTeamEvent, run, tx, freezeAccountForProxy } from "@1dayapi/core";
 import { expireJobReservations, liveReservationSql } from "../onboard/reservations.js";
-import { proxyIdFromUrl } from "./registry.js";
+import { proxyIdFromUrl, sharerProxyView } from "./registry.js";
+import { isTrustedExecutionNode } from "./trust.js";
+import { oncePer } from "../log-limit.js";
 import { canonicalProxyUrl, describeProxy, parseProxyInput, proxyFingerprint, proxyUrlFingerprint } from "./proxy-parse.js";
 
 // Node proxy pool ledger (protocol v2). Plaintext proxy URLs only exist in
@@ -480,6 +482,20 @@ export function canonicalProxyResourceKey(ip: string): string | null {
   return null;
 }
 
+/**
+ * Freeze the accounts a node's verdict on a proxy may freeze (review fix 2026-11-10): the active accounts carried by the
+ * reporting node that are bound to (or stickily assigned on) the proxy. `includeNodeless` (home node only) adds accounts
+ * without a node of their own that are pinned to the proxy. Accounts of OTHER nodes that use the proxy through a share
+ * are never touched by this node's report. Returns the frozen account ids.
+ */
+export function freezeNodeAccountsOnProxy(proxyId: string, nodeId: string, includeNodeless: boolean, reason: string): string[] {
+  const ids = all<{ id: string }>(
+    `SELECT id FROM accounts WHERE status = 'active' AND (node_id = ?${includeNodeless ? " OR node_id IS NULL" : ""})
+       AND (bound_proxy_id = ? OR id IN (SELECT account_id FROM node_proxy_assignments WHERE proxy_id = ? AND node_id = ?))`,
+    nodeId, proxyId, proxyId, nodeId).map((r) => r.id);
+  return ids.filter((id) => freezeAccountForProxy(id, { proxyId, reason }));
+}
+
 /** Runtime observations apply only to newly enrolled proxies, never legacy backfill. */
 export function recordNodeProxyExit(nodeId:string,proxyId:string,ip:string):boolean {
   const observed=one<IsolatedProxy>(`SELECT p.* FROM node_proxies p WHERE p.id=? AND ${PROXY_IN_POOL_SQL} AND p.isolation_version=1`,proxyId,nodeId,nodeId);
@@ -493,7 +509,18 @@ export function recordNodeProxyExit(nodeId:string,proxyId:string,ip:string):bool
   return tx(()=>{
     const p=one<IsolatedProxy>(`SELECT p.* FROM node_proxies p WHERE p.id=? AND ${PROXY_IN_POOL_SQL} AND p.isolation_version=1`,proxyId,nodeId,nodeId);
     if(!p)return false;
-    const freeze=(why:string)=>{const f=freezeAccountsOnProxy(proxyId,why);if(f.length)console.warn(`[proxies] ${proxyId} ${why} → ${f.length} account(s) frozen (proxy_down)`);};
+    const home=p.node_id===nodeId;
+    // Review fix 2026-11-10: a sharing node never rewrites an exit its home node already measured (two nodes that see
+    // different exits used to trigger "exit IP changed" freezes on each other). Its own view is kept by the registry.
+    if(!home && p.exit_ip && canonicalProxyResourceKey(ip)!==p.resource_key){
+      if(oncePer(`exit-share:${nodeId}:${proxyId}:${ip}`,600_000))console.warn(`[proxies] exit observation ignored: sharing node ${nodeId} reported ${ip||"no exit"} for ${proxyId}, home node ${p.node_id} recorded ${p.exit_ip}`);
+      return true;
+    }
+    // Only a trusted node's observation freezes, and only the accounts that node carries (plus node-less accounts for the home node).
+    const freeze=(why:string)=>{
+      if(!isTrustedExecutionNode(nodeId)){if(oncePer(`exit-untrusted:${nodeId}:${proxyId}`,600_000))console.warn(`[proxies] ${proxyId} ${why}: reported by ${nodeId}, not a trusted execution node — no account frozen`);return;}
+      const f=freezeNodeAccountsOnProxy(proxyId,nodeId,home,why);if(f.length)console.warn(`[proxies] ${proxyId} ${why} → ${f.length} account(s) of ${nodeId} frozen (proxy_down)`);
+    };
     if(quarantineActive(`proxy:${p.id}`)){
       run("UPDATE node_proxies SET status='dead',last_error='exit resource quarantined' WHERE id=?",proxyId);freeze("exit resource quarantined");return false;
     }
@@ -855,18 +882,122 @@ export function proxyCoolingUntil(proxyId: string): string | null {
  * is gone, so they must not be scheduled), proxy rows and assignments are
  * deleted, in-flight onboarding jobs on it fail. Caller wraps in tx().
  */
-export function releaseNodeResources(nodeId: string, reason: string): void {
-  for (const p of all<IsolatedProxy>("SELECT * FROM node_proxies WHERE node_id=? AND isolation_version=1",nodeId))
-    if (p.resource_key) recordProxyTeamEvent({resourceKey:p.resource_key,proxyId:p.id,nodeId,teamId:p.team_id,event:"node_removed",reason});
+export interface NodeRemovalImpact {
+  /** Accounts this node carries (node_id = node) plus node-less accounts pinned to one of its home proxies: removal unbinds and disables them. */
+  accounts: Array<{ id: string; name: string | null; status: string; proxyId: string | null; ownerId: string | null }>;
+  /** Accounts carried by OTHER nodes that run on one of this node's home proxies through a share: removal takes their proxy away. */
+  foreignAccounts: Array<{ id: string; name: string | null; status: string; proxyId: string; nodeId: string; nodeName: string | null }>;
+  /** This node's home proxies that other nodes hold a share of. */
+  sharedOut: Array<{ proxyId: string; nodeId: string; nodeName: string | null }>;
+}
+
+/** What removing a node would take from accounts and from other nodes (review fix 2026-11-10). */
+export function nodeRemovalImpact(nodeId: string): NodeRemovalImpact {
+  const accounts = all<{ id: string; name: string | null; status: string; proxyId: string | null; ownerId: string | null }>(
+    `SELECT a.id, a.name, a.status, a.bound_proxy_id AS proxyId, a.owner_id AS ownerId FROM accounts a
+      WHERE a.node_id = ? OR (a.node_id IS NULL AND a.bound_proxy_id IN (SELECT id FROM node_proxies WHERE node_id = ?)) ORDER BY a.created_at, a.id`, nodeId, nodeId);
+  const foreignAccounts = all<{ id: string; name: string | null; status: string; proxyId: string; nodeId: string }>(
+    `SELECT a.id, a.name, a.status, a.bound_proxy_id AS proxyId, a.node_id AS nodeId FROM accounts a
+      WHERE a.node_id IS NOT NULL AND a.node_id <> ? AND a.bound_proxy_id IN (SELECT id FROM node_proxies WHERE node_id = ?) ORDER BY a.created_at, a.id`, nodeId, nodeId,
+  ).map((a) => ({ ...a, nodeName: nodeName(a.nodeId) }));
+  const sharedOut = all<{ proxyId: string; nodeId: string }>(
+    `SELECT s.proxy_id AS proxyId, s.node_id AS nodeId FROM node_proxy_shares s JOIN node_proxies p ON p.id = s.proxy_id
+      WHERE p.node_id = ? AND s.node_id <> ? ORDER BY s.created_at, s.proxy_id`, nodeId, nodeId,
+  ).map((s) => ({ ...s, nodeName: nodeName(s.nodeId) }));
+  return { accounts, foreignAccounts, sharedOut };
+}
+
+/** Thrown by releaseNodeResources when the removal needs a confirmation it did not get (routes answer 409 with the impact). */
+export class NodeRemovalBlocked extends Error {
+  constructor(public code: "node_has_dependents" | "node_shared_with_other_nodes", message: string, public nodeId: string, public impact: NodeRemovalImpact) { super(message); }
+}
+
+/**
+ * `force`: "none" refuses whenever anything depends on the node; "own" (provider / node-self with an explicit
+ * force) accepts losing the node's OWN accounts but never anything of another node; "all" (administrator with an
+ * explicit force) also takes the shared proxies away from other nodes.
+ */
+export type NodeRemovalForce = "none" | "own" | "all";
+
+export function releaseNodeResources(nodeId: string, reason: string, opts: {
+  force?: NodeRemovalForce; actorId?: string | null;
+  /**
+   * Deleting a user removes that user's accounts and nodes in the same transaction: accounts the user owns and
+   * shares held by the user's other nodes are going away anyway and do not need a confirmation of their own.
+   */
+  cascade?: { ownerId: string; nodeIds: string[] };
+} = {}): NodeRemovalImpact {
+  const force = opts.force ?? "none";
+  const actorId = opts.actorId ?? null;
+  const impact = nodeRemovalImpact(nodeId);
+  const list = (ids: string[]) => `${ids.slice(0, 8).join(", ")}${ids.length > 8 ? ", …" : ""}`;
+  const goingToo = new Set(opts.cascade?.nodeIds ?? []);
+  const blocking: NodeRemovalImpact = {
+    accounts: impact.accounts.filter((a) => !opts.cascade || a.ownerId !== opts.cascade.ownerId),
+    foreignAccounts: impact.foreignAccounts.filter((a) => !goingToo.has(a.nodeId)),
+    sharedOut: impact.sharedOut.filter((s) => !goingToo.has(s.nodeId)),
+  };
+  if ((blocking.foreignAccounts.length || blocking.sharedOut.length) && force !== "all") {
+    const nodes = [...new Set([...blocking.sharedOut.map((s) => s.nodeName ?? s.nodeId), ...blocking.foreignAccounts.map((a) => a.nodeName ?? a.nodeId)])];
+    throw new NodeRemovalBlocked("node_shared_with_other_nodes",
+      `Node ${nodeId} cannot be removed: ${new Set(blocking.sharedOut.map((s) => s.proxyId)).size} of its proxies are shared with other node(s) (${list(nodes)})` +
+      (blocking.foreignAccounts.length ? ` and carry ${blocking.foreignAccounts.length} account(s) there (${list(blocking.foreignAccounts.map((a) => a.name ?? a.id))})` : "") +
+      "; remove the shares on those nodes first, or let an administrator remove the node with force", nodeId, blocking);
+  }
+  if (blocking.accounts.length && force === "none") {
+    throw new NodeRemovalBlocked("node_has_dependents",
+      `Node ${nodeId} still carries ${blocking.accounts.length} account(s) (${list(blocking.accounts.map((a) => a.name ?? a.id))}); removing it unbinds and disables them — delete or move them first, or repeat with force`, nodeId, blocking);
+  }
+  const home = all<IsolatedProxy>("SELECT * FROM node_proxies WHERE node_id=?", nodeId);
+  const homeById = new Map(home.map((p) => [p.id, p]));
+  for (const p of home)
+    if (p.isolation_version === 1 && p.resource_key) recordProxyTeamEvent({resourceKey:p.resource_key,proxyId:p.id,nodeId,teamId:p.team_id,actorId,event:"node_removed",reason});
+  const teamOf = (id: string) => one<{ team_id: string | null }>("SELECT team_id FROM accounts WHERE id = ?", id)?.team_id ?? null;
+  const keyOf = (proxyId: string | null, accountId: string) => {
+    if (!proxyId) return `account:${accountId}`;
+    return (homeById.get(proxyId) ?? one<IsolatedProxy>("SELECT * FROM node_proxies WHERE id = ?", proxyId))?.resource_key ?? `proxy:${proxyId}`;
+  };
+  // 1) The node's own accounts: unbound and disabled, one event each (never silent).
+  for (const a of impact.accounts) {
+    recordProxyTeamEvent({ resourceKey: keyOf(a.proxyId, a.id), proxyId: a.proxyId, nodeId, teamId: teamOf(a.id), accountId: a.id, actorId,
+      event: "account_unbound_node_removed", reason: `${reason}: account unbound from ${a.proxyId ?? "no proxy"} and disabled (was ${a.status})` });
+  }
   run(
-    `UPDATE accounts SET bound_proxy_id = NULL, node_id = NULL, status = 'disabled', error_message = ?, updated_at = ?
-     WHERE node_id = ? OR bound_proxy_id IN (SELECT id FROM node_proxies WHERE node_id = ?)`,
+    `UPDATE accounts SET bound_proxy_id = NULL, node_id = NULL, status = 'disabled', error_message = ?,
+       proxy_down_since = NULL, proxy_down_reason = NULL, proxy_down_proxy_id = NULL, updated_at = ?
+     WHERE node_id = ? OR (node_id IS NULL AND bound_proxy_id IN (SELECT id FROM node_proxies WHERE node_id = ?))`,
     reason,
     nowIso(),
     nodeId,
     nodeId,
   );
-  run("UPDATE node_proxies SET bound_account_id = NULL WHERE node_id = ?", nodeId);
+  // 2) Accounts of other nodes on a shared home proxy (administrator force only): they keep their node and are NOT
+  //    disabled; they lose the proxy (the row goes with its home node, the binding cannot outlive it) and are frozen
+  //    as proxy_down until an operator rebinds them (POST /api/admin/accounts/:id/proxy-rebind). The freeze is written
+  //    here whatever `account_freeze_on_proxy` says: this proxy will not come back, and an account of an organization
+  //    must never run without its exit. Accounts that were not active keep their status and get the same marker, so
+  //    the generic enable switch refuses them until they are rebound.
+  for (const a of impact.foreignAccounts) {
+    const why = `${reason}: home node ${nodeId} of the shared proxy ${a.proxyId} was removed; rebind the account to another proxy`.slice(0, 300);
+    recordProxyTeamEvent({ resourceKey: keyOf(a.proxyId, a.id), proxyId: a.proxyId, nodeId: a.nodeId, teamId: teamOf(a.id), accountId: a.id, actorId,
+      event: "account_share_lost_node_removed", reason: why });
+    const at = nowIso();
+    run(
+      `UPDATE accounts SET bound_proxy_id = NULL,
+         error_message = CASE WHEN status = 'active' THEN ? ELSE error_message END,
+         status = CASE WHEN status = 'active' THEN 'proxy_down' ELSE status END,
+         proxy_down_since = COALESCE(proxy_down_since, ?), proxy_down_reason = ?, proxy_down_proxy_id = ?, updated_at = ? WHERE id = ?`,
+      `proxy_down: ${why}`, at, why, a.proxyId, at, a.id);
+  }
+  // 3) Shares: other nodes' shares of this node's proxies (one event each), then the shares this node held.
+  for (const s of impact.sharedOut) {
+    recordProxyTeamEvent({ resourceKey: homeById.get(s.proxyId)?.resource_key ?? `proxy:${s.proxyId}`, proxyId: s.proxyId, nodeId: s.nodeId, teamId: homeById.get(s.proxyId)?.team_id ?? null, actorId,
+      event: "proxy_unshared", reason: `${reason}: home node ${nodeId} removed, share on node ${s.nodeId} dropped` });
+  }
+  run("DELETE FROM node_proxy_assignments WHERE proxy_id IN (SELECT id FROM node_proxies WHERE node_id = ?)", nodeId);
+  run("DELETE FROM node_proxy_shares WHERE proxy_id IN (SELECT id FROM node_proxies WHERE node_id = ?)", nodeId);
+  run("DELETE FROM node_proxy_shares WHERE node_id = ?", nodeId);
+  for (const a of impact.accounts) run("UPDATE node_proxies SET bound_account_id = NULL WHERE bound_account_id = ?", a.id);
   run("DELETE FROM node_proxies WHERE node_id = ?", nodeId);
   run("DELETE FROM node_proxy_assignments WHERE node_id = ?", nodeId);
   run(
@@ -875,6 +1006,7 @@ export function releaseNodeResources(nodeId: string, reason: string): void {
     nowIso(),
     nodeId,
   );
+  return impact;
 }
 
 /** Mask the userinfo password: http://user:secret@h:1 -> http://user:***@h:1 */
@@ -961,6 +1093,8 @@ export function listNodeProxies(nodeId: string, opts: { includeTeams?: boolean }
       teamId:r.team_id,teamName:r.team_id?one<{name:string|null}>("SELECT name FROM upstream_teams WHERE id=?",r.team_id)?.name??null:null,
       exitIp:r.exit_ip,resourceKey:r.resource_key,
       ...shareInfo(nodeId, r),
+      // This node's own last verdict on a row it only shares (the row's status is the home node's; 2026-11-10).
+      localView: r.node_id !== nodeId ? sharerProxyView(nodeId, r.id) : null,
       carriers: proxyCarriers(r.id, opts.includeTeams !== false),
       cooldownUntil: r.cooldown_until && r.cooldown_until > now ? r.cooldown_until : null,
       cooldownReason: r.cooldown_until && r.cooldown_until > now ? r.cooldown_reason : null,
@@ -969,15 +1103,21 @@ export function listNodeProxies(nodeId: string, opts: { includeTeams?: boolean }
   });
 }
 
+const undecryptableLogged = new Set<string>();
 /** Plaintext URLs of a node's pool (for the WS push after deploy). */
 export function nodeProxyUrls(nodeId: string): string[] {
-  const rows = all<{ url_enc: string }>(`SELECT p.url_enc FROM node_proxies p WHERE ${PROXY_IN_POOL_SQL} ORDER BY p.created_at, p.id`, nodeId, nodeId);
+  const rows = all<{ id: string; url_enc: string }>(`SELECT p.id, p.url_enc FROM node_proxies p WHERE ${PROXY_IN_POOL_SQL} ORDER BY p.created_at, p.id`, nodeId, nodeId);
   const out: string[] = [];
   for (const r of rows) {
     try {
       out.push(decryptString(r.url_enc));
-    } catch {
-      // skip unreadable rows
+    } catch (err) {
+      // The row cannot be pushed to the node (wrong master key / damaged ciphertext). Said once per row and process:
+      // the id only, never the URL.
+      if (!undecryptableLogged.has(r.id)) {
+        undecryptableLogged.add(r.id);
+        console.error(`[proxies] proxy ${r.id} (pool of node ${nodeId}) cannot be decrypted and is left out of the pool push: ${(err as Error)?.name ?? "Error"}`);
+      }
     }
   }
   return out;

@@ -18,9 +18,9 @@ import { chatgptAccountId } from "../account-input.js";
 import { sendError } from "../http.js";
 import { enqueueArchive } from "./archive-cleanup.js";
 import { importOAuthCredential } from "../onboard/jobs.js";
-import { releaseNodeResources } from "./proxies.js";
+import { forceRequested, removeNode } from "./removal.js";
 import { ensureBundle } from "./bundle.js";
-import { SHIM_SOURCE, shimPath } from "./deploy.js";
+import { SHIM_SOURCE, codePurpose, shimPath } from "./deploy.js";
 import {
   attachNode,
   closeTunnel,
@@ -58,9 +58,21 @@ function requireNodeAuth(request: FastifyRequest, reply: FastifyReply): NodeAuth
   return auth;
 }
 
+/** Headers a reverse proxy / CDN adds. The gateway's own loopback calls (apps/gateway/src/tunnel.ts) send none of them. */
+const FORWARDED_HEADERS = ["x-forwarded-for", "x-forwarded-host", "x-forwarded-proto", "x-real-ip", "cf-connecting-ip", "cf-ray", "true-client-ip", "forwarded", "via"] as const;
+
+/**
+ * A call made on this machine, not one relayed to us (review fix 2026-11-10). The socket address alone proves nothing:
+ * behind nginx every public request arrives from 127.0.0.1, so `/internal/tunnel/*` was reachable from the internet
+ * with only the internal token in the way. A request that carries any forwarding header came through the reverse
+ * proxy and is refused as non-local. (A client cannot strip these: nginx sets them. Operators should also block the
+ * paths in nginx — see docs/provider-protocol.md / the release note.)
+ */
 function isLoopback(request: FastifyRequest): boolean {
   const ip = request.socket.remoteAddress ?? "";
-  return ip === "127.0.0.1" || ip === "::1" || ip === "::ffff:127.0.0.1";
+  if (!(ip === "127.0.0.1" || ip === "::1" || ip === "::ffff:127.0.0.1")) return false;
+  for (const h of FORWARDED_HEADERS) if (request.headers[h] !== undefined) return false;
+  return true;
 }
 
 /** Gateway -> console calls: loopback socket AND the shared internal token. */
@@ -134,14 +146,32 @@ export function registerNodeRoutes(app: FastifyInstance): void {
     const nodeId = typeof body.nodeId === "string" ? body.nodeId.slice(0, 120) : "";
     if (!code || !nodeId) return sendError(reply, 400, "invalid_request", "bindingCode and nodeId are required");
     const now = nowIso();
-    const claim = run("UPDATE node_bind_codes SET used_at = ? WHERE code = ? AND used_at IS NULL AND expires_at > ?", now, code, now);
-    if (claim.changes === 0) {
-      return sendError(reply, 401, "invalid_binding_code", "Binding code is invalid or expired");
-    }
-    const providerId = one<{ provider_id: string }>("SELECT provider_id FROM node_bind_codes WHERE code = ?", code)!.provider_id;
+    // Review fix 2026-11-10. Bundle / shim download codes live in the same table as bind codes and used to be
+    // accepted here: whoever saw a deploy's download URL could register a node under the deploying admin, or — through
+    // the ON CONFLICT below — replace an existing node's secret and take the node over. Now:
+    //  (1) only a code issued for binding (prefix bind_) binds; download codes (dl_…) are refused without being spent;
+    //  (2) a node id that already exists is never re-keyed by a code alone: the caller must also prove it holds the
+    //      node's current secret (x-provider-node-secret, or currentSecret in the body). Otherwise remove the node in
+    //      the console first and bind again.
+    if (codePurpose(code) !== "bind") return sendError(reply, 401, "invalid_binding_code", "Binding code is invalid or expired");
+    const row = one<{ provider_id: string }>("SELECT provider_id FROM node_bind_codes WHERE code = ? AND used_at IS NULL AND expires_at > ?", code, now);
+    if (!row) return sendError(reply, 401, "invalid_binding_code", "Binding code is invalid or expired");
+    const providerId = row.provider_id;
     const existing = one<{ provider_id: string }>("SELECT provider_id FROM nodes WHERE node_id = ?", nodeId);
     if (existing && existing.provider_id !== providerId) {
       return sendError(reply, 409, "node_bound_elsewhere", "This node id is bound to another provider; unbind it first");
+    }
+    if (existing) {
+      const headerSecret = request.headers["x-provider-node-secret"];
+      const current = typeof headerSecret === "string" && headerSecret ? headerSecret
+        : typeof (body as { currentSecret?: unknown }).currentSecret === "string" ? String((body as { currentSecret?: unknown }).currentSecret) : "";
+      if (!current || !verifyNodeSecret(nodeId, current)) {
+        return sendError(reply, 409, "node_already_bound", "This node id is already bound; a binding code alone cannot replace its secret. Remove the node in the console first (or send the node's current secret) and bind again");
+      }
+    }
+    const claim = run("UPDATE node_bind_codes SET used_at = ? WHERE code = ? AND used_at IS NULL AND expires_at > ?", now, code, now);
+    if (claim.changes === 0) {
+      return sendError(reply, 401, "invalid_binding_code", "Binding code is invalid or expired");
     }
     const secret = generateNodeSecret();
     run(
@@ -166,7 +196,9 @@ export function registerNodeRoutes(app: FastifyInstance): void {
   app.post("/internal/provider/unbind", async (request, reply) => {
     const auth = requireNodeAuth(request, reply);
     if (!auth) return reply;
-    tx(()=>{releaseNodeResources(auth.nodeId,"node unbound");run("DELETE FROM nodes WHERE node_id = ?", auth.nodeId);});
+    // Review fix 2026-11-10: a node that still carries accounts answers 409 node_has_dependents unless it sends
+    // {force:true}; it can never remove proxies other nodes share (409 node_shared_with_other_nodes, administrator only).
+    removeNode(auth.nodeId, "node unbound", { force: forceRequested(request) ? "own" : "none" });
     disconnectNode(auth.nodeId,"node_unbound");
     return { ok: true };
   });
@@ -429,6 +461,9 @@ export function registerNodeRoutes(app: FastifyInstance): void {
     const internalOk = isLoopback(request) && verifyInternalToken(request.headers[INTERNAL_HEADER]);
     if (!internalOk) {
       if (!code) return sendError(reply, 401, "invalid_binding_code", "A valid binding code is required");
+      // A bundle download code (dl_bundle_…) or, for the manual install (packaging/install.sh), a provider's own
+      // bind code; a shim code does not download the bundle.
+      if (!["bundle", "bind"].includes(codePurpose(code) ?? "")) return sendError(reply, 401, "invalid_binding_code", "Binding code is invalid, expired or already used");
       const now = nowIso();
       const claim = run(
         "UPDATE node_bind_codes SET used_at = ? WHERE code = ? AND used_at IS NULL AND expires_at > ?",
@@ -460,6 +495,7 @@ export function registerNodeRoutes(app: FastifyInstance): void {
     const internalOk = isLoopback(request) && verifyInternalToken(request.headers[INTERNAL_HEADER]);
     if (!internalOk) {
       if (!code) return sendError(reply, 401, "invalid_binding_code", "A valid binding code is required");
+      if (!["shim", "bind"].includes(codePurpose(code) ?? "")) return sendError(reply, 401, "invalid_binding_code", "Binding code is invalid, expired or already used");
       const now = nowIso();
       const claim = run("UPDATE node_bind_codes SET used_at = ? WHERE code = ? AND used_at IS NULL AND expires_at > ?", now, code, now);
       if (claim.changes === 0) return sendError(reply, 401, "invalid_binding_code", "Binding code is invalid, expired or already used");
