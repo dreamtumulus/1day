@@ -29,7 +29,20 @@ const FIXED_SCOPES = [
   "user:mcp_servers",
   "user:file_upload",
 ];
-const STDERR_TAIL = 2000;
+const STDERR_TAIL = 4000;
+
+/**
+ * What to quote when claude exits: the shim's own line ("claude-tui: <why>: <screen>") names the cause at its head, and
+ * the screen tail alone said nothing (2026-11-09: 41 × "claude exited 1: ─── ❯ [Pasted text #1 +58 lines]/var/lib/…" on
+ * ccr-tui, the cause cut off by a tail-only quote). The last cause line first, then the tail of what was drawn.
+ */
+export function stderrCause(tail: string, max = 460): string {
+  const t = tail.replace(/\s+/g, " ").trim();
+  const at = t.lastIndexOf("claude-tui: ");
+  if (at < 0) return t.slice(-max);
+  const cause = t.slice(at);
+  return cause.length <= max ? cause : `${cause.slice(0, max - 80)} … ${cause.slice(-70)}`;
+}
 
 /** claude 二进制解析：PATH 之外补查常见安装位置（systemd 服务 PATH 很窄）。 */
 function findClaudeBin(): string {
@@ -1146,6 +1159,7 @@ export class CcWorkerManager {
         // The tap tells the main turn's requests apart by the environment note the gateway appends to every canonical
         // system prompt (CANONICAL_ENV_NOTE*, worker.ts); Claude Code 2.1.319 sends no request-class header.
         env.ONEDAY_CC_TAP_MATCH = TUI_TAP_MATCH;
+        this.seedFolderTrust(configDir, cwdDir, identity);
       }
       const program = tui ? this.tuiShim : this.claudeBin;
       const programArgs = tui ? [this.claudeBin, ...args] : args;
@@ -1215,13 +1229,13 @@ export class CcWorkerManager {
           if (!proc.retiring && !wasBusy) this.log(`session ${proc.key.slice(0, 8)} exited while idle (code ${code}) after ${proc.turn} turn(s)`);
           if (wasBusy && !wasBusy.closed) {
             if (code === 0) this.finishSession(wasBusy, "complete");
-            else this.failSession(wasBusy, "worker_failed", `claude exited ${code}: ${proc.stderrTail.slice(-300)}`);
+            else this.failSession(wasBusy, "worker_failed", `claude exited ${code}: ${stderrCause(proc.stderrTail)}`);
           }
           return;
         }
         if (session.closed) return;
         if (code === 0) this.finishSession(session, "complete");
-        else this.failSession(session, "worker_failed", `claude exited ${code}: ${session.stderrTail.slice(-300)}`);
+        else this.failSession(session, "worker_failed", `claude exited ${code}: ${stderrCause(session.stderrTail)}`);
       });
       this.log(`started ${session.sessionId} (account ${msg.accountId}, model ${msg.model}${persist ? `, pooled ${msg.reuseKey!.slice(0, 8)} turn ${(msg.expectedTurn ?? 0) + 1}` : ""})`);
     } catch (err) {
@@ -1232,6 +1246,42 @@ export class CcWorkerManager {
   // ---- device identities (docs/claude-code-compat.md §8) ----
   private identities = new Map<string, { deviceId: string | null; accountUuid: string | null; teamId?: string }>();
   private identityDirty = new Set<string>();
+
+  /**
+   * TUI worker (2026-11-10): interactive Claude Code asks "Do you trust the files in this folder?" the first time it
+   * starts in a cwd, and every open gets a cwd of its own scope (1242 new cwd dirs in 24 h on ccr-tui). The shim answers
+   * the dialog, but now and then its arrow key is echoed as text and the default "No, exit" is taken — ≈25 × "Claude
+   * Code ended before it showed its prompt" a day. Seed the per-project answer in .claude.json (the key Claude Code
+   * itself writes, `projects[cwd].hasTrustDialogAccepted`) so the dialog never shows; an entry already there is kept.
+   */
+  private seedFolderTrust(configDir: string, cwdDir: string, identity: { uid: number; gid: number } | null | undefined): void {
+    const file = path.join(configDir, ".claude.json");
+    try {
+      const raw = (fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, "utf8")) : {}) as Record<string, unknown>;
+      const projects = (raw.projects && typeof raw.projects === "object" ? raw.projects : {}) as Record<string, Record<string, unknown>>;
+      const cur = projects[cwdDir];
+      if (cur && cur.hasTrustDialogAccepted === true) return;
+      projects[cwdDir] = {
+        allowedTools: [],
+        mcpContextUris: [],
+        mcpServers: {},
+        enabledMcpjsonServers: [],
+        disabledMcpjsonServers: [],
+        hasClaudeMdExternalIncludesApproved: false,
+        hasClaudeMdExternalIncludesWarningShown: false,
+        ...(cur ?? {}),
+        hasTrustDialogAccepted: true,
+      };
+      raw.projects = projects;
+      // Atomic replace: Claude Code rewrites the file itself (lock + rename); a torn file would break every later launch.
+      const tmp = `${file}.trust-${process.pid}-${Date.now()}`;
+      fs.writeFileSync(tmp, JSON.stringify(raw), { mode: 0o600 });
+      if (identity && !this.machineRuntime) fs.chownSync(tmp, identity.uid, identity.gid);
+      fs.renameSync(tmp, file);
+    } catch (err) {
+      this.log(`could not seed folder trust for ${cwdDir}: ${(err as Error).message}`);
+    }
+  }
 
   /** Read .claude.json of one account dir; marks it dirty for the next heartbeat when changed. */
   refreshIdentity(accountId: string, teamId?: string): void {
@@ -1347,7 +1397,7 @@ export class CcWorkerManager {
     // the config dir); still cap it hard.
     this.opts.send({ type: "cc_worker.error", sessionId: session.sessionId, errorCode, errorMessage: errorMessage.slice(0, 500), retryable: true });
     // Keep the cause in the node journal too: the gateway drops this frame when it already finished the response.
-    this.log(`error ${session.sessionId}: ${errorCode}${errorCode === "worker_failed" ? ` — ${errorMessage.replace(/\s+/g, " ").slice(0, 200)}` : ""}`);
+    this.log(`error ${session.sessionId}: ${errorCode}${errorCode === "worker_failed" ? ` — ${errorMessage.replace(/\s+/g, " ").slice(0, 480)}` : ""}`);
     this.drainQueue();
   }
 

@@ -1152,11 +1152,24 @@ async function proxyRequest(req: FastifyRequest, reply: FastifyReply, format: Cl
                 userId: caller.userId,
                 facts: ctx.turnFacts,
               };
+              let lostRerun = false;
+              for (;;) {
               try {
                 // Canonical worker (spec WP2): the key's effective workerMode (override ?? judge ?? legacy) AND the
                 // three-state master switch for this key group / account (铁律 2).
                 res = await runCcrWorker({ ...workerInput, canonical: canonicalWorker });
+                break;
               } catch (err) {
+                // session_lost rerun (2026-11-10): the node holds no live process for this continue / tool_result (process
+                // gone, parked tool round abandoned by the client, turn counters apart). runCcrWorker dropped the
+                // conversation memory; the same turn runs once more as a fresh open, where 方案 A renders the whole
+                // conversation into a new native session — the client gets its answer instead of a 502.
+                if (canonicalWorker && err instanceof TunnelRequestError && err.nodeCode === "session_lost" && !lostRerun) {
+                  lostRerun = true;
+                  bump("canonical_session_lost_rerun_total");
+                  console.log(`[proxy] ${ctx.requestId} no live canonical session for this turn on ${account.name}: rerunning it as a fresh open`);
+                  continue;
+                }
                 // Canonical fallback (2026-11-05): canonicalTurn refuses before any node session is opened, so the same
                 // account can serve this turn on the legacy worker. The 2.1.312 probe showed a tool round cannot be cold-
                 // imported into a new native session (the binary marks the pending tool_use interrupted), so hand it over.
@@ -1171,7 +1184,9 @@ async function proxyRequest(req: FastifyRequest, reply: FastifyReply, format: Cl
                   bump("canonical_fallback_legacy_total", { code: err.nodeCode });
                   console.log(`[proxy] ${ctx.requestId} canonical cannot carry this turn (${err.nodeCode}) on ${account.name}: legacy worker takes it`);
                   res = await runCcrWorker({ ...workerInput, canonical: false });
+                  break;
                 } else throw err;
+              }
               }
               if (!res) break; // no worker-capable node accepted: infra state, try next account without counting
             } else {

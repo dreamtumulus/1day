@@ -290,7 +290,7 @@ Claude Code 2.1.300 已具备做持久会话所需的全部开关（worker-01 �
 - **记忆**：`TurnMemory.native = { sessionId, profileId, revision, state, resumes, imported }`（`worker_turn_memory` 写穿）。`sessionId` 以 CC `system/init.session_id` 为权威；
   `revision` 每提交一轮 +1；`state`：COMMITTED / AWAITING_CALLER（工具轮停泊）；翻译器报错 → 记忆删除（LOST / DIRTY，日志标明），下一请求按新对话处理。
 - **continue 失配 → `--resume`**：open 带 `nativeSession:{id, action:"resume", revision}`；节点活进程能接就 stdin 续轮，不能接（exited / busy / turn 不符）就以 `--resume <id>` 起新进程、只喂新一轮
-  （G4 实证：正常 resume 不丢不重）。没有可 resume 的会话 → `session_lost`，**绝不**从折叠转录重启（I3/I9）。计 `native_resume_total{result}`。
+  （G4 实证：正常 resume 不丢不重）。没有可 resume 的会话 → `session_lost`（2026-11-10 起网关预读到这个拒绝后丢弃会话记忆、以 fresh 重开一次，方案 A 渲染整段历史；X-48），**绝不**从折叠转录重启（I3/I9）。计 `native_resume_total{result}`。
 - **外部历史导入（G3）**：开关 `canonical_history_import`（三态，默认 `0` = 409 `history_import_unsupported`）。开 → 网关 `buildNativeTranscript` 把最后一轮之前的 messages 写成
   CC 自己的 jsonl 形态（`parentUuid` 链、`entrypoint:"sdk-cli"`、`version`；**thinking / redacted_thinking 一律剥掉**——G3 证明二进制对签名零校验、真上游会 400），
   节点写到账号 config dir 的 `projects/<cwd-hash>/<id>.jsonl` 后 `--resume`，再喂最后一轮。工具轮做尾巴的历史不导入（没有生成可接续）。计 `native_history_import_total`。

@@ -15,7 +15,7 @@
     "dev": "tsx watch src/index.ts",
     "build": "tsc -p tsconfig.json",
     "start": "bun dist/index.js",
-    "test": "tsc -p tsconfig.json && bun test/socks5-bridge.test.mjs && bun test/proxy-pool.test.mjs && bun test/cc-worker.test.mjs && bun test/team-isolation.test.mjs && bun test/management-auth.test.mjs && bun test/team-uid.test.mjs && bun test/machine-identity.test.mjs"
+    "test": "tsc -p tsconfig.json && bun test/socks5-bridge.test.mjs && bun test/proxy-pool.test.mjs && bun test/cc-worker.test.mjs && bun test/stderr-cause.test.mjs && bun test/team-isolation.test.mjs && bun test/management-auth.test.mjs && bun test/team-uid.test.mjs && bun test/machine-identity.test.mjs"
   },
   "dependencies": {
     "fastify": "^5.0.0",

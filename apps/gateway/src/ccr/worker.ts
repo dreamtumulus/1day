@@ -508,9 +508,24 @@ export async function runCcrWorker(input: CcrWorkerInput): Promise<Response | nu
   // Code's own MCP timeout (60 s per call) here.
   const PARK_GRACE_MS = 3_000;
   const SLOW_TURN_LOG_MS = 60_000;
+  /** How long the first chunk is waited for to catch the node's session_lost refusal (sent before any stdout). */
+  const SESSION_LOST_PEEK_MS = 1_500;
   let pendingRead: Promise<Awaited<ReturnType<typeof reader.read>>> | null = null;
+  // A chunk (or failure) the session_lost peek below took off the stream before the loops started: handed back first.
+  let stash: Awaited<ReturnType<typeof reader.read>> | null = null;
+  let stashError: Error | null = null;
   /** Next stdout chunk, or null after `ms` without one; a read left pending is picked up by the next call, nothing is lost. */
   const readFor = async (ms: number): Promise<Awaited<ReturnType<typeof reader.read>> | null> => {
+    if (stash) {
+      const s = stash;
+      stash = null;
+      return s;
+    }
+    if (stashError) {
+      const e = stashError;
+      stashError = null;
+      throw e;
+    }
     pendingRead ??= reader.read();
     let timer: NodeJS.Timeout | undefined;
     const timeout = new Promise<null>((r) => {
@@ -532,6 +547,31 @@ export async function runCcrWorker(input: CcrWorkerInput): Promise<Response | nu
     console.log(`[ccr-worker] ${input.requestId} tool_use turn handed over with ${p.parked}/${p.toolUses} parked call(s) after ${PARK_GRACE_MS}ms; no live session kept`);
     if (reuseKey) sessionMemory.forget(reuseKey);
   };
+
+  // session_lost (2026-11-10): a continue / tool_result that no live process on the node can take is refused before any
+  // stdout ("no live canonical session for this conversation (awaiting_tools | busy | no session | turn N != M)",
+  // cc-worker.ts fallBackToFresh) — 27 + 25 × 502 a day on ccr-tui / worker-02, mostly Agent SDK clients that abandon a
+  // parked tool round and send the next turn. Peek at the first chunk: that refusal becomes a request-level error, proxy.ts
+  // drops the conversation memory and reruns the turn as a fresh open (方案 A renders the whole conversation into a new
+  // native session); any other first chunk or failure is handed back to the loops below untouched.
+  if (canonical && reuseKey && plan.mode !== "fresh") {
+    try {
+      const first = await readFor(SESSION_LOST_PEEK_MS);
+      if (first !== null) stash = first;
+    } catch (err) {
+      const message = (err as Error).message;
+      if (/no live canonical session for this conversation/.test(message)) {
+        input.signal?.removeEventListener("abort", onAbort);
+        await reader.cancel().catch(() => {});
+        sessionMemory.forget(reuseKey);
+        bump("canonical_session_lost_total", { plan: plan.mode });
+        console.log(`[ccr-worker] ${input.requestId} ${plan.mode} ${reuseKey.slice(0, 8)} refused by the node on ${account.name}: ${message.slice(0, 160)}`);
+        capture?.finish(translator, { status: 502, error: message });
+        throw new TunnelRequestError("session_lost", message);
+      }
+      stashError = err as Error;
+    }
+  }
 
   if (!stream) {
     try {

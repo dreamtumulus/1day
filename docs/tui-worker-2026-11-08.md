@@ -72,8 +72,26 @@ CCR 实例：`1dayapi-node-tui`，端口 16890，Claude Code 2.1.319（latest �
 
 节点钉 Claude Code 版本（当前 2.1.319）；升级前在 CCR 跑垫片 + 假上游探针（`tests/e2e/cc-probe`），并重跑上游 `claudetui` 测试。magpie 修了什么，`sync.sh` 跟进，补丁打不上才需人看。
 
+
+## 8. 2026-11-10 复盘：24 h 真实流量（X-48）
+
+| 指标 | ccr-tui | worker-02（`-p` canonical） |
+|---|---|---|
+| 请求 / 200 率 | 5342 / 98.0% | 5844 / 99.4% |
+| 502 | 101（1.89%） | 25（0.43%，全部 session_lost） |
+| opus-5-5 首字 p50 / p95 | 1.6 s / 10.0 s | 1.55 s / 6.0 s |
+| legacy 回落 | 0 | 0 |
+| 每服务 $1 消耗的 7 天窗口（中位数） | 0.00129 | 0.00190（worker-01 0.00275） |
+| 存活会话 CPU | 27 会话 673%（12 核） | `-p` 轮次之间基本不耗 CPU |
+
+TUI 特有的 502：粘贴后提交失败 41（原因被 300 字 stderr 尾巴截掉）、信任对话框自动应答失败 ≈25、导入后 `--resume` 失败 17、图片路径粘贴 3。
+本次修复：`seedFolderTrust`（启动前预写 `projects[cwd].hasTrustDialogAccepted`）、`stderrCause`（引用 `claude-tui:` 原因行）、网关 session_lost 预读 + fresh 重开（`apps/gateway/src/ccr/worker.ts` / `proxy.ts`）。
+
+**版本升级注意**：垫片靠屏幕文本工作（trust 对话框、`[Pasted text #n`、`[Image #n]`、首次运行页、/usage 面板、transcript 字段）。升级 Claude Code 必须并排安装到 `/opt/claude-<ver>`，先在一台 TUI 节点 canary 半天看 502 分类，再推全量；`-p` 节点可以直接换二进制，TUI 节点不能。重建垫片需 Go 1.26（`go.mod`），两台服务器目前都没有 Go 工具链。
+
 ## 7. 待办
 
 - 两行伪 jsonl 兜底；单进程 RSS 预算；工具调用前文字丢失的度量（captures `toolUses` 与 tap 事件对照）。
 - 控制台节点页显示 `tui_v1`。
+- 图片路径粘贴失败的真实原因（等 `stderrCause` 上线后的日志）；`--resume` "No conversation found" 复现；TUI 容量按 CPU 定容（每 12 核 ≈ 40–50 会话）；`.claude.json` 的 `projects` 随 cwd 作用域增长（每账号每天 +30 条）。
 - `apps/provider-node/test/team-isolation.test.mjs` 读 `init.cwd/mcp-config.json`，自 11-05 固定 cwd 后失效（旧问题，与本次无关）。
