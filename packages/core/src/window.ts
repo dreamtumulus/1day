@@ -67,7 +67,7 @@ export interface WindowState {
 }
 
 /** Scheduling threshold: pause an account whose binding window is at or above this percentage. 100 = off. */
-export const DEFAULT_WINDOW_THRESHOLD_PERCENT = 95;
+export const DEFAULT_WINDOW_THRESHOLD_PERCENT = 98;
 
 export function parseThresholdPercent(v: unknown): number {
   const n = Number(v);

@@ -163,12 +163,17 @@ docs/claude-code-compat.md §5），同一账户对其他形态照常可用；�
 调用方在冷却期内收到 503（2026-10-16 线上实测）。网关在 `-> HTTP <status>` 日志后附上游错误体前 240 字，便于区分。
 网关尝试冷却账户时打一行 `[proxy] <reqId> account <name> is 429-cooling until …; no other candidate, trying anyway`。
 Anthropic 订阅账户（`type=oauth, platform=anthropic`）还要通过**订阅窗口过滤**（仿 sub2api account_scheduling_threshold）：
-`window_exhausted_until` 已过，且上次采样的绑定窗口用量 `< anthropic_window_threshold_percent`（默认 95%，100 = 关闭）；
+`window_exhausted_until` 已过，且上次采样的绑定窗口用量 `< anthropic_window_threshold_percent`（默认 **98%**，用户 2026-11-10 定「不打满 5h」；100 = 关闭）；
 快照已过 `window_reset_at` 视为窗口已滚动放行；阈值下调后首次被过滤时写一次 `window_exhausted_until` + `window_reason`，管理台可见。
 **5h 窗口冷静期（2026-10-17，用户要求）**：5h 窗口用尽 / 被拒后不在重置点立刻恢复，而是重置时刻再加 **随机 1h45m～2h05m**
 （settings `window_rest_min_sec`=6300 / `window_rest_max_sec`=7500；core `restAfterReset`），避免一批账号在各自重置点同时打满。
 作用于 `window_exhausted`（含 CC session-limit 文本）、`window_rejected`（five_hour）、被动采样达阈值暂停、调度时阈值暂停四处；
 7d 窗口与模型族冷却不加。`window_reason` 写成 `… until <含冷静期的时刻> (reset <重置点> + rest)`。
+**窗口采样只升不降（X-63，2026-11-10）**：同一窗口内（采样的 reset 时刻与库里记录的相同、且该时刻未到）用量取两次采样的较大值，
+已生效的暂停不会被任何采样缩短——只按时间（reset + 冷静期）或 `clearAccountState` 结束。此前同一账号并发的几轮先后结束、各自上报的
+用量不按时间序到达，99% 刚写入的暂停被随后到达的 96% 样本清掉，下一轮直接撞到 100%（2026-11-10 全天 107 次 `rejected five_hour`，
+24 个账号在 98～99% 的告警之后仍被调度）。同时 worker 路径的 `rate_limit_event` 改为**到达即记账**（translator `onRateLimit`，每个上游
+调用一次），不再等整轮结束：一轮长 agentic 回合跑着的时候账号就退出调度，这一轮自己跑完，新请求（含该账号其他会话的续轮）不再落上来。
 worker 路径没有 unified 头，窗口用尽只以 Claude Code 自己的文本到达（`result` / 流错误里的 "You've hit your session limit · resets
 8:50am (Europe/Berlin)"）：网关 `markCcrFailure` 用 core `ccLimitReset` 解析窗口种类和重置时刻（引号里的时区换算成 UTC，解析不出则
 回退 1h），写 `window_exhausted_until`，不再按"瞬时故障"短冷却反复挑中同一账号（2026-10-17 mirasim 事故：3 分钟 6×502 + 10×503）。

@@ -74,16 +74,27 @@ export function noteFailureSource(input: { facts?: TurnFacts }, source: NonNulla
   if (input.facts) input.facts.failure = { source };
 }
 
-function noteRateLimit(account: AccountRow, translator: SessionTranslator, requestId: string): void {
-  const info = translator.rateLimit;
-  if (!info) return;
-  try {
-    const snap = recordRateLimitEvent(account.id, info);
-    const status = String((info as Json).status ?? "-");
-    if (status !== "allowed" || (snap?.used ?? 0) >= 0.9) console.log(`[ccr-worker] ${requestId} rate_limit_event on ${account.name}: ${status} ${String((info as Json).rateLimitType ?? "-")} ${snap ? Math.round(snap.used * 100) + "%" : ""} reset=${snap?.resetAt ?? "-"}`);
-  } catch (err) {
-    console.warn(`[ccr-worker] ${requestId} rate_limit_event bookkeeping failed: ${(err as Error).message}`);
-  }
+/**
+ * X-63 (2026-11-10): the bookkeeping runs on every event as it arrives (SessionTranslator `onRateLimit`), not once at
+ * turn end — a long agentic turn makes many upstream calls, and the account must leave scheduling at the first one
+ * that reports the threshold, while that turn finishes. One log line per distinct (status, percent) at ≥ 90 %.
+ */
+function rateLimitBookkeeper(account: AccountRow, requestId: string): (info: Json) => void {
+  let lastLogged = "";
+  return (info: Json): void => {
+    try {
+      const snap = recordRateLimitEvent(account.id, info);
+      const status = String(info.status ?? "-");
+      const pct = snap ? Math.round(snap.used * 100) : null;
+      const key = `${status}:${pct}`;
+      if ((status !== "allowed" || (snap?.used ?? 0) >= 0.9) && key !== lastLogged) {
+        lastLogged = key;
+        console.log(`[ccr-worker] ${requestId} rate_limit_event on ${account.name}: ${status} ${String(info.rateLimitType ?? "-")} ${pct === null ? "" : pct + "%"} reset=${snap?.resetAt ?? "-"}`);
+      }
+    } catch (err) {
+      console.warn(`[ccr-worker] ${requestId} rate_limit_event bookkeeping failed: ${(err as Error).message}`);
+    }
+  };
 }
 
 /**
@@ -504,6 +515,8 @@ export async function runCcrWorker(input: CcrWorkerInput): Promise<Response | nu
     usageBaseline: plan.mode === "fresh" ? null : (mem?.usage ?? null),
     // Messages earlier requests already delivered: their whole rows, told late by the TUI shim, are not a new answer.
     knownMessageIds: plan.mode === "fresh" ? [] : (mem?.messageIds ?? []),
+    // Window bookkeeping per upstream call (X-63): the account pauses at the threshold while this turn still runs.
+    onRateLimit: rateLimitBookkeeper(account, input.requestId),
     stopSequences,
     // Canonical: no folded transcript to guard, and the process's own --restricted tools are internal rounds.
     transcriptGuard: !canonical,
@@ -685,7 +698,7 @@ export async function runCcrWorker(input: CcrWorkerInput): Promise<Response | nu
     await reader.cancel().catch(() => {});
     input.signal?.throwIfAborted();
     if (stalled) noteStalled();
-    else { rememberTurn(translator); noteRateLimit(account, translator, input.requestId); noteTurnFacts(input, translator, account.name, "ccr-worker"); }
+    else { rememberTurn(translator); noteTurnFacts(input, translator, account.name, "ccr-worker"); }
     logGuard();
     // Slow non-stream turns (customer 524s, 2026-10-22): what did Claude Code emit, and when.
     if (Date.now() - startedAt > SLOW_TURN_LOG_MS) console.log(`[ccr-worker] ${input.requestId} slow turn ${Math.round((Date.now() - startedAt) / 1000)}s on ${account.name}: ${translator.eventTimeline}`);
@@ -739,7 +752,7 @@ export async function runCcrWorker(input: CcrWorkerInput): Promise<Response | nu
         }
         if (!stalled) for (const p of lines.end()) await write(translator.push(p));
         if (stalled) noteStalled();
-        else { rememberTurn(translator); noteRateLimit(account, translator, input.requestId); noteTurnFacts(input, translator, account.name, "ccr-worker"); }
+        else { rememberTurn(translator); noteTurnFacts(input, translator, account.name, "ccr-worker"); }
         logGuard();
         if (Date.now() - startedAt > SLOW_TURN_LOG_MS) console.log(`[ccr-worker] ${input.requestId} slow turn ${Math.round((Date.now() - startedAt) / 1000)}s on ${account.name}: ${translator.eventTimeline}`);
         if (translator.error) {

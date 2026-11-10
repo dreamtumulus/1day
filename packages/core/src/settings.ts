@@ -11,8 +11,8 @@ export const SETTING_DEFAULTS = {
   console_base_url: "https://1dayapi.com",
   max_keys_per_user: "50",
   // Anthropic 订阅窗口调度（docs/gateway.md §3、ccr-supply.md §7，仿 sub2api account_scheduling_threshold）：
-  // 绑定窗口用量 ≥ 阈值百分比即停调到窗口重置；100 = 关闭。巡检间隔（秒）；粘性会话 TTL（秒）。
-  anthropic_window_threshold_percent: "95",
+  // 绑定窗口用量 ≥ 阈值百分比即停调到窗口重置（用户 2026-11-10 定 98：不打满 5h 窗口）；100 = 关闭。巡检间隔（秒）；粘性会话 TTL（秒）。
+  anthropic_window_threshold_percent: "98",
   window_poll_interval_sec: "300",
   // 主动 usage 探测只兜底：被动采样（每个网关响应头）为主，账号超过此秒数没有任何采样才探一次（默认 6h，最小 600）。
   window_passive_max_age_sec: "21600",

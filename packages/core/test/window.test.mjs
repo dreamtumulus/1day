@@ -22,8 +22,9 @@ test("window cooldown blocks until it passes", () => {
 
 test("threshold percent", () => {
   assert.ok(windowAllows(acc({ window_used: 0.9, window_reset_at: "2026-10-15T15:00:00Z" }), NOW));
-  assert.ok(!windowAllows(acc({ window_used: 0.96, window_reset_at: "2026-10-15T15:00:00Z" }), NOW));
-  assert.ok(windowAllows(acc({ window_used: 0.96, window_reset_at: "2026-10-15T15:00:00Z" }), NOW, 98));
+  assert.ok(!windowAllows(acc({ window_used: 0.98, window_reset_at: "2026-10-15T15:00:00Z" }), NOW));
+  assert.ok(windowAllows(acc({ window_used: 0.979, window_reset_at: "2026-10-15T15:00:00Z" }), NOW, 98));
+  assert.ok(!windowAllows(acc({ window_used: 0.96, window_reset_at: "2026-10-15T15:00:00Z" }), NOW, 95));
   assert.ok(windowAllows(acc({ window_used: 1 }), NOW, 100), "100 = off");
   assert.ok(!windowAllows(acc({ window_used: 1 }), NOW));
 });
@@ -33,13 +34,14 @@ test("stale snapshot past reset is allowed again", () => {
 });
 
 test("windowExhausted / parseThresholdPercent", () => {
-  assert.ok(windowExhausted(0.95));
-  assert.ok(!windowExhausted(0.949));
+  assert.ok(windowExhausted(0.98), "default threshold 98 (user, 2026-11-10)");
+  assert.ok(!windowExhausted(0.979));
+  assert.ok(windowExhausted(0.95, 95));
   assert.ok(!windowExhausted(null));
   assert.ok(!windowExhausted(1, 100));
   assert.equal(parseThresholdPercent("80"), 80);
-  assert.equal(parseThresholdPercent("x"), 95);
-  assert.equal(parseThresholdPercent("0"), 95);
+  assert.equal(parseThresholdPercent("x"), 98);
+  assert.equal(parseThresholdPercent("0"), 98);
 });
 
 test("usage probe body: binding window + per-window detail", () => {

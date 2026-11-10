@@ -795,3 +795,31 @@ test("whole rows of a message the conversation already delivered add nothing; on
   assert.equal(s.message().content.length, 0);
   assert.equal(s.rawUsage.input_tokens, 0);
 });
+
+test("onRateLimit fires on every rate_limit_event as it arrives, and its errors never break the stream (X-63, 2026-11-10)", () => {
+  const seen = [];
+  const t = new SessionTranslator({
+    model: "m",
+    simulateTools: false,
+    onRateLimit: (info) => {
+      seen.push(info);
+      if (seen.length === 1) throw new Error("bookkeeping blew up");
+    },
+  });
+  const se = (event) => ({ type: "stream_event", event });
+  let out = "";
+  out += t.push({ type: "rate_limit_event", rate_limit_info: { status: "allowed_warning", rateLimitType: "five_hour", utilization: 0.97 } });
+  out += t.push(se({ type: "message_start", message: { id: "m1", usage: { input_tokens: 5, output_tokens: 1 } } }));
+  out += t.push(se({ type: "content_block_start", index: 0, content_block: { type: "text", text: "" } }));
+  out += t.push(se({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "hi" } }));
+  out += t.push({ type: "rate_limit_event", rate_limit_info: { status: "allowed_warning", rateLimitType: "five_hour", utilization: 0.98 } });
+  out += t.push({ type: "rate_limit_event", rate_limit_info: "not an object" });
+  out += t.push(se({ type: "content_block_stop", index: 0 }));
+  out += t.push(se({ type: "message_delta", delta: { stop_reason: "end_turn" }, usage: { output_tokens: 2 } }));
+  out += t.push({ type: "result", subtype: "success", result: "hi" });
+  assert.equal(seen.length, 2, "one call per event carrying an object; the first threw and was swallowed");
+  assert.equal(seen[1].utilization, 0.98);
+  assert.deepEqual(t.rateLimit, seen[1], "the turn-end getter still holds the last event");
+  const text = parseSse(out).filter((e) => e.type === "content_block_delta").map((e) => e.delta.text).join("");
+  assert.equal(text, "hi", "the stream itself is untouched");
+});

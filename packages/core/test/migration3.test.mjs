@@ -63,13 +63,29 @@ test("defaults, scheduling filter and window write-back", () => {
   assert.equal(c1.window_used, 0.99);
   assert.equal(c1.window_5h_used, 0.99);
   assert.equal(c1.window_7d_used, 0.2);
-  assert.match(c1.window_reason, /five_hour 99% ≥ 95% until/);
+  assert.match(c1.window_reason, /five_hour 99% ≥ 98% until/);
   assert.ok(c1.window_exhausted_until > now);
   assert.deepEqual(ids(), ["c2", "d0"], "exhausted window drops the account");
 
-  core.recordWindowUsage("c1", { used: 0.5, resetAt: core.isoIn(3_600_000), window: "five_hour" });
+  // X-63: a lower sample of the SAME window (a concurrent turn that ended later, an older probe) neither lowers the
+  // recorded utilization nor lifts the pause — utilization cannot fall before the window resets.
+  core.recordWindowUsage("c1", { used: 0.96, resetAt: c1.window_reset_at, window: "five_hour", fiveHour: { used: 0.96, resetAt: c1.window_reset_at } });
+  const c1b = one("SELECT * FROM accounts WHERE id='c1'");
+  assert.equal(c1b.window_used, 0.99, "same window: max of both samples");
+  assert.equal(c1b.window_5h_used, 0.99);
+  assert.equal(c1b.window_exhausted_until, c1.window_exhausted_until, "an active pause is never shortened by a sample");
+  assert.equal(c1b.window_reason, c1.window_reason);
+  assert.deepEqual(ids(), ["c2", "d0"], "still paused");
+  // the next window (later reset) is a new measurement; the pause itself still ends by time (reset + rest)
+  core.recordWindowUsage("c1", { used: 0.1, resetAt: core.isoIn(5 * 3_600_000), window: "five_hour" });
+  const c1c = one("SELECT * FROM accounts WHERE id='c1'");
+  assert.equal(c1c.window_used, 0.1, "new window: the sample stands");
+  assert.equal(c1c.window_exhausted_until, c1.window_exhausted_until, "the rest after the reset is kept");
+  // a pause that has ended is not revived by a sample with room
+  run("UPDATE accounts SET window_exhausted_until = ? WHERE id='c1'", core.isoIn(-1000));
+  core.recordWindowUsage("c1", { used: 0.5, resetAt: core.isoIn(5 * 3_600_000), window: "five_hour" });
   assert.equal(one("SELECT window_exhausted_until FROM accounts WHERE id='c1'").window_exhausted_until, null);
-  assert.deepEqual(ids(), ["c1", "c2", "d0"], "room again lifts the window cooldown");
+  assert.deepEqual(ids(), ["c1", "c2", "d0"], "room in the next window lifts the account once the pause has ended");
 
   core.markFailure("c2", { kind: "window_exhausted" });
   assert.ok(one("SELECT window_exhausted_until FROM accounts WHERE id='c2'").window_exhausted_until > now);

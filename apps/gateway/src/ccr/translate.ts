@@ -592,6 +592,12 @@ export interface TranslatorOptions {
    */
   knownMessageIds?: string[];
   /**
+   * X-63: called with every `rate_limit_event.rate_limit_info` as it arrives (Claude Code emits one per upstream
+   * call), so the account's window is paused the moment it crosses the threshold — not at turn end, after a long
+   * agentic turn has already pushed it from 97 % to 100 %. Exceptions are swallowed: bookkeeping never breaks a stream.
+   */
+  onRateLimit?: (info: Json) => void;
+  /**
    * Phase 3 (docs/worker-sessions.md §4): the client asked for extended thinking
    * (`thinking: {type:"enabled"}`), so thinking / redacted_thinking blocks and
    * their signature deltas are forwarded instead of dropped.
@@ -687,6 +693,7 @@ export class SessionTranslator {
   private upstreamModelUsage: Json | null = null;
   /** Last `rate_limit_event.rate_limit_info` of the turn (Claude Code 2.1.3xx emits one per API call): the worker path's only live window signal. */
   private rateLimitInfo: Json | null = null;
+  private readonly onRateLimit: ((info: Json) => void) | null;
   /** `system/api_retry` events of the turn: Claude Code retried the upstream call (status, delay). */
   private readonly apiRetries: Array<{ status: number | null; delayMs: number | null; attempt: number | null }> = [];
   private usageSeen = false;
@@ -770,6 +777,7 @@ export class SessionTranslator {
     this.toolNames = Array.isArray(o.toolNames) ? o.toolNames.filter((n) => typeof n === "string") : null;
     this.holdLen = Math.max(0, this.stopSequences.reduce((m, s) => Math.max(m, s.length), 0) - 1, this.transcriptGuard ? GUARD_HOLD : 0);
     for (const id of o.knownMessageIds ?? []) if (typeof id === "string" && id) this.streamedMessageIds.add(id);
+    this.onRateLimit = o.onRateLimit ?? null;
   }
 
   /** Message ids this turn delivered or already knew (streamed, or told whole): remembered for the conversation's next request. */
@@ -1226,7 +1234,16 @@ export class SessionTranslator {
       } else if (pt === "system") this.note(`system/${String(pj.subtype ?? "-")}`);
       else if (pt === "rate_limit_event") {
         const info = pj.rate_limit_info as Json | undefined;
-        if (info && typeof info === "object") this.rateLimitInfo = info;
+        if (info && typeof info === "object") {
+          this.rateLimitInfo = info;
+          if (this.onRateLimit) {
+            try {
+              this.onRateLimit(info);
+            } catch {
+              /* window bookkeeping never breaks the stream */
+            }
+          }
+        }
         this.note(`rate_limit_event/${String(info?.status ?? "-")}${info?.rateLimitType ? ":" + String(info.rateLimitType) : ""}`);
       }
       else if (pt === "assistant" || pt === "user") this.note(`${pt}:${String((pj.message as Json | undefined)?.stop_reason ?? "-")}`);

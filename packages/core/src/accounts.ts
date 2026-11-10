@@ -848,22 +848,52 @@ export function recordWindowUsage(
     }
     return;
   }
-  const exhausted = windowExhausted(snap.used, thresholdPercent);
-  const until = exhausted ? restFor(id, snap.resetAt && snap.resetAt > now ? snap.resetAt : isoIn(WINDOW_FALLBACK_COOLDOWN_MS), snap.window) : null;
+  // X-63 (2026-11-10): samples of one window only move up. Utilization cannot fall before the window resets, but the
+  // samples do not arrive in order — concurrent turns of one account end at different times and a usage probe may be
+  // older than the last event — and a lower sample used to overwrite the pause a higher one had just set (mary.jones:
+  // 99 % paused the account at 12:57:00, a 96 % sample at 12:57:53 lifted it, at 12:58:01 the upstream rejected at
+  // 100 %). Inside the window on record (the sample names the stored reset instant) the recorded utilization is the max of
+  // both, and an active pause is never shortened by a sample: it ends by time (reset + rest) or clearAccountState.
+  const prev = one<{
+    window_used: number | null; window_reset_at: string | null; window_exhausted_until: string | null; window_reason: string | null;
+    window_5h_used: number | null; window_5h_reset_at: string | null; window_7d_used: number | null; window_7d_reset_at: string | null;
+  }>("SELECT window_used, window_reset_at, window_exhausted_until, window_reason, window_5h_used, window_5h_reset_at, window_7d_used, window_7d_reset_at FROM accounts WHERE id = ?", id);
+  // same window = the stored reset is still ahead and the sample names that very reset instant (or none at all)
+  const sameWindow = (prevReset: string | null | undefined, reset: string | null | undefined): boolean => !!prevReset && prevReset > now && (!reset || reset === prevReset);
+  const sameWin = !!prev && sameWindow(prev.window_reset_at, snap.resetAt);
+  const used = sameWin ? Math.max(snap.used, prev!.window_used ?? 0) : snap.used;
+  const resetAt = sameWin ? prev!.window_reset_at : snap.resetAt;
+  const pausedBefore = !!prev?.window_exhausted_until && prev.window_exhausted_until > now;
+  const exhausted = windowExhausted(used, thresholdPercent);
+  let until: string | null = null;
+  let reason: string | null = null;
+  if (pausedBefore && (!exhausted || sameWin)) {
+    until = prev!.window_exhausted_until;
+    reason = prev!.window_reason;
+  } else if (exhausted) {
+    until = restFor(id, resetAt && resetAt > now ? resetAt : isoIn(WINDOW_FALLBACK_COOLDOWN_MS), snap.window);
+    if (pausedBefore && prev!.window_exhausted_until! > until) {
+      until = prev!.window_exhausted_until;
+      reason = prev!.window_reason;
+    } else reason = windowReason({ ...snap, used, resetAt }, thresholdPercent, until) + creditsReasonSuffix(id, "window");
+  }
+  const pointUsed = (p: WindowSnapshot["fiveHour"], prevUsed: number | null | undefined, prevReset: string | null | undefined): number | null =>
+    p ? (sameWindow(prevReset, p.resetAt) ? Math.max(p.used, prevUsed ?? 0) : p.used) : null;
+  const pointReset = (p: WindowSnapshot["fiveHour"], prevReset: string | null | undefined): string | null => (p ? (sameWindow(prevReset, p.resetAt) ? prevReset! : p.resetAt) : null);
   run(
     `UPDATE accounts SET window_used = ?, window_reset_at = ?, window_checked_at = ?, window_exhausted_until = ?, window_reason = ?,
        window_5h_used = COALESCE(?, window_5h_used), window_5h_reset_at = COALESCE(?, window_5h_reset_at),
        window_7d_used = COALESCE(?, window_7d_used), window_7d_reset_at = COALESCE(?, window_7d_reset_at),
        updated_at = ? WHERE id = ?`,
-    snap.used,
-    snap.resetAt,
+    used,
+    resetAt,
     now,
     until,
-    until ? windowReason(snap, thresholdPercent, until) + creditsReasonSuffix(id, "window") : null,
-    snap.fiveHour?.used ?? null,
-    snap.fiveHour?.resetAt ?? null,
-    snap.sevenDay?.used ?? null,
-    snap.sevenDay?.resetAt ?? null,
+    reason,
+    pointUsed(snap.fiveHour, prev?.window_5h_used, prev?.window_5h_reset_at),
+    pointReset(snap.fiveHour, prev?.window_5h_reset_at),
+    pointUsed(snap.sevenDay, prev?.window_7d_used, prev?.window_7d_reset_at),
+    pointReset(snap.sevenDay, prev?.window_7d_reset_at),
     now,
     id,
   );
