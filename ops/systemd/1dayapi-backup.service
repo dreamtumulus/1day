@@ -1,0 +1,34 @@
+# Encrypted backup of the 1dayAPI database (docs/operations.md §5). Installed as
+# /etc/systemd/system/1dayapi-backup.service together with 1dayapi-backup.timer; replaces the unit that ran
+# /usr/local/bin/1dayapi-backup.sh (plaintext bundle with the key files inside).
+# Configuration: /etc/1dayapi/backup.conf and the recipient public key /etc/1dayapi/backup.pub; without the
+# public key the script refuses to run (exit 2), it never falls back to plaintext.
+[Unit]
+Description=1dayAPI encrypted backup (database snapshot; key material in a separate archive)
+After=network-online.target
+Wants=network-online.target
+# Do not start a backup while the config is half-installed.
+ConditionPathExists=/etc/1dayapi/backup.pub
+
+[Service]
+Type=oneshot
+# Root: reads the 0600 database and key files of the service user and writes /opt/1dayapi/backups (root-owned).
+User=root
+ExecStart=/opt/1dayapi/ops/bin/backup
+# A snapshot of a multi-GB database is I/O heavy: stay out of the gateway's way.
+Nice=10
+IOSchedulingClass=idle
+TimeoutStartSec=1800
+UMask=0077
+# The script needs: the data dir (read), the backup dirs (write), ssh/rsync to the remote. Nothing else.
+# If BACKUP_DIR / BACKUP_KEYS_DIR in backup.conf point outside /opt/1dayapi/backups, add them to ReadWritePaths.
+# The remote's ssh host key must already be in /root/.ssh/known_hosts (the filesystem is read-only for ssh too).
+ProtectSystem=strict
+ReadWritePaths=-/opt/1dayapi/backups
+ReadOnlyPaths=-/opt/1dayapi/data -/etc/1dayapi
+PrivateTmp=true
+NoNewPrivileges=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true

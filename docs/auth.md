@@ -49,6 +49,22 @@ ops 的定位：盯账号死活，掉授权时手动补齐（控制台「账号�
   → `{data:{items:[{id, at, userId, userName, role, method, path, status, ip, summary}], total, page, pageSize}}`，最新在前。
 - 保留 180 天，和过期会话一起每小时清理。
 
+### 3b. 再次查看 API Key 需要重新认证（2026-11-10 加固）
+
+API Key 以可逆形式（`api_keys.key_enc`）保存，`POST /api/user/keys/:id/reveal` 能把明文再次取出。此前只凭会话 cookie 即可无限次查看
+（cookie 7 天有效，被盗用即等于全部 Key 泄露）。现在（`apps/console/src/routes/user.ts`，数据不迁移、不删除）：
+
+- **重新认证**：本体系唯一的凭据是登录密钥（没有密码），所以“重新认证”有两种满足方式，任一即可：
+  1. 会话是最近 `KEY_REVEAL_FRESH_SESSION_SEC`（默认 600 秒）内登录产生的（`user_sessions.created_at`）；
+  2. 请求体带 `{"loginKey": "1dk_…"}`，与本人 `users.login_key_hash` 常数时间比对。
+  都不满足 → 403 `reauth_required`；`loginKey` 不匹配 → 403 `reauth_failed`。
+- **限速**：每个用户滚动 1 小时内最多成功查看 `KEY_REVEAL_MAX_PER_HOUR`（默认 10）次，被拒绝的尝试另有同样大小的上限；
+  超过 → 429 `reveal_rate_limited` + `Retry-After`。计数来自 `admin_audit`，因此跨进程、重启后仍然有效。
+- **审计**：每次成功查看与每次被拒（403）都显式写一行 `admin_audit`（`/api/user/*` 不在 §3a 的钩子范围内）：
+  `summary = {action:"api_key_reveal", keyId, keyName?, keyPreview?, reauth:"fresh_session"|"login_key"}` 或 `{…, error}`；不含 Key 明文与登录密钥。
+- **前端待跟进**：`apps/web/src/console/pages/user/Keys.tsx` 的「查看」「复制」在收到 403 `reauth_required` 时需要弹出登录密钥输入框，
+  并带 `loginKey` 重试；在此之前，登录超过 10 分钟的用户需重新登录后才能查看。
+
 ## 4. 推理鉴权
 
 见 `gateway.md` §2：Key 存在 → Key 启用且未过期 → 用户启用且非号商 → 分组可用 → 余额 > 0 → 额度未用尽。

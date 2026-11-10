@@ -42,6 +42,13 @@ const text = await res.text();
 console.log(`cc-shaped ${version} ${entrypoint} ${model} stream=${stream}: HTTP ${res.status} in ${Date.now() - started}ms`);
 console.log(`  x-1day-mode=${res.headers.get("x-1day-mode") ?? "(none)"} request-id=${res.headers.get("request-id") ?? "-"} x-1day-ignored-params=${res.headers.get("x-1day-ignored-params") ?? "-"}`);
 console.log(`  body: ${text.replace(/\s+/g, " ").slice(0, 300)}`);
-const health = await fetch(`${API}/health`).then((r) => r.json()).catch(() => ({}));
-console.log(`  counters: ${JSON.stringify(health.counters ?? {})}`);
+// /internal/metrics with the internal token first, /health as the fallback (ops/bin/gateway-counters).
+try {
+  const { execFileSync } = await import("node:child_process");
+  const { fileURLToPath } = await import("node:url");
+  const h = JSON.parse(execFileSync(process.execPath, ["--no-warnings", fileURLToPath(new URL("./gateway-counters", import.meta.url))], { env: { ...process.env, API_BASE: API }, encoding: "utf8", timeout: 30_000, stdio: ["ignore", "pipe", "ignore"] }));
+  console.log(`  counters (${h.source}): ${JSON.stringify(h.counters ?? {})}`);
+} catch {
+  console.log("  counters: (unavailable)");
+}
 process.exit(res.status === 200 ? 0 : 1);

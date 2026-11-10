@@ -3,50 +3,205 @@
 #
 # Two systemd instances exist, 1dayapi-gateway@8400 and 1dayapi-gateway@8402; nginx proxies
 # api.1dayapi.com to whichever one the `gateway_live` upstream names. A release starts the idle
-# instance on the freshly built code, waits until its /health answers, points nginx at it
-# (`nginx reload` keeps every open connection), then stops the old instance, which drains its
-# in-flight requests for up to 25 min. Nothing is ever refused in between.
+# instance on the freshly built code, waits until its /health answers, sends it ONE REAL REQUEST
+# directly on its loopback port (pre-switch probe: /health is static and says nothing about whether
+# the new build can serve), and only then points nginx at it (`nginx reload` keeps every open
+# connection) and stops the old instance, which drains its in-flight requests for up to 25 min.
+# Nothing is ever refused in between; a failed probe leaves nginx untouched.
 #
-# Usage: gateway-switch            after `pnpm build` in /opt/1dayapi
-#        gateway-switch --status   show which instance is live
+# Usage: gateway-switch [--no-probe] [--hold SECONDS]   after `pnpm build` in /opt/1dayapi
+#        gateway-switch --rollback [--no-probe] [--force-restart]
+#        gateway-switch --status                        show which instance is live
+#
+#   --no-probe       skip the real request (the ONLY way to skip it; say why in the release record)
+#   --hold SECONDS   keep the old instance running (idle, old code in memory) for SECONDS after the
+#                    switch instead of draining it at once, so `--rollback` is instant and really runs
+#                    the previous code. Default $GATEWAY_SWITCH_HOLD_SEC or 0. Both instances are fully
+#                    active during the hold, as they already are for the seconds of a normal switch.
+#   --rollback       point nginx back at the previous instance: at once when it is still running
+#                    (hold window); otherwise it is started again ON THE BUILD CURRENTLY ON DISK, which
+#                    undoes a release only after the previous build was restored (see operations.md §4).
+#   --force-restart  with --rollback: the previous instance is still draining and cannot listen again;
+#                    kill it now (cuts its in-flight streams) instead of refusing.
+#
+# Refuses to run when the instance it would start is still `deactivating` (draining from the previous
+# switch: restarting it would cut those streams) or unexpectedly `active`.
+#
+# Probe: POST /v1/messages (claude-sonnet-5-5, max_tokens 16, same shape as ops/bin/release-verify)
+# with the monitor's consumer key from /root/monitor/apikey.txt; must return 200.
 set -euo pipefail
-UP=/etc/nginx/conf.d/1dayapi-gateway-upstream.conf
+UP=${GATEWAY_UPSTREAM_CONF:-/etc/nginx/conf.d/1dayapi-gateway-upstream.conf}
+PROBE_KEY_FILE=${PROBE_KEY_FILE:-/root/monitor/apikey.txt}
+PROBE_MODEL=${PROBE_MODEL:-claude-sonnet-5-5}
+PROBE_TIMEOUT=${PROBE_TIMEOUT:-120}
+SELF=$(cd "$(dirname "$0")" && pwd)/$(basename "$0")
+mode=switch; probe=1; hold=${GATEWAY_SWITCH_HOLD_SEC:-0}; force_restart=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --status) mode=status ;;
+    --rollback) mode=rollback ;;
+    --no-probe) probe=0 ;;
+    --force-restart) force_restart=1 ;;
+    --hold) hold=${2:-}; shift ;;
+    --hold=*) hold=${1#--hold=} ;;
+    -h|--help) sed -n 2,33p "$0"; exit 0 ;;
+    *) echo "unknown option: $1 (see --help)" >&2; exit 2 ;;
+  esac
+  shift
+done
+case "$hold" in ''|*[!0-9]*) echo "--hold needs a number of seconds (got '$hold')" >&2; exit 2 ;; esac
+
 # Only the `server` directive counts (comments may mention ports too).
 live=$(grep -E '^\s*server\s+127\.0\.0\.1:[0-9]+' "$UP" | grep -oE '[0-9]+;?$' | tr -d ';' | head -1)
 case "$live" in 8400|8402) ;; *) echo "cannot read the live port from $UP (got '$live')" >&2; exit 1 ;; esac
-if [ "${1:-}" = "--status" ]; then
+if [ "$live" = 8400 ]; then other=8402; else other=8400; fi
+state() { systemctl is-active "$1" 2>/dev/null || true; }          # active | inactive | deactivating | failed | activating
+hold_timer() { echo "1dayapi-gateway-holdstop-$1"; }               # transient timer that stops the held instance
+# The legacy non-template unit (1dayapi-gateway.service) may still own 8400: first run after the migration.
+unit_of() { if [ "$1" = 8400 ] && systemctl is-active --quiet 1dayapi-gateway.service; then echo 1dayapi-gateway.service; else echo "1dayapi-gateway@$1.service"; fi; }
+
+if [ "$mode" = status ]; then
   echo "live port: $live"
   for u in 1dayapi-gateway.service 1dayapi-gateway@8400.service 1dayapi-gateway@8402.service; do
-    printf '  %-32s %s (enabled: %s)\n' "$u" "$(systemctl is-active "$u")" "$(systemctl is-enabled "$u" 2>/dev/null || echo -)"
+    printf '  %-32s %s (enabled: %s)\n' "$u" "$(state "$u")" "$(systemctl is-enabled "$u" 2>/dev/null || echo -)"
+  done
+  for p in 8400 8402; do
+    if systemctl is-active --quiet "$(hold_timer "$p").timer" 2>/dev/null; then echo "  hold: the instance on $p is kept for rollback until its stop timer fires ($(hold_timer "$p").timer)"; fi
   done
   exit 0
 fi
-if [ "$live" = 8400 ]; then next=8402; else next=8400; fi
-# The legacy non-template unit (1dayapi-gateway.service) may still own 8400: first run after the migration.
-old_unit=1dayapi-gateway@$live.service
-if [ "$live" = 8400 ] && systemctl is-active --quiet 1dayapi-gateway.service; then old_unit=1dayapi-gateway.service; fi
+
+wait_health() { # port → 0 when /health answers within 20 s
+  local _
+  for _ in $(seq 1 100); do
+    if curl -fsS --noproxy '*' -o /dev/null --max-time 2 "http://127.0.0.1:$1/health" 2>/dev/null; then return 0; fi
+    sleep 0.2
+  done
+  return 1
+}
+
+PROBE_KEY=
+load_probe_key() {
+  [ "$probe" = 1 ] || { echo "pre-switch probe SKIPPED (--no-probe)"; return 0; }
+  PROBE_KEY=$(cat "$PROBE_KEY_FILE" 2>/dev/null | tr -d '[:space:]' || true)
+  if [ -z "$PROBE_KEY" ]; then
+    echo "no probe key in $PROBE_KEY_FILE: the pre-switch probe cannot run. Nothing was started or switched." >&2
+    echo "Provide the monitor key, or pass --no-probe explicitly to switch on /health alone." >&2
+    exit 1
+  fi
+}
+
+probe_instance() { # port → 0 when one real request returns 200
+  [ "$probe" = 1 ] || return 0
+  local port=$1 out code
+  out=$(mktemp)
+  code=$(curl -s --noproxy '*' -m "$PROBE_TIMEOUT" -o "$out" -w '%{http_code}' -X POST "http://127.0.0.1:$port/v1/messages" \
+    -H "authorization: Bearer $PROBE_KEY" -H 'content-type: application/json' -H 'anthropic-version: 2023-06-01' \
+    -d "{\"model\":\"$PROBE_MODEL\",\"max_tokens\":16,\"messages\":[{\"role\":\"user\",\"content\":\"Reply with the single word OK.\"}]}" || true)
+  echo "pre-switch probe on 127.0.0.1:$port ($PROBE_MODEL): HTTP ${code:-000} $(tr -d '\n' < "$out" | head -c 200)"
+  rm -f "$out"
+  [ "$code" = 200 ]
+}
+
+point_nginx() { # from to → flips the upstream; restores the file when nginx -t rejects it
+  sed -i -E "s/^(\s*server\s+127\.0\.0\.1:)$1;/\1$2;/" "$UP"
+  if ! nginx -t >/dev/null 2>&1; then
+    sed -i -E "s/^(\s*server\s+127\.0\.0\.1:)$2;/\1$1;/" "$UP"
+    return 1
+  fi
+  systemctl reload nginx
+}
+
+# start_candidate <unit> <port>: start it on the build on disk, require /health and the probe; stop it again on failure.
+start_candidate() {
+  local unit=$1 port=$2
+  systemctl restart "$unit"
+  if ! wait_health "$port"; then
+    echo "instance on $port did not become healthy within 20 s; stopping it, nginx untouched" >&2
+    systemctl stop --no-block "$unit"
+    journalctl -u "$unit" --since "-1 min" --no-pager | tail -20 >&2
+    return 1
+  fi
+  if ! probe_instance "$port"; then
+    echo "pre-switch probe FAILED on $port: stopping the new instance, nginx untouched (live stays $live)" >&2
+    systemctl stop --no-block "$unit"
+    journalctl -u "$unit" --since "-2 min" --no-pager | tail -20 >&2
+    return 1
+  fi
+}
+
+# refuse_if_busy <unit> <port>: the instance about to be (re)started must be down.
+refuse_if_busy() {
+  local unit=$1 port=$2 st
+  st=$(state "$unit")
+  case "$st" in
+    deactivating)
+      echo "$unit is still draining (deactivating) from the previous switch: restarting it now would cut its in-flight streams." >&2
+      echo "Wait for the drain to finish (<=25 min; systemctl status $unit), then run this again. Nothing was changed." >&2
+      exit 1 ;;
+    active)
+      echo "$unit is unexpectedly active while nginx points at $live (hold window of the last switch, or a manual start)." >&2
+      echo "To go back to it: $SELF --rollback    To release onto it: systemctl stop $unit, wait for it to finish, run this again. Nothing was changed." >&2
+      exit 1 ;;
+  esac
+}
+
+if [ "$mode" = rollback ]; then
+  prev=$other
+  prev_unit=$(unit_of "$prev"); bad_unit=$(unit_of "$live")
+  st=$(state "$prev_unit")
+  echo "rollback: live=$live ($bad_unit) -> previous instance $prev_unit (state: $st)"
+  if [ "$st" = active ] && wait_health "$prev"; then
+    echo "previous instance is still running: pointing nginx back at it (no restart, it still runs the code it was started with)"
+    systemctl stop "$(hold_timer "$prev").timer" 2>/dev/null || true   # its scheduled stop must not fire now
+  else
+    if [ "$st" = deactivating ]; then
+      if [ "$force_restart" != 1 ]; then
+        echo "previous instance is draining: it no longer listens and cannot be revived, and systemd will not start it again before the drain ends (<=25 min)." >&2
+        echo "Either wait and rerun, or run: $SELF --rollback --force-restart   (kills it now and CUTS its in-flight streams). Nothing was changed." >&2
+        exit 1
+      fi
+      echo "--force-restart: killing the draining $prev_unit (its in-flight streams are cut)"
+      systemctl kill -s SIGKILL "$prev_unit" 2>/dev/null || true
+      systemctl stop "$prev_unit" 2>/dev/null || true
+    fi
+    echo "previous instance is not running: starting $prev_unit ON THE BUILD CURRENTLY ON DISK."
+    echo "  (this undoes the release only if the previous build was restored first; operations.md §4 \"回滚\")"
+    load_probe_key
+    start_candidate "$prev_unit" "$prev" || { echo "ROLLBACK FAILED: $prev_unit did not come up; nginx still points at $live" >&2; exit 1; }
+  fi
+  if ! point_nginx "$live" "$prev"; then
+    echo "ROLLBACK FAILED: nginx -t failed; upstream file restored, nginx still points at $live" >&2
+    exit 1
+  fi
+  systemctl enable -q "$prev_unit"
+  systemctl disable -q "$bad_unit" 2>/dev/null || true
+  systemctl stop "$(hold_timer "$live").timer" 2>/dev/null || true
+  systemctl stop --no-block "$bad_unit"
+  echo "ROLLED BACK: live=$prev ($prev_unit); $bad_unit draining (<=25 min)"
+  exit 0
+fi
+
+next=$other
+old_unit=$(unit_of "$live")
 new_unit=1dayapi-gateway@$next.service
+refuse_if_busy "$new_unit" "$next"
+load_probe_key
 echo "live=$live ($old_unit) -> starting $new_unit on the current build"
-systemctl restart "$new_unit"
-ok=0
-for _ in $(seq 1 100); do
-  if curl -fsS -o /dev/null --max-time 2 "http://127.0.0.1:$next/health" 2>/dev/null; then ok=1; break; fi
-  sleep 0.2
-done
-if [ "$ok" != 1 ]; then
-  echo "new instance on $next did not become healthy within 20 s; stopping it, nginx untouched" >&2
-  systemctl stop "$new_unit"
-  journalctl -u "$new_unit" --since "-1 min" --no-pager | tail -20 >&2
+start_candidate "$new_unit" "$next" || exit 1
+if ! point_nginx "$live" "$next"; then
+  echo "nginx -t failed; upstream file reverted, nothing switched; stopping $new_unit" >&2
+  systemctl stop --no-block "$new_unit"
   exit 1
 fi
-sed -i -E "s/^(\s*server\s+127\.0\.0\.1:)$live;/\1$next;/" "$UP"
-if ! nginx -t >/dev/null 2>&1; then
-  sed -i -E "s/^(\s*server\s+127\.0\.0\.1:)$next;/\1$live;/" "$UP"
-  echo "nginx -t failed; upstream file reverted, nothing switched" >&2
-  exit 1
-fi
-systemctl reload nginx
 systemctl enable -q "$new_unit"
 systemctl disable -q "$old_unit" 2>/dev/null || true
-systemctl stop --no-block "$old_unit"
-echo "live=$next ($new_unit); $old_unit draining (<=25 min)"
+if [ "$hold" -gt 0 ]; then
+  systemctl stop "$(hold_timer "$live").timer" 2>/dev/null || true
+  systemd-run --quiet --unit="$(hold_timer "$live")" --on-active="$hold" /bin/systemctl stop --no-block "$old_unit"
+  echo "live=$next ($new_unit); $old_unit kept running for ${hold}s for instant rollback, then drains (<=25 min)"
+else
+  systemctl stop --no-block "$old_unit"
+  echo "live=$next ($new_unit); $old_unit draining (<=25 min)"
+fi
+echo "next: ops/bin/release-verify      rollback: $SELF --rollback"

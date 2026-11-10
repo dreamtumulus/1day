@@ -1,0 +1,116 @@
+#!/usr/bin/env node
+// Read the gateway's in-process counters (cc_profile_mismatch_total, team_suspended_total …) for the ops scripts.
+//   ops/bin/gateway-counters            → one JSON line: {"source":"…","counters":{…}}
+//   ops/bin/gateway-counters --pretty   → one "name = value" line per counter, source on stderr
+//
+// The counters are moving from the public `GET /health` (field `counters`) to `GET /internal/metrics`, which needs
+// the internal token (header x-1dayapi-internal; the services read it from $INTERNAL_TOKEN or <DATA_DIR>/internal.key).
+// This helper tries /internal/metrics first and falls back to /health, so the scripts work on both sides of that
+// release. Exit 0 with counters (possibly an empty object); exit 3 when NO source exposes counters at all: callers
+// must treat that as "could not verify", never as "all zero".
+//
+// Environment:
+//   API_BASE             public base used for the /health fallback            (default https://api.1dayapi.com)
+//   METRICS_BASE         where /internal/metrics is asked. Default: API_BASE when it is a loopback address, else the
+//                        live blue/green instance http://127.0.0.1:<port from the nginx upstream file>, else API_BASE.
+//                        Counters are per process: after a gateway-switch the new instance starts from zero.
+//   INTERNAL_TOKEN       the token itself, or
+//   INTERNAL_TOKEN_FILE  a file holding it (default ${DATA_DIR:-/opt/1dayapi/data}/internal.key; needs read access)
+//   GATEWAY_UPSTREAM_CONF  nginx upstream file (default /etc/nginx/conf.d/1dayapi-gateway-upstream.conf)
+import { readFileSync } from "node:fs";
+
+const API_BASE = (process.env.API_BASE ?? "https://api.1dayapi.com").replace(/\/+$/, "");
+const INTERNAL_HEADER = "x-1dayapi-internal";
+const isLoopback = (base) => {
+  try {
+    return ["127.0.0.1", "localhost", "[::1]"].includes(new URL(base).hostname);
+  } catch {
+    return false;
+  }
+};
+
+function metricsBase() {
+  if (process.env.METRICS_BASE) return process.env.METRICS_BASE.replace(/\/+$/, "");
+  if (isLoopback(API_BASE)) return API_BASE;
+  try {
+    const conf = readFileSync(process.env.GATEWAY_UPSTREAM_CONF ?? "/etc/nginx/conf.d/1dayapi-gateway-upstream.conf", "utf8");
+    const port = conf.match(/^\s*server\s+127\.0\.0\.1:(\d+)\s*;/m)?.[1];
+    if (port) return `http://127.0.0.1:${port}`;
+  } catch {
+    /* not on the main server */
+  }
+  return API_BASE;
+}
+
+function internalToken() {
+  if (process.env.INTERNAL_TOKEN) return process.env.INTERNAL_TOKEN.trim();
+  try {
+    return readFileSync(process.env.INTERNAL_TOKEN_FILE ?? `${process.env.DATA_DIR ?? "/opt/1dayapi/data"}/internal.key`, "utf8").trim();
+  } catch {
+    return "";
+  }
+}
+
+const numericMap = (o) =>
+  o && typeof o === "object" && !Array.isArray(o) && Object.values(o).every((v) => typeof v === "number") ? o : null;
+
+/** JSON ({counters}, {data:{counters}}, or a flat name→number map) or Prometheus text exposition. */
+function parseCounters(text, contentType) {
+  if (/json/i.test(contentType) || /^\s*\{/.test(text)) {
+    const j = JSON.parse(text);
+    const found = numericMap(j?.counters) ?? numericMap(j?.data?.counters) ?? numericMap(j?.data) ?? (j && !("status" in j) && !("error" in j) ? numericMap(j) : null);
+    if (!found) throw new Error("no counters object in the JSON body");
+    return found;
+  }
+  const out = {};
+  for (const line of text.split("\n")) {
+    const m = line.match(/^([A-Za-z_:][\w:]*(?:\{[^}]*\})?)\s+(-?[\d.eE+-]+)(?:\s+\d+)?$/);
+    if (m && Number.isFinite(Number(m[2]))) out[m[1]] = Number(m[2]);
+  }
+  if (!Object.keys(out).length && text.trim()) throw new Error("unrecognised metrics body");
+  return out;
+}
+
+async function get(url, headers) {
+  // Loopback and the public name alike: never through the host proxy.
+  const res = await fetch(url, { headers, signal: AbortSignal.timeout(8000) });
+  const text = await res.text();
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return { text, contentType: res.headers.get("content-type") ?? "" };
+}
+
+const notes = [];
+let result = null;
+const token = internalToken();
+const mBase = metricsBase();
+try {
+  const r = await get(`${mBase}/internal/metrics`, token ? { [INTERNAL_HEADER]: token } : {});
+  result = { source: `${mBase}/internal/metrics`, counters: parseCounters(r.text, r.contentType) };
+} catch (err) {
+  notes.push(`${mBase}/internal/metrics: ${err.message}${token ? "" : " (no internal token available)"}`);
+}
+if (!result) {
+  for (const base of [...new Set([API_BASE, mBase])]) {
+    try {
+      const r = await get(`${base}/health`, {});
+      const j = JSON.parse(r.text);
+      if (numericMap(j?.counters)) {
+        result = { source: `${base}/health`, counters: j.counters };
+        break;
+      }
+      notes.push(`${base}/health: no counters field`);
+    } catch (err) {
+      notes.push(`${base}/health: ${err.message}`);
+    }
+  }
+}
+if (!result) {
+  console.error(`gateway-counters: counters unavailable (${notes.join("; ")})`);
+  process.exit(3);
+}
+if (process.argv.includes("--pretty")) {
+  console.error(`source: ${result.source}`);
+  for (const [k, v] of Object.entries(result.counters).sort(([a], [b]) => a.localeCompare(b))) console.log(`${k} = ${v}`);
+} else {
+  console.log(JSON.stringify(result));
+}

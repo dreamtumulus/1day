@@ -1,0 +1,13 @@
+# Hourly at :30 (docs/operations.md §5). The old installation reached the same schedule through the drop-in
+# 1dayapi-backup.timer.d/hourly.conf; remove that drop-in when this file is installed.
+[Unit]
+Description=1dayAPI encrypted backup, hourly
+
+[Timer]
+OnCalendar=*-*-* *:30:00
+Persistent=true
+RandomizedDelaySec=60
+AccuracySec=30s
+
+[Install]
+WantedBy=timers.target

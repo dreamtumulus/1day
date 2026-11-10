@@ -66,5 +66,21 @@ else
   printf '%s\n' "$out" | sed 's/^/  /'; say "  FAIL (device identity drift)"; fail=1
 fi
 
-if [ "$fail" = 0 ]; then say "RELEASE VERIFIED"; else say "RELEASE NOT VERIFIED"; fi
+if [ "$fail" = 0 ]; then
+  say "RELEASE VERIFIED"
+else
+  say "RELEASE NOT VERIFIED"
+  # A failed verification is a decision point, not a log line: say exactly how to go back.
+  GS=$(cd "$(dirname "$0")" && pwd)/gateway-switch
+  say ""
+  say "To roll the gateway back to the previous instance:"
+  say "    $GS --rollback"
+  say "  - previous instance still running (released with --hold): nginx goes back to it at once, old code, no restart;"
+  say "  - previous instance draining: wait for the drain, or add --force-restart (cuts its in-flight streams);"
+  say "  - previous instance stopped: it is started on the build on disk, so restore the previous build FIRST"
+  say "    (docs/operations.md §4: git checkout <previous commit> && pnpm install --frozen-lockfile && pnpm build,"
+  say "     or repoint /opt/1dayapi-releases/current), then run the command above."
+  say "Current state: $("$GS" --status 2>/dev/null | tr '\n' ' ')"
+  say "Failures in steps 3-6 (pool, nodes, monitor, device identity) may be unrelated to the gateway build: read them before rolling back."
+fi
 exit $fail

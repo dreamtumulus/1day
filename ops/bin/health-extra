@@ -1,0 +1,109 @@
+#!/bin/bash
+# 1dayAPI 巡检补充项（2026-11-10 加固）：日志保留、磁盘、数据库体积、备份新鲜度、结算日志积压。
+# 用法: /opt/1dayapi/ops/bin/health-extra        只读，不改任何状态；ops/bin/health 末尾会调用它。
+# 每项一行，前缀 `ok  ` 或 `WARN`；只告警不失败：退出码恒为 0（供人或监控 bot 读取）。
+#
+# 环境变量（括号内为默认值）：
+#   DATA_DIR (/opt/1dayapi/data)         BACKUP_DIR (/opt/1dayapi/backups/enc)   BACKUP_KEYS_DIR (/opt/1dayapi/backups/keys-enc)
+#   LEGACY_BACKUP_DIR (/opt/1dayapi/backups/auto)    旧脚本的明文包目录
+#   JOURNAL_MIN_HOURS (24)   canary-verify / health 都假设 journald 至少保留 24 小时；目标是 >= 14 天（ops/systemd/journald-1dayapi.conf）
+#   DISK_MIN_FREE_PCT (15)   WAL_WARN_MB (1024)   BACKUP_MAX_AGE_MIN (120)   SETTLEMENT_STUCK_SEC (60)
+[ -r /etc/1dayapi/backup.conf ] && . /etc/1dayapi/backup.conf 2>/dev/null
+DATA_DIR=${DATA_DIR:-/opt/1dayapi/data}
+BACKUP_DIR=${BACKUP_DIR:-/opt/1dayapi/backups/enc}
+BACKUP_KEYS_DIR=${BACKUP_KEYS_DIR:-/opt/1dayapi/backups/keys-enc}
+LEGACY_BACKUP_DIR=${LEGACY_BACKUP_DIR:-/opt/1dayapi/backups/auto}
+JOURNAL_MIN_HOURS=${JOURNAL_MIN_HOURS:-24}
+DISK_MIN_FREE_PCT=${DISK_MIN_FREE_PCT:-15}
+WAL_WARN_MB=${WAL_WARN_MB:-1024}
+BACKUP_MAX_AGE_MIN=${BACKUP_MAX_AGE_MIN:-120}
+SETTLEMENT_STUCK_SEC=${SETTLEMENT_STUCK_SEC:-60}
+GATEWAY_UNITS=${GATEWAY_UNITS:-1dayapi-gateway@*}
+now=$(date +%s)
+ok() { echo "   ok   $*"; }
+warn() { echo "   WARN $*"; }
+human() { awk -v b="$1" 'BEGIN{ s="B KiB MiB GiB TiB"; split(s,u," "); i=1; while (b>=1024 && i<5) { b/=1024; i++ } printf (i==1 ? "%d %s" : "%.1f %s"), b, u[i] }'; }
+fsize() { stat -c %s "$1" 2>/dev/null || echo 0; }
+echo "-- extra checks (journal retention / disk / db size / backups / settlement journal):"
+
+# 1. journald: how far back do the gateway logs reach?
+if command -v journalctl >/dev/null 2>&1; then
+  first=$(journalctl -q -u "$GATEWAY_UNITS" --no-pager -o short-unix 2>/dev/null | awk '$1 ~ /^[0-9]/ {print int($1); exit}')
+  usage=$(journalctl --disk-usage 2>/dev/null | grep -oE '[0-9.]+[KMGT]' | head -1)
+  if [ -z "${first:-}" ]; then
+    warn "journal: no entries for $GATEWAY_UNITS (unit never logged, or no permission to read the journal)"
+  else
+    hours=$(( (now - first) / 3600 ))
+    if [ "$hours" -lt "$JOURNAL_MIN_HOURS" ]; then
+      warn "journal: gateway logs reach back only ${hours} h (< ${JOURNAL_MIN_HOURS} h): canary-verify / health '24 h' checks see ${hours} h; journal size ${usage:-?}; install ops/systemd/journald-1dayapi.conf"
+    else
+      ok "journal: gateway logs reach back ${hours} h ($(( hours / 24 )) d), journal size ${usage:-?}"
+    fi
+  fi
+else
+  warn "journal: journalctl not available here"
+fi
+
+# 2. disk free
+seen=" "
+for path in / "$DATA_DIR" "$BACKUP_DIR" /var/log/journal; do
+  [ -e "$path" ] || continue
+  line=$(df -P "$path" 2>/dev/null | awk 'NR==2{print $1, $4, $5, $6}') || continue
+  set -- $line
+  dev=$1; avail_kb=$2; used_pct=${3%\%}; mount=$4
+  case "$seen" in *" $mount "*) continue ;; esac
+  seen="$seen$mount "
+  free=$((100 - used_pct))
+  if [ "$free" -lt "$DISK_MIN_FREE_PCT" ]; then warn "disk: $mount ($dev) ${free}% free ($(human $((avail_kb * 1024)))), below ${DISK_MIN_FREE_PCT}%"
+  else ok "disk: $mount ($dev) ${free}% free ($(human $((avail_kb * 1024))))"; fi
+done
+
+# 3. database + WAL size
+db="$DATA_DIR/1dayapi.db"
+if [ -e "$db" ]; then
+  dbs=$(fsize "$db"); wal=$(fsize "$db-wal")
+  if [ "$wal" -gt $((WAL_WARN_MB * 1048576)) ]; then
+    warn "db: $(human "$dbs"), WAL $(human "$wal") (> ${WAL_WARN_MB} MiB: checkpoints are not completing; look for a long-lived reader)"
+  else
+    ok "db: $(human "$dbs"), WAL $(human "$wal")"
+  fi
+else
+  warn "db: $db not found (DATA_DIR wrong?)"
+fi
+
+# 4. backups: newest encrypted database archive, key archive, leftovers of the old plaintext scheme
+newest_file() { ls -1t "$1"/$2 2>/dev/null | head -1; }
+age_min() { echo $(( (now - $(stat -c %Y "$1")) / 60 )); }
+enc=$(newest_file "$BACKUP_DIR" 'db-*.tar.gz.age')
+legacy=$(newest_file "$LEGACY_BACKUP_DIR" '*.tar.gz')
+if [ -n "$enc" ]; then
+  a=$(age_min "$enc")
+  if [ "$a" -gt "$BACKUP_MAX_AGE_MIN" ]; then warn "backup: newest encrypted db archive is ${a} min old (> ${BACKUP_MAX_AGE_MIN}): $(basename "$enc"); journalctl -u 1dayapi-backup"
+  else ok "backup: newest encrypted db archive ${a} min old, $(human "$(fsize "$enc")"), $(ls -1 "$BACKUP_DIR"/db-*.tar.gz.age 2>/dev/null | wc -l) kept"; fi
+  keys=$(newest_file "$BACKUP_KEYS_DIR" 'keys-*.tar.gz.age')
+  if [ -n "$keys" ]; then ok "backup: key archive $(basename "$keys") ($(( $(age_min "$keys") / 1440 )) d old; a copy must exist off this machine)"
+  else warn "backup: no key archive in $BACKUP_KEYS_DIR: database backups are useless without provider-cred.key"; fi
+  if [ -n "$legacy" ] && [ "$(age_min "$legacy")" -lt 1440 ]; then warn "backup: the old plaintext script is still writing $LEGACY_BACKUP_DIR ($(basename "$legacy"), keys bundled with the db): disable it (operations.md §5)"; fi
+elif [ -n "$legacy" ]; then
+  a=$(age_min "$legacy")
+  warn "backup: only the OLD scheme is in place (newest $(basename "$legacy"), ${a} min old): plaintext tar.gz with provider-cred.key inside, copied to worker-01. Move to ops/bin/backup (operations.md §5)"
+else
+  warn "backup: no backup found in $BACKUP_DIR or $LEGACY_BACKUP_DIR (or no permission to list them)"
+fi
+
+# 5. settlement journal: entries that stay are requests whose billing write has not been posted (admission closes)
+sj="$DATA_DIR/settlement-journal"
+if [ -d "$sj" ]; then
+  if total=$(find "$sj" -maxdepth 1 -type f -name '*.json' 2>/dev/null | wc -l) && [ -r "$sj" ]; then
+    stuck=$(find "$sj" -maxdepth 1 -type f -name '*.json' -not -newermt "@$((now - SETTLEMENT_STUCK_SEC))" 2>/dev/null | wc -l)
+    other=$(find "$sj" -maxdepth 1 -type f -not -name '*.json' -mmin +5 2>/dev/null | wc -l)
+    if [ "$stuck" -gt 0 ]; then warn "settlement journal: ${stuck} entr$([ "$stuck" = 1 ] && echo y || echo ies) older than ${SETTLEMENT_STUCK_SEC}s in $sj (${total} total): settlements are not posting, the gateway refuses new inference until they do; journalctl -u '1dayapi-gateway@*' | grep '\\[settlement\\]'"
+    else ok "settlement journal: ${total} pending file(s), none older than ${SETTLEMENT_STUCK_SEC}s"; fi
+    [ "$other" -gt 0 ] && warn "settlement journal: ${other} stale temp/probe file(s) older than 5 min in $sj (a writer died mid-write)"
+  else
+    warn "settlement journal: $sj not readable by $(id -un)"
+  fi
+else
+  ok "settlement journal: $sj does not exist yet (no request has been settled through it)"
+fi
+exit 0

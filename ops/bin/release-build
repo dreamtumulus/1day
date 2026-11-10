@@ -1,0 +1,108 @@
+#!/usr/bin/env bash
+# Build one immutable, verified release directory (docs/operations.md §4.2).
+#
+#   ops/bin/release-build <commit-ish>      e.g. ops/bin/release-build HEAD   |   release-build 39cbc48
+#   ops/bin/release-build --list            releases present, which one `current` points at
+#
+# Steps: resolve the commit in $RELEASE_REPO → export exactly that commit (git archive: committed files only, no
+# local edits, no .git) into $RELEASES_DIR/<full sha>.partial → `pnpm install --frozen-lockfile` → `pnpm build` →
+# the test gate (ops/bin/test-gate --no-build: unit tests + e2e against tests/e2e/known-failures.txt) → rename to
+# $RELEASES_DIR/<full sha>/ and write the `RELEASE_OK` marker. A directory without RELEASE_OK is not a release:
+# the new-layout units (ops/systemd/*.next) refuse to start from it.
+#
+# This script only BUILDS. It does not touch the `current` symlink, any service, nginx or the database: activating
+# a release stays an explicit operator step (operations.md §4.2). It is safe to run on the main server while
+# production serves traffic: the gate uses a temp DATA_DIR and, where the kernel allows, an empty network namespace.
+#
+# Environment:
+#   RELEASE_REPO   git repository to take the commit from        (default /opt/1dayapi)
+#   RELEASES_DIR   where releases live                           (default /opt/1dayapi-releases)
+#   RELEASE_SKIP_GATE=1   build without the gate: writes RELEASE_UNVERIFIED instead of RELEASE_OK (emergencies only;
+#                         such a directory cannot be started by the .next units)
+#   PNPM_INSTALL_FLAGS    extra flags for pnpm install (e.g. --offline)
+# Exit: 0 built (or already built) · 1 a step failed (the partial directory is removed) · 2 usage.
+set -uo pipefail
+RELEASE_REPO=${RELEASE_REPO:-/opt/1dayapi}
+RELEASES_DIR=${RELEASES_DIR:-/opt/1dayapi-releases}
+say() { printf '%s\n' "$*"; }
+die() { say "RELEASE BUILD FAILED: $*" >&2; exit 1; }
+
+if [ "${1:-}" = "--list" ]; then
+  cur=; [ -L "$RELEASES_DIR/current" ] && cur=$(readlink -f "$RELEASES_DIR/current" 2>/dev/null || true)
+  for d in "$RELEASES_DIR"/*/; do
+    [ -d "$d" ] || continue
+    d=${d%/}; name=$(basename "$d")
+    [ "$name" = current ] && continue
+    if [ -e "$d/RELEASE_OK" ]; then mark="OK         $(head -1 "$d/RELEASE_OK")"; elif [ -e "$d/RELEASE_UNVERIFIED" ]; then mark="UNVERIFIED"; else mark="INCOMPLETE"; fi
+    say "$([ "$d" = "$cur" ] && echo '*' || echo ' ') $name  $mark"
+  done
+  [ -n "$cur" ] && say "current -> $cur" || say "current: (no symlink; production still runs from the legacy checkout)"
+  exit 0
+fi
+ref=${1:-}
+case "$ref" in ''|-*) sed -n 2,6p "$0" >&2; exit 2 ;; esac
+for tool in git pnpm node tar; do command -v "$tool" >/dev/null 2>&1 || { say "missing tool: $tool" >&2; exit 2; }; done
+git -C "$RELEASE_REPO" rev-parse --git-dir >/dev/null 2>&1 || { say "$RELEASE_REPO is not a git repository (RELEASE_REPO)" >&2; exit 2; }
+sha=$(git -C "$RELEASE_REPO" rev-parse --verify --quiet "$ref^{commit}") || { say "unknown commit: $ref" >&2; exit 2; }
+dest="$RELEASES_DIR/$sha"
+part="$dest.partial"
+if [ -e "$dest/RELEASE_OK" ]; then say "already built and verified: $dest ($(head -1 "$dest/RELEASE_OK"))"; exit 0; fi
+if [ -e "$dest" ]; then
+  [ ! -L "$RELEASES_DIR/current" ] || [ "$(readlink -f "$RELEASES_DIR/current" 2>/dev/null)" != "$dest" ] || die "$dest is the current release but has no RELEASE_OK marker; not touching it"
+  [ "${RELEASE_SKIP_GATE:-0}" != 1 ] || { say "already built (unverified): $dest"; exit 0; }
+  say "removing the unverified directory $dest and rebuilding it with the gate"
+  rm -rf "$dest"
+fi
+mkdir -p "$RELEASES_DIR" || die "cannot create $RELEASES_DIR"
+rm -rf "$part"
+mkdir "$part" || die "cannot create $part"
+trap 'rm -rf "$part"' EXIT
+# Builds and tests never go through a host proxy and never see a production DATA_DIR.
+unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY all_proxy ALL_PROXY DATA_DIR DB_PATH
+started=$(date +%s)
+
+say "== 1/4 export $sha ($(git -C "$RELEASE_REPO" log -1 --format='%h %s' "$sha" | cut -c1-90))"
+git -C "$RELEASE_REPO" archive --format=tar "$sha" | tar -x -C "$part" || die "git archive of $sha"
+[ -f "$part/pnpm-lock.yaml" ] && [ -f "$part/packages/catalog/data/pricing.json" ] || die "export is incomplete (pnpm-lock.yaml / catalog data missing)"
+if [ -n "$(git -C "$RELEASE_REPO" status --porcelain 2>/dev/null | head -1)" ]; then
+  say "   note: $RELEASE_REPO has uncommitted changes; they are NOT part of this release"
+fi
+
+say "== 2/4 pnpm install --frozen-lockfile"
+# shellcheck disable=SC2086
+(cd "$part" && pnpm install --frozen-lockfile ${PNPM_INSTALL_FLAGS:-}) > "$part/.release-install.log" 2>&1 || { tail -20 "$part/.release-install.log" >&2; die "pnpm install"; }
+
+say "== 3/4 pnpm build"
+(cd "$part" && pnpm build) > "$part/.release-build.log" 2>&1 || { tail -30 "$part/.release-build.log" >&2; die "pnpm build"; }
+for f in apps/gateway/dist/index.js apps/console/dist/index.js apps/web/dist/index.html packages/core/dist/index.js; do
+  [ -s "$part/$f" ] || die "build output missing: $f"
+done
+
+gate_line="gate skipped (RELEASE_SKIP_GATE=1)"
+if [ "${RELEASE_SKIP_GATE:-0}" = 1 ]; then
+  say "== 4/4 test gate SKIPPED (RELEASE_SKIP_GATE=1): this directory will be marked RELEASE_UNVERIFIED"
+else
+  say "== 4/4 test gate (unit + e2e, tests/e2e/known-failures.txt)"
+  [ -x "$part/ops/bin/test-gate" ] || die "this commit has no ops/bin/test-gate (older than the 2026-11-10 gate); build it with RELEASE_SKIP_GATE=1 only if you must"
+  if ! GATE_LOG_DIR="$part/.release-gate" "$part/ops/bin/test-gate" --no-build > "$part/.release-gate.log" 2>&1; then
+    sed -n '/^== gate summary/,$p' "$part/.release-gate.log" >&2
+    keep="$RELEASES_DIR/failed-gate-$sha.log"; cp "$part/.release-gate.log" "$keep" 2>/dev/null && say "   gate log kept at $keep" >&2
+    die "test gate (new failures, or known-failures.txt out of date)"
+  fi
+  gate_line=$(grep -m1 '^== gate summary' "$part/.release-gate.log" | sed 's/^== //')
+  say "   $gate_line"
+fi
+# A release directory holds code only. Anything a build or test step left in <release>/data (core's default
+# DATA_DIR) is throwaway: the export never contains /data, and services run with an explicit DATA_DIR.
+if [ -e "$part/data" ]; then say "   removing $part/data left behind by a build/test step"; rm -rf "$part/data"; fi
+
+mv "$part" "$dest" || die "cannot rename $part to $dest"
+trap - EXIT
+info="$sha built $(date -u +%FT%TZ) on $(hostname) node $(node -v) pnpm $(pnpm -v); $gate_line"
+if [ "${RELEASE_SKIP_GATE:-0}" = 1 ]; then printf '%s\n' "$info" > "$dest/RELEASE_UNVERIFIED"; else printf '%s\n' "$info" > "$dest/RELEASE_OK"; fi
+say "RELEASE BUILT: $dest ($(( $(date +%s) - started ))s, $(du -sh "$dest" 2>/dev/null | cut -f1))"
+if [ "${RELEASE_SKIP_GATE:-0}" = 1 ]; then
+  say "NOT VERIFIED: no RELEASE_OK marker. Do not activate it outside an emergency."
+else
+  say "RELEASE_OK written. Nothing was activated. Activation is described in docs/operations.md §4.2."
+fi

@@ -1,0 +1,115 @@
+#!/usr/bin/env bash
+# Restore drill for ops/bin/backup archives (docs/operations.md §5 "每月恢复演练"). A backup that was never
+# restored is not a backup: this decrypts the newest database archive with the PRIVATE age identity, opens the
+# snapshot read-only, runs `PRAGMA integrity_check` plus a few row counts and prints one PASS / FAIL line.
+#
+#   ops/bin/backup-restore-test -i ~/1dayapi-backup-identity.txt [-k <keys archive>] [<archive.age> | <directory>]
+#
+#   -i FILE   age identity (private key). It lives OFF the server: run this drill where the identity is (operator
+#             machine, with the newest archive copied over), not on the main server and never on a worker node.
+#   -k FILE   also decrypt this key archive (keys-*.tar.gz.age) and prove that its provider-cred.key decrypts the
+#             master key check value stored in the restored database (settings.__master_key_check__): that is the
+#             proof the pair "database backup + key backup" can actually bring the platform back. Needs node >= 20.
+#   target    an archive, or a directory to take the newest db-*.tar.gz.age from
+#             (default $BACKUP_DIR or /opt/1dayapi/backups/enc)
+#   --max-age-hours N   fail when the newest usage row / the archive is older than N hours (default 0 = report only)
+#
+# Everything is unpacked into a private temp directory (0700, under $TMPDIR) that is removed on exit; nothing is
+# written anywhere else and no service is touched. Needs: age, tar, python3. Exit 0 = PASS, 1 = FAIL, 2 = usage.
+set -uo pipefail
+umask 077
+AGE=${AGE_BIN:-age}
+identity=; keys_archive=; target=; max_age=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -i) identity=${2:-}; shift ;;
+    -k) keys_archive=${2:-}; shift ;;
+    --max-age-hours) max_age=${2:-}; shift ;;
+    -h|--help) sed -n 2,19p "$0"; exit 0 ;;
+    -*) echo "unknown option: $1" >&2; exit 2 ;;
+    *) target=$1 ;;
+  esac
+  shift
+done
+target=${target:-${BACKUP_DIR:-/opt/1dayapi/backups/enc}}
+fail() { echo "RESTORE TEST FAIL: $*"; exit 1; }
+[ -n "$identity" ] || { echo "usage: $0 -i <age identity file> [-k <keys archive>] [<archive.age> | <directory>]" >&2; exit 2; }
+[ -r "$identity" ] || { echo "identity file not readable: $identity" >&2; exit 2; }
+case "$max_age" in ''|*[!0-9]*) echo "--max-age-hours needs a number" >&2; exit 2 ;; esac
+for tool in "$AGE" tar python3; do command -v "$tool" >/dev/null 2>&1 || { echo "missing tool: $tool" >&2; exit 2; }; done
+if [ -d "$target" ]; then
+  # shellcheck disable=SC2012
+  archive=$(ls -1 "$target"/db-*.tar.gz.age 2>/dev/null | sort | tail -1)
+  [ -n "$archive" ] || fail "no db-*.tar.gz.age in $target"
+else
+  archive=$target
+fi
+[ -r "$archive" ] || fail "archive not readable: $archive"
+WORK=$(mktemp -d -t 1dayapi-restore-test.XXXXXX) || fail "cannot create a temp directory"
+trap 'rm -rf "$WORK"' EXIT
+echo "archive: $archive ($(du -h "$archive" | cut -f1), modified $(date -u -r "$archive" +%FT%TZ))"
+
+"$AGE" -d -i "$identity" -o "$WORK/db.tar.gz" "$archive" 2> "$WORK/age.err" || fail "age could not decrypt the archive with this identity ($(tr '\n' ' ' < "$WORK/age.err" | cut -c1-160))"
+tar -C "$WORK" -xzf "$WORK/db.tar.gz" 1dayapi.db 2> "$WORK/tar.err" || fail "archive does not unpack to 1dayapi.db ($(tr '\n' ' ' < "$WORK/tar.err" | cut -c1-160))"
+rm -f "$WORK/db.tar.gz"
+
+summary=$(python3 - "$WORK/1dayapi.db" <<'PY'
+import sqlite3, sys
+con = sqlite3.connect(f"file:{sys.argv[1]}?mode=ro", uri=True)
+res = [r[0] for r in con.execute("PRAGMA integrity_check")]
+if res != ["ok"]:
+    print("integrity_check: " + "; ".join(res[:5])); sys.exit(1)
+fk = con.execute("PRAGMA foreign_key_check").fetchall()
+tables = {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+required = ["users", "api_keys", "accounts", "usage_logs", "settings", "schema_migrations"]
+missing = [t for t in required if t not in tables]
+if missing:
+    print("missing tables: " + ", ".join(missing)); sys.exit(1)
+counts = {t: con.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0] for t in ["users", "api_keys", "accounts", "usage_logs"]}
+if counts["users"] == 0:
+    print("users table is empty"); sys.exit(1)
+enc = con.execute("SELECT COUNT(*) FROM accounts WHERE credential_enc LIKE 'enc:v1:%'").fetchone()[0]
+schema = con.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0]
+last = con.execute("SELECT MAX(created_at) FROM usage_logs").fetchone()[0]
+kcv = con.execute("SELECT COUNT(*) FROM settings WHERE key='__master_key_check__'").fetchone()[0]
+print(f"integrity ok, fk violations {len(fk)}, schema v{schema}, users {counts['users']}, api_keys {counts['api_keys']}, "
+      f"accounts {counts['accounts']} ({enc} encrypted), usage_logs {counts['usage_logs']}, last usage {last or '-'}, key check value {'present' if kcv else 'absent'}")
+print("LAST_USAGE=" + (last or ""))
+PY
+) || fail "$(printf '%s' "$summary" | head -1)"
+echo "database: $(printf '%s\n' "$summary" | head -1)"
+last_usage=$(printf '%s\n' "$summary" | sed -n 's/^LAST_USAGE=//p')
+
+if [ "$max_age" -gt 0 ]; then
+  now=$(date -u +%s)
+  arch_age=$(( (now - $(date -u -r "$archive" +%s)) / 3600 ))
+  [ "$arch_age" -le "$max_age" ] || fail "the newest archive is ${arch_age} h old (limit ${max_age} h): backups have stopped"
+  if [ -n "$last_usage" ]; then
+    usage_ts=$(date -u -d "$last_usage" +%s 2>/dev/null || echo 0)
+    [ $(( (now - usage_ts) / 3600 )) -le "$max_age" ] || fail "the newest usage row in the backup is from $last_usage (limit ${max_age} h): the snapshot is stale"
+  fi
+fi
+
+keys_note="key archive not checked (-k)"
+if [ -n "$keys_archive" ]; then
+  [ -r "$keys_archive" ] || fail "key archive not readable: $keys_archive"
+  command -v node >/dev/null 2>&1 || fail "-k needs node (AES-256-GCM check of the master key against the database)"
+  mkdir "$WORK/keys"
+  "$AGE" -d -i "$identity" -o "$WORK/keys.tar.gz" "$keys_archive" 2> "$WORK/age.err" || fail "age could not decrypt the key archive ($(tr '\n' ' ' < "$WORK/age.err" | cut -c1-160))"
+  tar -C "$WORK/keys" -xzf "$WORK/keys.tar.gz" 2> "$WORK/tar.err" || fail "key archive does not unpack"
+  keyfile=$(find "$WORK/keys" -name provider-cred.key -type f | head -1)
+  [ -n "$keyfile" ] || fail "no provider-cred.key inside $keys_archive"
+  stored=$(python3 -c 'import sqlite3,sys; c=sqlite3.connect(f"file:{sys.argv[1]}?mode=ro",uri=True); r=c.execute("SELECT value FROM settings WHERE key=?",("__master_key_check__",)).fetchone() or c.execute("SELECT credential_enc FROM accounts WHERE credential_enc LIKE ? ORDER BY rowid DESC LIMIT 1",("enc:v1:%",)).fetchone(); print(r[0] if r else "")' "$WORK/1dayapi.db")
+  [ -n "$stored" ] || fail "the restored database holds nothing encrypted to test the key against"
+  # Same scheme as packages/core/src/crypto.ts: key = sha256(material), enc:v1:base64(iv12 ‖ ciphertext ‖ tag16).
+  STORED="$stored" node -e '
+    const { createHash, createDecipheriv } = require("node:crypto");
+    const key = createHash("sha256").update(require("node:fs").readFileSync(process.argv[1], "utf8").trim(), "utf8").digest();
+    const raw = Buffer.from(process.env.STORED.slice("enc:v1:".length), "base64");
+    const d = createDecipheriv("aes-256-gcm", key, raw.subarray(0, 12));
+    d.setAuthTag(raw.subarray(raw.length - 16));
+    Buffer.concat([d.update(raw.subarray(12, raw.length - 16)), d.final()]);
+  ' "$keyfile" 2>/dev/null || fail "provider-cred.key from $(basename "$keys_archive") does NOT decrypt the restored database: this key backup does not belong to this database backup"
+  keys_note="key archive $(basename "$keys_archive") decrypts the database's encrypted values"
+fi
+echo "RESTORE TEST PASS: $(basename "$archive"): $(printf '%s\n' "$summary" | head -1); $keys_note"

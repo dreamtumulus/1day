@@ -33,7 +33,7 @@
 | `1dayapi-console` | `node apps/console/dist/index.js` | 127.0.0.1:8401 | `HOST=127.0.0.1`、`TRUST_PROXY=127.0.0.1,::1`、`COOKIE_SECURE=1`、`PLATFORM_WS_URL`；`TRUSTED_EXECUTION_NODE_IDS`、`REQUIRE_TEAM_UID_ISOLATION=1`；连接数从共享 SQLite 租约汇总 |
 | `1dayapi-mock-upstream` | `node apps/gateway/scripts/mock-upstream.mjs` | 127.0.0.1:19001 | — |
 | `1dayapi-node` | `/root/.bun/bin/bun /root/.1dayapi-node/node-bundle.js` | 本地控制台 127.0.0.1:16889 | 平台节点 server-node-1。**2026-10-16 起 `disable --now`**：主服务器暂不跑节点，节点行保留（控制台显示离线），要恢复 `systemctl enable --now 1dayapi-node` |
-| `1dayapi-backup.timer` | `/usr/local/bin/1dayapi-backup.sh` | — | 每小时（`*:30`，drop-in `hourly.conf`）备份到 worker-01（见 §5） |
+| `1dayapi-backup.timer` | 现网：`/usr/local/bin/1dayapi-backup.sh`（不在仓库）；目标：`ops/bin/backup`（unit 在 `ops/systemd/1dayapi-backup.{service,timer}`） | — | 每小时（`*:30`）。现网脚本把库和主密钥打进同一个明文包发到 worker-01，**待按 §5 切换到加密方案** |
 
 「1day 核心节点」（node_0065de07，310 条代理，无 systemd 托管）已于 2026-10-16 删除：目录归档在 `/opt/1dayapi/backups/core-node-archive-<ts>.tar.gz`
 （含加密代理清单与 `config.key`），平台侧节点行已删。该段为 2026-10-16 的节点快照；当前供给节点以控制台和最新发布记录为准。
@@ -65,8 +65,8 @@ nginx 使用 `ops/nginx/cloudflare-realip.conf` 中 Cloudflare 官方 IPv4/IPv6 
 
 ```bash
 # 本地
-pnpm install --frozen-lockfile && pnpm build
-pnpm -r test && pnpm test:e2e                   # 临时库和本地上游替身
+pnpm install --frozen-lockfile
+pnpm gate                                       # = ops/bin/test-gate：构建 + 单元测试 + e2e，对照 tests/e2e/known-failures.txt（见 §4.1）
 rsync -az \
   --exclude node_modules --exclude dist --exclude recon --exclude .git --exclude /data \
   --exclude /secrets --exclude /backups --exclude docs/deployment --exclude docs/customers \
@@ -77,17 +77,40 @@ cd /opt/1dayapi && pnpm install --frozen-lockfile && pnpm build
 # 在维护窗口按发布记录完成迁移、console 和节点升级；不运行旧数据回填或清理。
 systemctl restart 1dayapi-console
 # 替换实际 worker 服务的 bundle，保留每个节点的配置、密钥、账号和设备目录，再重启并验证能力。
-ops/bin/gateway-switch            # 控制面与节点就绪后切换网关（见下）
+ops/bin/gateway-switch            # 控制面与节点就绪后切换网关：先对新实例发一条真实请求，200 才切（见下）
+ops/bin/release-verify            # 不通过 = 发布未完成；失败时它会打印回滚命令（ops/bin/gateway-switch --rollback）
 # 核对 nginx 实际 live port；console 的连接数已读取跨实例共享租约。
 ```
+
+没有 CI：`pnpm gate` 是唯一的合并 / 发布闸门，**不通过不得同步到服务器**。发布目录化（`ops/bin/release-build`）与迁移计划见 §4.2。
 
 **网关发布是零中断的（2026-10-19 起）。** 网关有两个 systemd 实例 `1dayapi-gateway@8400` 与 `1dayapi-gateway@8402`
 （模板 `ops/systemd/1dayapi-gateway@.service`），nginx 的 `api.1dayapi.com` 经 `upstream gateway_live`
 （`/etc/nginx/conf.d/1dayapi-gateway-upstream.conf`，源文件 `ops/nginx/`）指向其中之一。`ops/bin/gateway-switch`
-会：用当前构建启动空闲实例 → 等 `/health` 通过 → 改 upstream 并 `nginx reload`（不断开任何连接）→ 停掉旧实例
+会：用当前构建启动空闲实例 → 等 `/health` 通过 → **切换前探针：用探针 Key 直接对新实例 `127.0.0.1:<端口>` 发一条真实请求，必须 200**（2026-11-10 起，见下）→ 改 upstream 并 `nginx reload`（不断开任何连接）→ 停掉旧实例
 （旧实例最多排空 25 min，`DRAIN_TIMEOUT_MS=1500000`，要长于 worker 单轮上限 20 min；2026-10-19 09:10 前是 75 s，曾切断 4 条长流）。`gateway-switch --status` 查看哪个实例在线。旧的 `1dayapi-gateway.service` 已停用，
 不要再 `systemctl restart 1dayapi-gateway`：那会先关监听端口再排空，期间 nginx 对新请求返回 502（2026-10-19 实测
 每次重启丢 4 个请求，高峰会更多）。
+
+**切换闸门与回滚（2026-11-10 加固）。** 此前只要静态 `/health` 回 ok 就切流量，而 `/health` 不经过鉴权、选号、节点隧道中的任何一环
+（10-27 / 10-28 两次发布 `/health` 全程正常、平台 36 小时无法服务）。现在：
+
+| 行为 | 说明 |
+|---|---|
+| 切换前探针 | 新实例 `/health` 通过后，用 `/root/monitor/apikey.txt`（`PROBE_KEY_FILE`）对 `http://127.0.0.1:<新端口>/v1/messages` 发一条与 `release-verify` 第 2 步相同的请求（`claude-sonnet-5-5`，`max_tokens 16`）。非 200 → 停掉新实例、nginx 不动、退出 1。没有探针 Key 时在**启动任何东西之前**拒绝运行 |
+| `--no-probe` | 唯一的跳过方式，必须显式写出，并在发布记录里说明原因（例如全池窗口耗尽时的紧急发布） |
+| 拒绝在排空期重入 | 目标实例仍是 `deactivating`（上一次切换的旧实例还在排空，最长 25 min）时拒绝运行：此时 `systemctl restart` 会切断它的在途流。目标实例意外 `active`（保留窗口或手工启动）同样拒绝，并提示怎么处理 |
+| `--hold <秒>` | 切换后旧实例**先不排空**，保留 N 秒（systemd 临时定时器 `1dayapi-gateway-holdstop-<端口>` 到点再停）。保留期内旧进程内存里仍是**旧代码**，`--rollback` 是瞬时且真正回到旧版本。风险发布建议 `--hold 600`；保留期内两个实例都完全在线（与平时切换那十几秒的状态相同，只是更久） |
+| `--rollback` | 把 nginx 指回上一个实例：① 上一个实例还在运行（保留期）→ 直接切回，不重启；② 正在排空 → 它已不监听、systemd 在排空结束前也无法再启动它，脚本拒绝并提示等待，或加 `--force-restart`（立即杀掉，**切断其在途流**）；③ 已停止 → 用**磁盘上当前的构建**启动它（过健康检查与探针）再切回。第 ③ 种只有先恢复了上一个版本的构建才算回滚代码 |
+| `nginx -t` 失败 | upstream 文件还原，且（新增）把刚启动的新实例停掉，不再留一个无人知晓的在线实例 |
+
+`release-verify` 失败时会在末尾打印上面的回滚命令和三种情况。**回滚代码**的步骤（当前目录布局）：`git -C /opt/1dayapi checkout <上一个提交>` →
+`pnpm install --frozen-lockfile && pnpm build` → `ops/bin/gateway-switch --rollback`（或直接再跑一次 `gateway-switch`）；console 需同样 `systemctl restart 1dayapi-console`。
+§4.2 的发布目录布局下只需把 `current` 软链指回上一个目录。数据库结构不随代码回滚（见 §4.3）。
+
+网关计数器正从公开的 `/health` 迁到带内部令牌的 `/internal/metrics`：`ops/bin/gateway-counters` 先带 `x-1dayapi-internal`（`INTERNAL_TOKEN` 或 `<DATA_DIR>/internal.key`）
+问在线实例的 `/internal/metrics`，失败再退回 `/health.counters`；`canary-verify`、`canary-report`、`canary-phase-switch`、`canary-cc-probe` 都经它读取。
+两处都读不到计数器时它退出 3，`canary-verify` 记为失败（"读不到" 不等于 "全为零"）。计数器是进程内的：切换后新实例从 0 开始。
 
 `gateway-switch` 更新 nginx 入口；2026-10-28 起 console 与所有网关共用账号租约、RPM 与用户在途预算。90 秒租约每 30 秒续期，失去租约立即取消上游，不能在到期后复活旧持有者。发布记录中的旧 `GATEWAY_URL` drop-in 可以保留，连接数已不再读取它。
 
@@ -139,7 +162,84 @@ curl -s -o /dev/null -w '%{http_code}\n' https://1dayapi.com/login   # 期望 20
 - 回滚使用发布前代码/构建和服务配置快照。新增结构保留，不能为了回滚代码而覆盖或删除运行中的数据库；涉及数据库回退需单独决定。
 - 改 catalog 价格、改表结构都需要重新构建并重启两个服务。
 
+### 4.1 测试闸门（没有 CI，2026-11-10）
+
+`ops/bin/test-gate`（`pnpm gate`）= `pnpm build` + catalog / core / gateway / console 单元测试 + `tests/e2e/run.sh`，把失败的测试名与
+`tests/e2e/known-failures.txt` 对照，打印一段摘要：
+
+- 出现**不在名单里的失败** → 退出 1（新回归）；
+- 名单里的条目**现在通过了或已不存在** → 也退出 1：修好它的那次改动必须同时删掉名单里的那一行，否则同一个测试以后再坏不会被发现；
+- 构建失败、测试命令没跑出任何测试名就退出 → 退出 1。
+
+名单格式：`unit/<包>: <顶层测试名>`、`e2e/<套件文件>: <检查名>`，每条上方写明起始日期、原因、谁负责。基线（2026-11-09，提交 39cbc48）：e2e 8 个套件 178 项检查
+**0 失败**；单元测试只有 `unit/console: test/audit-fixes.test.mjs` 一条已知失败（测试结束后仍有定时器访问已关闭的库）。
+旧说法“e2e 有 34 个既有失败（gpt-5.5 不在目录）”属于过期的 `~/1dayAPI.com` 检出，本仓库不存在。
+
+e2e 只用临时 `DATA_DIR` 和本机 mock 上游。闸门在内核允许时把 e2e 放进**只有回环的空网络命名空间**（`unshare -n`），任何测试都不可能连到真实上游，
+也不会和本机正在运行的服务抢端口；`E2E_NETNS=0` 关闭，`E2E_NETNS=1` 强制。`tests/e2e/run.sh` 等服务就绪改为轮询各自的 `/health`（上限 `E2E_WAIT_SEC`，默认 30 秒），
+不再靠固定 `sleep`；每个套件结束打印一行 `SUITE-RESULT <文件> ok|failed|stack-failed` 供闸门解析。套件本身未改。
+
+**不要在生产检出目录里直接跑 `pnpm -r test`。** core 的若干单元测试（`pure`、`window`、`cc-shape` 等）和 console 的 `proxy-parse` 没有设置 `DATA_DIR`，
+import core 时会打开「代码根目录/data」——在 `/opt/1dayapi` 里那就是生产库（打开即执行迁移，见 §4.3）。闸门会给所有测试一个一次性的默认 `DATA_DIR`，
+所以在服务器上只通过 `pnpm gate` / `ops/bin/release-build` 跑测试。
+
+### 4.2 发布目录与 `current` 软链（分阶段迁移计划，尚未执行）
+
+现状的三个问题：① 服务直接从可变的检出目录 `/opt/1dayapi` 运行，`rsync` / `pnpm build` 的中间状态就是下一次进程重启会加载的代码
+（`Restart=always`，网关崩溃重启会拿到半个构建）；② 回滚要在生产目录里现场 checkout + 重新构建；③ `DATA_DIR` 默认是「代码根目录/data」
+（`packages/core/src/paths.ts`），代码目录一换，服务会在空目录里生成一个新库和**新主密钥**（现在由主密钥守卫挡住，见 §5.2）。
+
+目标布局：
+
+```
+/opt/1dayapi-releases/<git sha>/      ops/bin/release-build 产出：该提交的导出 + node_modules + dist，带 RELEASE_OK 标记，建成后不再修改
+/opt/1dayapi-releases/current  ->  <git sha>     各 unit 的 WorkingDirectory；发布 = 原子地改这个软链
+/var/lib/1dayapi/data/                DATA_DIR：库、provider-cred.key、internal.key、settlement-journal …（阶段 3 之前仍是 /opt/1dayapi/data）
+/opt/1dayapi/backups/                 备份落盘位置不变
+```
+
+`ops/bin/release-build <提交>`：在 `$RELEASES_DIR`（默认 `/opt/1dayapi-releases`）下 `git archive` 导出该提交（只含已提交内容）→
+`pnpm install --frozen-lockfile` → `pnpm build` → `ops/bin/test-gate --no-build` → 改名为 `<sha>/` 并写 `RELEASE_OK`。任何一步失败都删除半成品目录、退出 1。
+它**只构建**：不碰软链、服务、nginx、数据库。`release-build --list` 列出已有目录和 `current` 指向。`RELEASE_SKIP_GATE=1` 只写 `RELEASE_UNVERIFIED`，新布局的 unit 不会从这样的目录启动。
+
+新布局的 unit 模板放在现有 unit 旁边，带 `.next` 后缀，**现在不安装**：`ops/systemd/1dayapi-gateway@.service.next`、`ops/systemd/1dayapi-console.service.next`
+（`WorkingDirectory=/opt/1dayapi-releases/current`、显式 `DATA_DIR`、`ConditionPathExists=…/current/RELEASE_OK`）。现有 `1dayapi-gateway@.service` 的路径未改。
+
+| 阶段 | 做什么 | 生产影响 | 退回 |
+|---|---|---|---|
+| 0（现在可做） | 每次发布前在服务器上跑 `ops/bin/release-build <提交>`，只当作「这个提交在生产机上能装、能构建、过闸门」的验证；生产仍从 `/opt/1dayapi` 运行 | 无 | — |
+| 1 | 给 `1dayapi-console`、`1dayapi-gateway@` 加 drop-in `Environment=DATA_DIR=/opt/1dayapi/data`（与当前默认值相同，行为不变），随下一次例行重启生效；确认两个服务启动日志无 `[core/crypto]` 告警 | 无（值相同） | 删 drop-in |
+| 2 | 低谷窗口：`ln -sfn <sha> current`；安装 `.next` 模板（console 先把现有 unit 的 `Environment=` 抄进 `/etc/1dayapi/console.env`）；`systemctl daemon-reload`；重启 console；`gateway-switch`；nginx 的 web 根目录改为 `/opt/1dayapi-releases/current/apps/web/dist`；`ops/bin/*` 的调用路径改用 `current/ops/bin/` | console 重启一次（会断在途隧道，同平时发布） | 装回旧 unit（发布前先 `cp` 备份）、`gateway-switch` |
+| 3 | 维护窗口：停两个服务 → `mv /opt/1dayapi/data /var/lib/1dayapi/data` → 改 unit 的 `DATA_DIR`、`/etc/1dayapi/backup.conf`、ops 脚本里的默认路径 → 启动。`verifyMasterKey()` 会在路径配错时拒绝启动而不是新建密钥 | 停机数分钟 | `mv` 回去、改回 `DATA_DIR` |
+| 之后 | 发布 = `release-build <sha>` → 改 `current` → 重启 console → `gateway-switch --hold 600` → `release-verify`；回滚 = 把 `current` 指回上一个 `<sha>` → `gateway-switch --rollback`（保留期内）或再 `gateway-switch`。保留最近 5 个发布目录，删除前确认没有进程的 `/proc/<pid>/cwd` 还指向它 | | |
+
+阶段 2 之后，正在运行的进程持有的是旧目录的真实路径，`current` 改指向不影响它；这正是 `--hold` 回滚能回到旧代码的前提。
+
+### 4.3 待办：迁移在 import 时执行（未改，开放项）
+
+`packages/core/src/db.ts` 在**模块加载时**打开数据库并执行 `runMigrations`：任何 `import "@1dayapi/core"` 的进程——网关、console、
+`apps/console/scripts/*.mjs`、一次性运维脚本、甚至指错了 `DATA_DIR` 的测试——都会对它打开的库执行全部未应用的迁移。后果：
+
+- **无法「先看再迁」**：新代码第一次被任何进程加载的那一刻，生产库结构就变了；蓝绿切换里，备用网关实例一启动就迁移了**旧实例还在用**的库
+  （旧代码面对新结构，靠迁移只增不改的约定兜底，没有机制保证）；
+- **回滚不对称**：代码能回滚，结构不能（§4 注意事项），而迁移发生在切换**之前**，探针失败、nginx 没切，库也已经变了；
+- **并发**：网关与 console 同时启动时各自跑迁移，靠 SQLite 写锁与 `busy_timeout` 排队；一个长迁移会让另一个进程在 import 阶段超时退出；
+- **误伤**：在生产机上带着生产 `DATA_DIR` 跑任何引用 core 的脚本 = 执行迁移。
+
+建议的后续（单独一轮改动，需 core / gateway / console 三方一起改，本轮**未动 `db.ts`**）：
+
+1. 增加显式命令 `node packages/core/dist/migrate.js [--dry-run]`（或 `ops/bin/migrate`）：打印待执行迁移 → 先调用 `ops/bin/backup` → 在一个事务里执行 → 打印结果；
+2. 服务启动时改为**只校验**：库的 `schema_migrations` 版本低于代码要求 → 拒绝启动并提示先跑迁移；高于代码已知版本 → 按兼容策略告警或拒绝；
+3. 过渡期用环境变量 `MIGRATE_ON_IMPORT=1` 保留旧行为（测试与开发默认开），生产 unit 不设；
+4. 发布流程相应变为：`release-build` → **`migrate`（显式、有备份、有记录）** → 重启 console → `gateway-switch`。
+
+在此之前的纪律：结构迁移只增不改；发布记录写明本次包含哪些迁移号；不在生产机上对生产 `DATA_DIR` 运行临时脚本，除非清楚它会触发迁移。
+
 ## 5. 数据与备份
+
+> **2026-11-10 评审结论**：现网每小时备份把数据库快照、`provider-cred.key`、`internal.key` 和探针凭据打进**同一个明文 tar.gz**，再 rsync 到 worker-01——
+> 一台运行客户驱动的 Claude Code 进程的机器；两机还互持对方 root 的 SSH 公钥。这与本节自己写的「主密钥必须与库分开备份」相矛盾：
+> worker-01 上任何一次越权都等于拿到全部号商凭证和客户 API Key 的明文。新方案见 §5.1（脚本已入库，**切换需运维执行**）；下面带日期的条目是切换前的现状记录。
 
 - **互备（2026-10-16 起）**，两台机器各有 `1dayapi-backup.timer`，`Persistent=true`。主服务器自 2026-10-3x 起改为**每小时**（timer drop-in `1dayapi-backup.timer.d/hourly.conf`，`OnCalendar=*-*-* *:30:00`）；worker-01 仍为每 6 小时：
   - 主服务器 `/usr/local/bin/1dayapi-backup.sh`：`VACUUM INTO` 在线快照 + `PRAGMA integrity_check` → 加 `provider-cred.key`、`internal.key`、
@@ -164,6 +264,85 @@ curl -s -o /dev/null -w '%{http_code}\n' https://1dayapi.com/login   # 期望 20
 - `admin-key.txt` 是首启生成的 admin 明文，确认已转存后应删除；该明文也出现在当次启动日志里。
 - 表结构变更前先备份；Auth v2 迁移时的旧库备份为 `data/1dayapi.db.authv1.bak`。
 
+### 5.1 加密备份方案（`ops/bin/backup`，2026-11-10；脚本入库，切换待执行）
+
+| 项 | 做法 |
+|---|---|
+| 数据库 | `VACUUM INTO` 在线快照 + `PRAGMA integrity_check` → 只含快照的 tar.gz → 用 `age` 加密给 `/etc/1dayapi/backup.pub` 里的公钥 → `/opt/1dayapi/backups/enc/db-<UTC 时间>.tar.gz.age`（0600）；本地留 `BACKUP_KEEP_LOCAL`（168 = 7 天）份；rsync 推到 `BACKUP_REMOTE`，并用 rsync 自身把对端修剪到 `BACKUP_KEEP_REMOTE`（360 = 15 天）份 |
+| 密钥材料 | `provider-cred.key`、`internal.key`、`BACKUP_KEYS_EXTRA`（默认探针 Key 与告警配置）进**另一个**加密包 `/opt/1dayapi/backups/keys-enc/keys-<时间>-<校验和>.tar.gz.age`，只有内容校验和变化时才写新包；只推到 `BACKUP_KEYS_REMOTE`——这是独立设置，**默认为空**：不设就只留本机，并在每次运行时打印醒目的提醒。默认绝不发往运行 worker 的节点 |
+| 没有明文退路 | 没装 `age`、没有公钥文件、公钥文件里混进了私钥 → 拒绝运行（退出 2），不会降级成明文包 |
+| 私钥 | 不在任何服务器上。解密只在恢复演练 / 真实恢复时、在运维自己的机器上进行 |
+| 结果 | 末行 `BACKUP OK: …` 或 `BACKUP FAILED: <哪一步>`（退出 1）；`journalctl -u 1dayapi-backup`；`ops/bin/health-extra` 每次巡检报告最新备份的年龄 |
+
+配置 `/etc/1dayapi/backup.conf`（`KEY=value`，root 所有，0600），全部可省略：
+
+```bash
+BACKUP_REMOTE=root@<worker-01>:/            # 对端是强制 rrsync 的目录（见下），必须以 / 结尾；留空 = 只在本机（会告警）
+BACKUP_SSH_KEY=/root/.ssh/backup_push       # 专用密钥对，不要用 root 的默认密钥
+BACKUP_KEYS_REMOTE=                          # 密钥包的去处：留空 = 仅本机 + 提醒；要设就设一台不跑 worker 的机器
+# DATA_DIR / BACKUP_DIR / BACKUP_KEEP_LOCAL / BACKUP_KEEP_REMOTE / BACKUP_KEYS_DIR / BACKUP_KEYS_EXTRA 见脚本头部
+```
+
+**一次性准备（运维执行；本仓库没有对任何主机执行过）**
+
+1. **离线生成 age 密钥对**（在运维自己的机器上，不在服务器上）：`age-keygen -o 1dayapi-backup-identity.txt`，输出里的 `Public key: age1…` 是公钥。
+   私钥文件存入密码管理器 + 一份离线介质（打印或加密 U 盘），**不上任何服务器、不进仓库、不进 `secrets/` 的同步范围**。丢了私钥 = 全部备份作废，所以至少两份。
+2. 主服务器：`apt install age`；`install -d -m 700 /etc/1dayapi`；把**公钥那一行**写入 `/etc/1dayapi/backup.pub`（0644 即可，公钥不保密）；写 `/etc/1dayapi/backup.conf`。
+3. `ops/bin/backup --check` → `ops/bin/backup` 手工跑一次，确认 `BACKUP OK`；把生成的包拷到运维机器，跑一次 §5.3 的恢复演练，**通过后**再继续。
+4. 把首个密钥包 `keys-*.tar.gz.age` 手工拷出服务器（运维机器 / 密码管理器附件）。以后只有主密钥或探针 Key 变化时才会出现新包，`health-extra` 会显示它的日期。
+5. 换 unit：`cp ops/systemd/1dayapi-backup.{service,timer} /etc/systemd/system/`，删除旧 drop-in `1dayapi-backup.timer.d/hourly.conf`，`systemctl daemon-reload && systemctl restart 1dayapi-backup.timer`。
+   旧脚本 `/usr/local/bin/1dayapi-backup.sh` 改名留档，不再被任何 unit 引用。
+6. 新方案连续成功 ≥ 7 天且做过一次恢复演练后，**清理明文旧包**：worker-01 的 `/backup/1dayapi-main/*.tar.gz` 与主服务器的 `backups/auto/*.tar.gz` 里都含主密钥
+   （`shred -u` 或至少 `rm`）。这些包在 worker-01 上存在过的这段时间应视为主密钥有暴露面：若 worker-01 有过任何可疑迹象，需要轮换主密钥（目前没有重加密工具，属开放项）。
+
+**收紧两机之间的 root SSH 互信**
+
+现状是两台机器互持对方 root 公钥、不带任何限制：worker-01 上拿到 root 就能登录主服务器。备份只需要「往一个目录里写文件」，用强制命令把密钥限制到这一件事：
+
+```bash
+# 两端各生成一把备份专用密钥（不要复用 root 的默认密钥）
+ssh-keygen -t ed25519 -N '' -f /root/.ssh/backup_push -C backup-push@$(hostname)
+
+# worker-01 的 /root/.ssh/authorized_keys：主服务器的 backup_push.pub 只能对这个目录做 rsync
+command="/usr/bin/rrsync /backup/1dayapi-main-enc",restrict ssh-ed25519 AAAA… backup-push@main
+
+# 主服务器的 /root/.ssh/authorized_keys：worker-01 的 backup_push.pub 只能往它自己的目录里写（-wo = 只写，不能读回、不能列别的目录）
+command="/usr/bin/rrsync -wo /opt/1dayapi/backups/worker-01",restrict ssh-ed25519 AAAA… backup-push@worker-01
+```
+
+- `rrsync` 随 `rsync` 包安装（Ubuntu 22.04+ 在 `/usr/bin/rrsync`，更早版本在 `/usr/share/doc/rsync/scripts/`）；`restrict` 同时关掉 pty、端口转发、agent 转发、X11。
+  对端路径相对于受限目录，所以 `BACKUP_REMOTE=root@<worker-01>:/`。主服务器侧不用 `-wo`，因为 `ops/bin/backup` 要列目录来修剪旧包。
+- 配好并验证备份能推之后，**从两端的 `authorized_keys` 里删掉对方原来那把不受限的 root 公钥**。主服务器 → 节点方向的运维登录
+  （`ops/bin/health`、`device-identity-check`）若仍需要，单独保留一把只在主服务器上的密钥；**节点 → 主服务器方向不应存在任何不受限的密钥**。
+- 验证：从 worker-01 执行 `ssh -i /root/.ssh/backup_push root@<main> id` 应被拒绝（只允许 rsync）；`rsync -e 'ssh -i …' root@<main>:/ /tmp/x/` 应因 `-wo` 失败。
+- worker-01 自己的备份包（节点配置、账号凭据目录）目前仍是明文推到主服务器；方向上是从低信任到高信任，暂不改，后续可同样套用 `age`。
+
+### 5.2 主密钥守卫（`packages/core/src/crypto.ts`，2026-11-10）
+
+此前 `provider-cred.key` 不存在时会**静默生成一把新的**：`DATA_DIR` 配错、恢复时漏了密钥文件、发布目录换了位置，都会得到一个「两代密钥」的库——
+新写入的凭证用新钥，原有的全部解不开，且没有任何报错。现在：
+
+- **缺密钥文件时**只有两种情况允许新建：库里还没有任何 `enc:v1:` 密文（扫描所有 `*_enc` 列：`accounts.credential_enc`、`api_keys.key_enc`、`node_proxies.url_enc` 等），
+  或显式设置 `ALLOW_NEW_MASTER_KEY=1`。否则进程在加载 core 时抛 `MasterKeyError`，信息里写明期望的路径、`DATA_DIR`、库路径和含密文的列。
+- **密钥校验值**：`verifyMasterKey()` 在 `settings.__master_key_check__` 里保存一个固定字符串的密文（不在设置页显示）；每次启动解密比对，
+  不一致即拒绝启动（「库是用另一把钥写的」）。首次在已有库上启用时，先抽查各 `*_enc` 列最近 20 行：当前密钥一行都解不开就拒绝，不会把错的钥登记成基准。
+- `ALLOW_NEW_MASTER_KEY=1` 是「我确认放弃旧密文」的开关：缺钥时生成新钥、校验值不符时改写校验值，都会在日志里大写告警。只用于一次启动，用完从 unit 里删掉。
+- `internal.key` 丢失不影响已存数据，仍会重建，但会打印告警（网关与 console 必须同时重启才能拿到同一份）；两个进程同时首启时用 `O_EXCL` 创建，不再各写一份。
+- 调用点：`verifyMasterKey()` 需要在各服务入口、库打开之后调用一次（`apps/gateway/src/index.ts`、`apps/console/src/app.ts`）。恢复演练（§5.3）用同一套算法离线验证「库备份 + 密钥备份」是一对。
+
+### 5.3 每月恢复演练（`ops/bin/backup-restore-test`）
+
+没恢复过的备份不算备份。每月第一周、以及每次改动备份脚本 / 配置之后：
+
+1. 把最新的 `db-*.tar.gz.age` 和当前的 `keys-*.tar.gz.age` 从服务器拷到运维机器（私钥所在的机器；不要把私钥带上服务器）。
+2. `ops/bin/backup-restore-test -i <私钥文件> -k keys-<…>.tar.gz.age --max-age-hours 3 <目录或 db 包>`
+   - 解密到权限 0700 的临时目录（退出即删）→ 只读打开 → `PRAGMA integrity_check`、`foreign_key_check` → 必备表存在 → `users / api_keys / accounts / usage_logs` 行数、
+     结构版本、最新一条 usage 的时间；
+   - `-k`：解开密钥包，用其中的 `provider-cred.key` 解密库里的主密钥校验值（或一条账号密文），证明这两个包**配得上**；
+   - `--max-age-hours`：最新包或包内最新 usage 太旧则失败（备份其实已经停了）。
+3. 末行 `RESTORE TEST PASS: …` / `RESTORE TEST FAIL: <原因>`。把整段输出贴进当月运维记录；FAIL 当天处理，不留到下个月。
+4. 每季度做一次完整恢复：在一台临时机器上按 §4 装好代码，把解出的库和密钥放进 `DATA_DIR`，启动 console，确认 `verifyMasterKey` 通过、能登录、账号列表可读；**不接任何真实流量、不连节点**。
+
 ## 6. 常见运维操作
 
 | 操作 | 方法 |
@@ -177,8 +356,16 @@ curl -s -o /dev/null -w '%{http_code}\n' https://1dayapi.com/login   # 期望 20
 | 证书续期 | certbot timer 自动；手动 `certbot renew --dry-run` 检查 |
 | 发布后验证 | `ops/bin/release-verify`（真实请求 + 探针 + 池 online 数 + 设备身份）；不通过不算发布完成 |
 | 设备身份核对（X-49） | `ops/bin/device-identity-check [--save 基线文件]`（只读；各节点账号 `.claude.json` 的 `userID` 对 `accounts.device_id`、属主、权限）；节点包 / Claude Code / unit 变更前后各跑一次 |
-| 灰度核对（铁律 2） | `ops/bin/canary-verify`（灰度 Key 打三协议、列三态开关、`/health.counters` 必须为零项、24h journald 告警行）；每轮开关切 `canary` 后与 24h 观察结束时各跑一次，输出贴进发布记录 |
+| 灰度核对（铁律 2） | `ops/bin/canary-verify`（灰度 Key 打三协议、列三态开关、网关计数器必须为零项、24h journald 告警行；journald 实际保留不足 24h 时会在第 5 步标出）；每轮开关切 `canary` 后与 24h 观察结束时各跑一次，输出贴进发布记录 |
 | 告警通道 | `/root/monitor/alert.conf`；`python3 /root/monitor/alert.py test` |
+| 测试闸门（无 CI） | `pnpm gate` = `ops/bin/test-gate [--no-build] [--no-unit] [--no-e2e]`：构建 + 单元测试 + e2e，对照 `tests/e2e/known-failures.txt`；出现新失败、或名单条目已通过却没删，都退出 1（§4.1） |
+| 构建发布目录 | `ops/bin/release-build <提交>`：导出 → 安装 → 构建 → 闸门 → `/opt/1dayapi-releases/<sha>/RELEASE_OK`；只构建不激活；`--list` 查看（§4.2） |
+| 网关切换 / 回滚 | `ops/bin/gateway-switch [--no-probe] [--hold 秒]`（切换前真实请求探针；目标实例仍在排空时拒绝）、`--rollback [--force-restart]`、`--status`（§4） |
+| 读网关计数器 | `ops/bin/gateway-counters [--pretty]`：先 `/internal/metrics`（带内部令牌），再退回 `/health.counters`；都没有则退出 3 |
+| 备份 | `ops/bin/backup [--check]`：`age` 加密的数据库包 + 单独的密钥包；没有公钥就拒绝运行；`systemctl start 1dayapi-backup` 手动触发（§5.1） |
+| 恢复演练 | `ops/bin/backup-restore-test -i <私钥> [-k <密钥包>] [目录或包]`：解密 → 只读打开 → `integrity_check` + 行数 → `RESTORE TEST PASS/FAIL`；每月一次（§5.3） |
+| 巡检 | `ops/bin/health [分钟]`（末尾自动附 `ops/bin/health-extra`：journald 保留跨度、磁盘余量、库与 WAL 体积、最新备份年龄、结算日志积压；只告警不失败，§7.0） |
+| 灰度 Key 迁移 / 阶段切换 | `ops/bin/canary-move-keys`、`ops/bin/canary-phase-switch`（灰度组目前停用）。两者直接写生产库：`busy_timeout=5000`、单个 `BEGIN IMMEDIATE` 事务、**先落盘还原记录再改行**，失败打印 `FAILED` 并非零退出 |
 | 新增 worker 节点 | 见下方检查清单 |
 
 **新增 worker 节点检查清单**（每一步都有机器可验的产出，别跳）：
@@ -208,11 +395,34 @@ usage 行、账户与节点状态），每次一行 JSON 追加到 `/root/monito
 `metadata.user_id`，见 docs/claude-code-compat.md §5）：此前它不带计费头，Anthropic 对这种请求恒回 429，每 10 分钟把账户
 打入一次 429 冷却。`PROBE_CC_DUAL_MODE=0` 可临时关掉这一项。
 最低建议补齐：外部探活 `/health`、磁盘与 DB 大小、journald 中 `[billing] failed` 与 `unhandled error` 的计数。
+其中磁盘、库体积、备份新鲜度、日志保留跨度已由 `ops/bin/health-extra` 覆盖（§7.0，2026-11-10）；仍然没有指标采集与集中日志。
 
 **Claude Code 形态判定（gateway.md §2a）上线后的观察项**：`journalctl -u 1dayapi-gateway | grep '\[cc-shape\]'` 看 suspect 行
 （谁、缺了什么），控制台「用户」列表看「伪造 CC（30 天）」。策略默认 `observe`，确认真实 CC 用户长期为 0 suspect 后在「设置」切到
 `downgrade`。genuine 但带 `soft=` 的行说明 Claude Code 发了新版本、形态有漂移，要去 docs/claude-code-compat.md 核对并更新常量。
 判定只在网关（主服务器）执行，节点（worker-01 / 核心节点）只负责出口，不需要任何改动。
+
+## 7.0 日志保留与巡检补充项（2026-11-10）
+
+**日志保留与工具的假设不一致。** `ops/bin/canary-verify` 第 5 步（「24 小时 journald 必须为空」）、`ops/bin/health` 的 24 小时流量视图、铁律 2 的「≥24h 观察」
+和每一次事故复盘，都假设 journald 至少留着 24 小时的网关 / console 日志；而据此前排查记录，生产 journald 只保留约 **4 小时**（本轮未上服务器核实，以 `health-extra` 的输出为准）。
+在保留期补足之前：`canary-verify` 的「24h 为空」实际只代表「最近约 4h 为空」（脚本现在会在第 5 步标出实际跨度）；观察期结论要另外依据 `usage_logs` 与
+`/var/log/1dayapi-canary-traffic.log`，不能只凭 journald。
+
+修复：`ops/systemd/journald-1dayapi.conf` → `/etc/systemd/journald.conf.d/10-1dayapi.conf`，`systemctl restart systemd-journald`
+（`SystemMaxUse=4G`、`SystemKeepFree=20G`、`MaxRetentionSec=30day`，目标 ≥ 14 天）。**4G 是评审给的起始值，不是实测值**：安装前先按文件头的三条命令量一下
+「当前占用 ÷ 当前保留小时数 × 336」。如果现在已经是 4G 上限却只留得住 4 小时，那么任何合理的上限都装不下 14 天，要先降日志量
+（网关 unit 开着 `TUNNEL_TRACE=1`、按请求打日志），单靠这个文件解决不了。装好后以 `health-extra` 每次打印的保留跨度为准，不到 14 天就继续调。
+
+**`ops/bin/health-extra`**（`ops/bin/health` 末尾自动调用；只读；每项一行 `ok` / `WARN`，退出码恒为 0）：
+
+| 检查 | WARN 条件（环境变量可调） |
+|---|---|
+| 网关 unit 在 journald 里最早一条日志的年龄 | 不足 `JOURNAL_MIN_HOURS`（24）小时 |
+| `/`、`DATA_DIR`、备份目录、`/var/log/journal` 所在文件系统的剩余空间 | 低于 `DISK_MIN_FREE_PCT`（15）% |
+| `1dayapi.db` 与 `-wal` 的大小 | WAL 超过 `WAL_WARN_MB`（1024）MiB：checkpoint 完不成，通常是有长时间不结束的读事务 |
+| 最新加密备份的年龄、密钥包是否存在、旧明文脚本是否还在写 | 最新包超过 `BACKUP_MAX_AGE_MIN`（120）分钟；没有密钥包；只有旧方案的明文包；旧脚本 24 小时内仍在产出 |
+| 结算日志目录 `<DATA_DIR>/settlement-journal/` 的文件数 | 有超过 `SETTLEMENT_STUCK_SEC`（60）秒的 `*.json`：计费写入没落库，网关此时拒绝新推理（`packages/core/src/settlement-journal.ts`）；另报超过 5 分钟的残留临时文件 |
 
 ## 7.1 测试与探针的铁律：只经平台 Key 走网关
 
