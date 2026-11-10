@@ -56,6 +56,7 @@ import {
   proxyDownSummary,
   ProxyFreezeError,
   recordProxyTeamEvent,
+  OverheadCalibrator, OVERHEAD_DEFAULTS, OVERHEAD_MIN_SAMPLES, OVERHEAD_WINDOW, parseOverheadKey, parseOverheadPins, resetOverheadCalibration,
 } from "@1dayapi/core";
 import { importOAuthCredential } from "../onboard/jobs.js";
 import { parseAccountFields } from "../account-input.js";
@@ -1820,6 +1821,47 @@ export function registerAdminRoutes(app: FastifyInstance): void {
     return { data: { ok: true, disabledAccounts: impact.accounts.map((a) => a.id), frozenAccounts: impact.foreignAccounts.map((a) => a.id), sharesRemoved: impact.sharedOut.length } };
   });
 
+  // ---------- CCR platform overhead calibration (X-54, docs/ccr-supply.md §7.1) ----------
+
+  // What comes off worker / cloud usage as Claude Code's own prompt: every learned key with the value in force for it
+  // and where that value comes from (pinned > learned > inherited > default > baseline), plus the shipped defaults.
+  app.get("/api/admin/ccr-overhead", pre, async () => {
+    const s = getSettings();
+    const calibration = s.ccr_overhead_calibration !== "off";
+    const { pins, errors } = parseOverheadPins(s.ccr_overhead_pins);
+    const cal = new OverheadCalibrator({ flushMs: 0 });
+    const keys = cal.rows().map((row) => {
+      const k = parseOverheadKey(row.key);
+      const baseline = Number(k?.lane === "cloud" ? s.ccr_cache_baseline_cloud : s.ccr_cache_baseline_worker) || 0;
+      const eff = k ? cal.resolve(k, { baseline, calibration, pins }) : null;
+      return {
+        key: row.key, lane: k?.lane ?? null, tools: k?.tools ?? null, model: k?.model ?? null, version: k?.version ?? null,
+        learned: row.value, samples: row.samples, n: row.n, min: row.min, max: row.max, updatedAt: row.updatedAt,
+        value: eff?.perCall ?? null, source: eff?.source ?? null, matched: eff?.matched ?? null,
+      };
+    });
+    return {
+      data: {
+        calibration: calibration ? "on" : "off",
+        window: OVERHEAD_WINDOW,
+        minSamples: OVERHEAD_MIN_SAMPLES,
+        baseline: { worker: Number(s.ccr_cache_baseline_worker) || 0, cloud: Number(s.ccr_cache_baseline_cloud) || 0 },
+        pins: pins.map((p) => ({ spec: p.spec, lane: p.lane, tools: p.tools, model: p.model, value: p.value })),
+        pinErrors: errors,
+        defaults: OVERHEAD_DEFAULTS,
+        keys,
+      },
+    };
+  });
+
+  // Forget what was learned (one key with ?key=…, or everything): the keys start again from pins / defaults.
+  app.delete("/api/admin/ccr-overhead", pre, async (req) => {
+    const key = (req.query as { key?: string }).key;
+    if (key !== undefined && !parseOverheadKey(key)) bad("invalid_request", "key must be lane|tools|model|version");
+    const removed = resetOverheadCalibration(key);
+    return { data: { removed } };
+  });
+
   // ---------- settings ----------
 
   app.get("/api/admin/settings", pre, async (_req, reply) => {
@@ -1895,6 +1937,15 @@ function validateSetting(key: SettingKey, v: string): void {
     case "ccr_worker_native_tools":
       if (v !== "0" && v !== "1") bad("invalid_request", `${key} must be 0 or 1`);
       return;
+    case "ccr_overhead_calibration":
+      if (v !== "on" && v !== "off") bad("invalid_request", "ccr_overhead_calibration must be on or off");
+      return;
+    case "ccr_overhead_pins": {
+      if (v.length > 2000) bad("invalid_request", "ccr_overhead_pins is too long");
+      const { errors } = parseOverheadPins(v);
+      if (errors.length) bad("invalid_request", `ccr_overhead_pins: cannot read ${errors.slice(0, 3).map((e) => `"${e.slice(0, 60)}"`).join(", ")} — entries are lane[:tools[:model]]=tokens with lane legacy|p|tui|cloud and tools none|caller|caller-only`);
+      return;
+    }
     case "ccr_cache_baseline_worker":
     case "ccr_cache_baseline_cloud": {
       const n = Number(v);

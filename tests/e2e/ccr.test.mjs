@@ -29,6 +29,11 @@ const CC_UA = { "user-agent": "claude-cli/2.1.300 (external, cli)" };
 const messages = (key, extra = {}) => post(key, "/v1/messages", { model: "claude-sonnet-5", max_tokens: 64, messages: [{ role: "user", content: `ccr ${uniq()}` }], ...extra });
 const chat = (key, extra = {}) => post(key, "/v1/chat/completions", { model: "claude-sonnet-5", messages: [{ role: "user", content: `ccr ${uniq()}` }], ...extra });
 const tools = [{ type: "function", function: { name: "get_weather", description: "w", parameters: { type: "object", properties: { city: { type: "string" } } } } }];
+// X-54: a prompt of more than 400 estimated tokens. The mock session reports ~34.9k upstream prompt tokens whatever was
+// sent; for a one-sentence request the small-turn cap now shows only the customer's own few tokens (checked below), so
+// the checks that pin the baseline arithmetic and the X-51 cache-write presentation send a prompt that is not "small".
+const LONG = " The quick brown fox jumps over the lazy dog.".repeat(60);
+const longMsg = () => [{ role: "user", content: `ccr ${uniq()}${LONG}` }];
 const lastUsage = async (admin) => (await admin.call("GET", "/api/admin/usage?pageSize=1")).data.items[0];
 
 const admin = await session(pick("admin    login key"));
@@ -50,7 +55,7 @@ const badExec = await admin.call("POST", "/api/admin/accounts", { name: "x", pla
 check("executor=ccr rejected for non-oauth-anthropic", badExec.status === 400, badExec);
 
 // ---- Messages API, non-stream ----
-let r = await messages(demoKey);
+let r = await messages(demoKey, { messages: longMsg() });
 let j = JSON.parse(r.text);
 check("messages via ccr", r.status === 200 && j.content?.[0]?.text === "Hello from mock upstream." && j.model === "claude-sonnet-5" && j.id.startsWith("msg_") && j.id!=="msg_mock", r.text);
 // X-51 (official cache presentation, ccr_cache_write_as_input default 0): the 28000-token identity baseline comes off the
@@ -65,8 +70,18 @@ check("usage row itemises the cache write at the 1-hour price", u.costBreakdown?
 r = await messages(demoKey, { stream: true });
 check("messages stream via ccr", r.status === 200 && r.text.includes("event: message_start") && r.text.includes('"text":"Hello from "') && r.text.includes('"text":"mock upstream."') && r.text.includes("event: message_stop") && r.text.includes('"output_tokens":6'), r.text);
 
+// X-54: a one-sentence request shows the customer's own prompt, not the session's 28k identity context: the visible
+// prompt total (input + cache read + cache creation) is capped at 6 × the local estimate + 64 tokens (was 6935 here).
+r = await messages(demoKey);
+j = JSON.parse(r.text);
+{
+  const vis = (j.usage?.input_tokens ?? 0) + (j.usage?.cache_read_input_tokens ?? 0) + (j.usage?.cache_creation_input_tokens ?? 0);
+  u = await lastUsage(admin);
+  check("one-sentence request via ccr: visible prompt is the customer's own (X-54 small-turn cap)", r.status === 200 && vis >= 1 && vis <= 400 && j.usage?.output_tokens === 6 && u.inputTokens + u.cacheReadTokens + u.cacheWriteTokens === vis && u.actualCost > 0, { usage: j.usage, u });
+}
+
 // ---- Chat Completions (ccr-chat) ----
-r = await chat(demoKey);
+r = await chat(demoKey, { messages: longMsg() });
 j = JSON.parse(r.text);
 // OpenAI prompt_tokens includes cached tokens: 10 input + 5725 cache read (33725 − 28000 baseline) + 1200 cache creation.
 check("chat via ccr", r.status === 200 && j.choices?.[0]?.message?.content === "Hello from mock upstream." && j.usage?.prompt_tokens === 6935 && j.usage?.prompt_tokens_details?.cached_tokens === 5725, r.text);
