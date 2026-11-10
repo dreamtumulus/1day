@@ -44,6 +44,11 @@ export function noteTurnFacts(input: { facts?: TurnFacts; requestId: string }, t
   }
 }
 
+/** Where this turn's failure text came from, for proxy.ts's account-level decisions (ccr/failure-evidence.ts). */
+export function noteFailureSource(input: { facts?: TurnFacts }, source: NonNullable<TurnFacts["failure"]>["source"]): void {
+  if (input.facts) input.facts.failure = { source };
+}
+
 function noteRateLimit(account: AccountRow, translator: SessionTranslator, requestId: string): void {
   const info = translator.rateLimit;
   if (!info) return;
@@ -600,6 +605,7 @@ export async function runCcrWorker(input: CcrWorkerInput): Promise<Response | nu
       await reader.cancel().catch(() => {});
       capture?.finish(translator, { status: input.signal?.aborted ? 499 : 502, error: input.signal?.aborted ? "client_closed" : (err as Error).message });
       if (input.signal?.aborted) throw input.signal.reason;
+      noteFailureSource(input, "process");
       return errorResponse(502, `ccr_worker: ${(err as Error).message}`);
     }
     input.signal?.removeEventListener("abort", onAbort);
@@ -614,10 +620,12 @@ export async function runCcrWorker(input: CcrWorkerInput): Promise<Response | nu
       logResult(input.requestId, translator);
       noteTurnFacts(input, translator, account.name, "ccr-worker");
       capture?.finish(translator, { status: 502 });
+      noteFailureSource(input, translator.errorSource ?? "process");
       return errorResponse(502, `ccr_worker: ${translator.error}`);
     }
     if (!translator.finished && !translator.awaitingTools && !stalled) {
       capture?.finish(translator, { status: 502, error: "worker exited without a result" });
+      noteFailureSource(input, "process");
       return errorResponse(502, "ccr_worker: worker exited without a result");
     }
     if (translator.awaitingTools) console.log(`[ccr-worker] ${input.requestId} parked on ${translator.awaitingTools.length} native tool call(s)`);
@@ -662,11 +670,13 @@ export async function runCcrWorker(input: CcrWorkerInput): Promise<Response | nu
         if (Date.now() - startedAt > SLOW_TURN_LOG_MS) console.log(`[ccr-worker] ${input.requestId} slow turn ${Math.round((Date.now() - startedAt) / 1000)}s on ${account.name}: ${translator.eventTimeline}`);
         if (translator.error) {
           logResult(input.requestId, translator);
+          noteFailureSource(input, translator.errorSource ?? "process");
           await write(`event: error\ndata: ${JSON.stringify({ type: "error", error: { type: "api_error", message: `ccr_worker: ${translator.error}` } })}\n\n`);
         } else if (translator.awaitingTools || stalled) {
           if (translator.awaitingTools) console.log(`[ccr-worker] ${input.requestId} parked on ${translator.awaitingTools.length} native tool call(s)`);
           await write(translator.end());
         } else if (!translator.finished) {
+          noteFailureSource(input, "process");
           await write(`event: error\ndata: ${JSON.stringify({ type: "error", error: { type: "api_error", message: "ccr_worker: worker exited without a result" } })}\n\n`);
         } else {
           if (translator.cutShort) console.log(`[ccr-worker] ${input.requestId} cut short: ${translator.stopReasonOut} (session cancelled)`);
@@ -674,6 +684,7 @@ export async function runCcrWorker(input: CcrWorkerInput): Promise<Response | nu
           await write(translator.end());
         }
       } catch (err) {
+        noteFailureSource(input, "process");
         await write(`event: error\ndata: ${JSON.stringify({ type: "error", error: { type: "api_error", message: `ccr_worker: ${(err as Error).message}` } })}\n\n`).catch(() => {});
       } finally {
         input.signal?.removeEventListener("abort", onAbort);

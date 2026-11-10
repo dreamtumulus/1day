@@ -69,6 +69,15 @@ export interface TurnFacts {
   retryStatuses?: number[];
   /** Milliseconds spent inside Claude Code's retry backoff before the first upstream byte (sum of retry_delay_ms). */
   retryDelayMs?: number;
+  /**
+   * Where the failure text of this turn came from (review 2026-11-09 D), set by the executor that produced it:
+   *  - "cc_result": Claude Code's own structured `result` (is_error / error subtype) — its words about the upstream;
+   *  - "model_text": text the model produced that only looks like a Claude Code error, not confirmed by `result`;
+   *  - "http_body": an upstream HTTP error body (cloud session API);
+   *  - "process": everything else — exit codes with a quote of stderr / the TUI screen, timeouts, tunnel errors.
+   * Account-level disposal trusts the first and third outright; the others need a threshold (ccr/failure-evidence.ts).
+   */
+  failure?: { source: "cc_result" | "model_text" | "http_body" | "process" };
 }
 
 export interface ResultPayload {
