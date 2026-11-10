@@ -53,10 +53,13 @@ check("executor=ccr rejected for non-oauth-anthropic", badExec.status === 400, b
 let r = await messages(demoKey);
 let j = JSON.parse(r.text);
 check("messages via ccr", r.status === 200 && j.content?.[0]?.text === "Hello from mock upstream." && j.model === "claude-sonnet-5" && j.id.startsWith("msg_") && j.id!=="msg_mock", r.text);
-// Cloud defaults remove the 28000-token identity baseline and count cache creation as input: 10+1200 input, 5725 reads, zero writes.
-check("usage from session events (cache minus identity baseline)", j.usage?.input_tokens === 1210 && j.usage?.output_tokens === 6 && j.usage?.cache_read_input_tokens === 5725 && j.usage?.cache_creation_input_tokens === 0, j.usage);
+// X-51 (official cache presentation, ccr_cache_write_as_input default 0): the 28000-token identity baseline comes off the
+// cache read; the 1200 cache-creation tokens are reported as cache creation with the split the session events carried
+// (1-hour), no longer folded into input (was: input 1210, cache creation 0).
+check("usage from session events (cache minus identity baseline)", j.usage?.input_tokens === 10 && j.usage?.output_tokens === 6 && j.usage?.cache_read_input_tokens === 5725 && j.usage?.cache_creation_input_tokens === 1200 && j.usage?.cache_creation?.ephemeral_1h_input_tokens === 1200 && j.usage?.cache_creation?.ephemeral_5m_input_tokens === 0, j.usage);
 let u = await lastUsage(admin);
-check("served by ccr account and billed", u.accountName === "ccr-mock" && u.actualCost > 0 && u.inputTokens === 1210 && u.cacheReadTokens === 5725 && u.cacheWriteTokens === 0 && u.mode === "ccr-anthropic" && u.usageEstimated === false, u);
+check("served by ccr account and billed", u.accountName === "ccr-mock" && u.actualCost > 0 && u.inputTokens === 10 && u.cacheReadTokens === 5725 && u.cacheWriteTokens === 1200 && u.cacheWrite1hTokens === 1200 && u.cacheWrite5mTokens === 0 && u.mode === "ccr-anthropic" && u.usageEstimated === false, u);
+check("usage row itemises the cache write at the 1-hour price", u.costBreakdown?.lines?.some((l) => l.meter === "cache_write_1h" && l.tokens === 1200 && l.pricePerM > 0) && !u.costBreakdown.lines.some((l) => l.meter === "cache_write_5m"), u.costBreakdown);
 
 // ---- Messages API, stream ----
 r = await messages(demoKey, { stream: true });

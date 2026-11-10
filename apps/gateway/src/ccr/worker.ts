@@ -14,7 +14,7 @@ import { StreamDemand } from "../lifecycle.js";
 import { config } from "../config.js";
 import { TunnelRequestError, openCcWorker, type IsolationContext } from "../tunnel.js";
 import { SessionMemory, blockHash, blockTail, blockTails, diffContext, firstDiffOffset, planToolResult, planTurn, type TurnMemory, type TurnPlan } from "./session-memory.js";
-import { SessionTranslator, callerSystemText, contentText, isSuggestionRequest, messagesToBlocks, messagesToBlocksWithRoles, messagesToPrompt, toolChoiceInstruction, workerSystemPrompt } from "./translate.js";
+import { SessionTranslator, addTranslatedUsage, callerSystemText, contentText, isSuggestionRequest, messagesToBlocks, messagesToBlocksWithRoles, messagesToPrompt, toolChoiceInstruction, workerSystemPrompt } from "./translate.js";
 import { bump } from "../metrics.js";
 import { randomUUID } from "node:crypto";
 import { buildNativeTranscript, countStrippedThinking } from "./native-session.js";
@@ -393,8 +393,6 @@ export async function runCcrWorker(input: CcrWorkerInput): Promise<Response | nu
   const sendContent = turnContent ? (toolChoice ? [...turnContent, { type: "text", text: toolChoice }] : turnContent) : null;
   const sendPrompt = canonical ? " " : !sendContent && toolChoice ? `${prompt}\n\n${toolChoice}` : prompt;
   const prevUsage = plan.mode === "fresh" ? null : (mem?.usage ?? null);
-  const addUsage = (a: NonNullable<typeof prevUsage> | null, b: NonNullable<typeof prevUsage>) =>
-    a ? { input_tokens: a.input_tokens + b.input_tokens, output_tokens: a.output_tokens + b.output_tokens, cache_read_input_tokens: a.cache_read_input_tokens + b.cache_read_input_tokens, cache_creation_input_tokens: a.cache_creation_input_tokens + b.cache_creation_input_tokens } : b;
   const rememberTurn = (translator: SessionTranslator): void => {
     if (!reuseKey) return;
     if (plan.mode !== "fresh" && translator.freshProcess) {
@@ -426,7 +424,7 @@ export async function runCcrWorker(input: CcrWorkerInput): Promise<Response | nu
         hashes: plan.hashes,
         assistantFold: fold,
         turn: plan.mode === "fresh" ? 0 : (plan.expectedTurn ?? 0),
-        usage: addUsage(prevUsage, translator.rawUsage),
+        usage: addTranslatedUsage(prevUsage, translator.rawUsage),
         pendingCalls: awaiting,
         messageIds,
         tails: blockTails(persistentBlocks),
@@ -446,7 +444,7 @@ export async function runCcrWorker(input: CcrWorkerInput): Promise<Response | nu
     nativeTools,
     thinking: thinkingWanted,
     cacheBaseline: Number(getSetting("ccr_cache_baseline_worker")),
-    cacheWriteAsInput: getSetting("ccr_cache_write_as_input") !== "0",
+    cacheWriteAsInput: getSetting("ccr_cache_write_as_input") === "1",
     // Continued / resumed turn: bill only the increment over what the process already reported.
     usageBaseline: plan.mode === "fresh" ? null : (mem?.usage ?? null),
     // Messages earlier requests already delivered: their whole rows, told late by the TUI shim, are not a new answer.

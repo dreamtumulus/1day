@@ -91,7 +91,7 @@ test("stream_event partials stream as deltas; assistant + result close without d
   assert.equal(events[5].delta.stop_reason, "end_turn");
   const msg = t.message();
   assert.deepEqual(msg.content, [{ type: "text", text: "Hello world" }]);
-  assert.deepEqual(msg.usage, { input_tokens: 10, output_tokens: 6, cache_read_input_tokens: 4, cache_creation_input_tokens: 0 }, "no baseline configured: upstream cache passes through (§7.1)");
+  assert.deepEqual(msg.usage, { input_tokens: 10, output_tokens: 6, cache_read_input_tokens: 4, cache_creation_input_tokens: 0, cache_creation: { ephemeral_5m_input_tokens: 0, ephemeral_1h_input_tokens: 0 } }, "no baseline configured: upstream cache passes through (§7.1)");
   assert.equal(events[5].usage.cache_read_input_tokens, 4, "message_delta carries the same cache figures");
 });
 
@@ -270,12 +270,12 @@ test("usageOut: cache writes beyond the baseline are billed as input when cacheW
     t.push({ type: "result", subtype: "success", result: "ok", modelUsage: { m: { inputTokens: 2, outputTokens: 10, cacheReadInputTokens: 900, cacheCreationInputTokens: 5000 } } });
     return t.usageOut();
   };
-  assert.deepEqual(mk({ cacheWriteAsInput: true }), { input_tokens: 5002, output_tokens: 10, cache_read_input_tokens: 200, cache_creation_input_tokens: 0 });
-  assert.deepEqual(mk({ cacheWriteAsInput: false }), { input_tokens: 2, output_tokens: 10, cache_read_input_tokens: 200, cache_creation_input_tokens: 5000 });
+  assert.deepEqual(mk({ cacheWriteAsInput: true }), { input_tokens: 5002, output_tokens: 10, cache_read_input_tokens: 200, cache_creation_input_tokens: 0, cache_creation: { ephemeral_5m_input_tokens: 0, ephemeral_1h_input_tokens: 0 } });
+  assert.deepEqual(mk({ cacheWriteAsInput: false }), { input_tokens: 2, output_tokens: 10, cache_read_input_tokens: 200, cache_creation_input_tokens: 5000, cache_creation: { ephemeral_5m_input_tokens: 5000, ephemeral_1h_input_tokens: 0 } });
   // Baseline larger than the read: leftover comes off the write first, then the rest is input.
   const t2 = new SessionTranslator({ model: "m", simulateTools: false, cacheBaseline: 700, cacheWriteAsInput: true });
   t2.push({ type: "result", subtype: "success", result: "ok", modelUsage: { m: { inputTokens: 2, outputTokens: 1, cacheReadInputTokens: 100, cacheCreationInputTokens: 1000 } } });
-  assert.deepEqual(t2.usageOut(), { input_tokens: 402, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 });
+  assert.deepEqual(t2.usageOut(), { input_tokens: 402, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, cache_creation: { ephemeral_5m_input_tokens: 0, ephemeral_1h_input_tokens: 0 } });
 });
 
 test("messagesToBlocks alwaysBlocks: a bare single message still becomes a [user] block (persistent turn 1 shape)", async () => {
@@ -290,12 +290,12 @@ test("usageBaseline: a continued turn bills only the increment over the process 
   const result = { type: "result", subtype: "success", result: "ok", modelUsage: { m: { inputTokens: 4, outputTokens: 19, cacheReadInputTokens: 6531, cacheCreationInputTokens: 5457 } } };
   const cont = new SessionTranslator({ model: "m", simulateTools: false, cacheBaseline: 0, usageBaseline: baseline });
   cont.push(result);
-  assert.deepEqual(cont.usageOut(), { input_tokens: 2, output_tokens: 15, cache_read_input_tokens: 4572, cache_creation_input_tokens: 3352 });
-  assert.deepEqual(cont.cumulativeUsage, { input_tokens: 4, output_tokens: 19, cache_read_input_tokens: 6531, cache_creation_input_tokens: 5457 });
+  assert.deepEqual(cont.usageOut(), { input_tokens: 2, output_tokens: 15, cache_read_input_tokens: 4572, cache_creation_input_tokens: 3352, cache_creation: { ephemeral_5m_input_tokens: 3352, ephemeral_1h_input_tokens: 0 } });
+  assert.deepEqual(cont.cumulativeUsage, { input_tokens: 4, output_tokens: 19, cache_read_input_tokens: 6531, cache_creation_input_tokens: 5457, cache_creation: { ephemeral_5m_input_tokens: 5457, ephemeral_1h_input_tokens: 0 } });
   const fresh = new SessionTranslator({ model: "m", simulateTools: false, cacheBaseline: 0, usageBaseline: baseline });
   fresh.push({ type: "system", subtype: "init" });
   fresh.push(result);
-  assert.deepEqual(fresh.usageOut(), { input_tokens: 4, output_tokens: 19, cache_read_input_tokens: 6531, cache_creation_input_tokens: 5457 }, "init = new process, totals are this turn's");
+  assert.deepEqual(fresh.usageOut(), { input_tokens: 4, output_tokens: 19, cache_read_input_tokens: 6531, cache_creation_input_tokens: 5457, cache_creation: { ephemeral_5m_input_tokens: 5457, ephemeral_1h_input_tokens: 0 } }, "init = new process, totals are this turn's");
 });
 
 test("native tools: mcp__caller__ tool_use streams as the client's tool_use; awaitingTools once the parked call arrives", async () => {
@@ -416,7 +416,7 @@ test("max_tokens: upstream stop_reason max_tokens ends the message before the re
   assert.equal(m.stop_reason, "max_tokens");
   assert.equal(m.stop_sequence, null);
   assert.deepEqual(m.content, [{ type: "text", text: "Rivers are" }]);
-  assert.deepEqual(m.usage, { input_tokens: 40, output_tokens: 50, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 });
+  assert.deepEqual(m.usage, { input_tokens: 40, output_tokens: 50, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, cache_creation: { ephemeral_5m_input_tokens: 0, ephemeral_1h_input_tokens: 0 } });
   assert.equal(parseSse(out).find((e) => e.type === "message_delta").delta.stop_reason, "max_tokens");
   // Non-stream process (no partials): the assistant message carries the stop reason.
   const a = new SessionTranslator({ model: "m", simulateTools: false });
@@ -438,7 +438,7 @@ test("message_start carries the client-visible input usage (upstream message_sta
   out += t.push(se({ type: "content_block_start", index: 0, content_block: { type: "text", text: "" } }));
   out += t.push(se({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "hi" } }));
   const start = parseSse(out).find((e) => e.type === "message_start");
-  assert.deepEqual(start.message.usage, { input_tokens: 72, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 });
+  assert.deepEqual(start.message.usage, { input_tokens: 72, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, cache_creation: { ephemeral_5m_input_tokens: 0, ephemeral_1h_input_tokens: 0 } });
 });
 
 test("usageOut: the part of the baseline no cache field absorbed comes off plain input (Haiku: Claude Code prefix below the cache minimum)", () => {
@@ -448,11 +448,11 @@ test("usageOut: the part of the baseline no cache field absorbed comes off plain
     return t.usageOut();
   };
   // Haiku 4.5: nothing cached, the ~600-token prefix is metered as input → not billed to the client.
-  assert.deepEqual(mk({ inputTokens: 606, outputTokens: 4, cacheReadInputTokens: 0, cacheCreationInputTokens: 0 }), { input_tokens: 0, output_tokens: 4, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 });
+  assert.deepEqual(mk({ inputTokens: 606, outputTokens: 4, cacheReadInputTokens: 0, cacheCreationInputTokens: 0 }), { input_tokens: 0, output_tokens: 4, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, cache_creation: { ephemeral_5m_input_tokens: 0, ephemeral_1h_input_tokens: 0 } });
   // Sonnet: prefix cached (creation 770) → unchanged behaviour: 2 + (770 - 700).
-  assert.deepEqual(mk({ inputTokens: 2, outputTokens: 4, cacheReadInputTokens: 0, cacheCreationInputTokens: 770 }), { input_tokens: 72, output_tokens: 4, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 });
+  assert.deepEqual(mk({ inputTokens: 2, outputTokens: 4, cacheReadInputTokens: 0, cacheCreationInputTokens: 770 }), { input_tokens: 72, output_tokens: 4, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, cache_creation: { ephemeral_5m_input_tokens: 0, ephemeral_1h_input_tokens: 0 } });
   // Continued turn: the read covers the baseline, input is the client's own.
-  assert.deepEqual(mk({ inputTokens: 5, outputTokens: 4, cacheReadInputTokens: 3000, cacheCreationInputTokens: 100 }), { input_tokens: 105, output_tokens: 4, cache_read_input_tokens: 2300, cache_creation_input_tokens: 0 });
+  assert.deepEqual(mk({ inputTokens: 5, outputTokens: 4, cacheReadInputTokens: 3000, cacheCreationInputTokens: 100 }), { input_tokens: 105, output_tokens: 4, cache_read_input_tokens: 2300, cache_creation_input_tokens: 0, cache_creation: { ephemeral_5m_input_tokens: 0, ephemeral_1h_input_tokens: 0 } });
 });
 
 test("tool_choice: forced any/tool becomes a turn instruction (native and fence wording); auto/none/unknown → null; worker accepts it", () => {
@@ -770,7 +770,7 @@ test("whole rows of a message the conversation already delivered add nothing; on
   for (const b of [{ type: "thinking", thinking: "", signature: "sig" }, { type: "text", text: "收到。" }, { type: "tool_use", id: "toolu_1", name: "mcp__caller__Read", input: { file_path: "/a" } }]) {
     known.push({ type: "assistant", message: { id: "msg_prev", role: "assistant", content: [b], usage } });
   }
-  assert.deepEqual(known.rawUsage, { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }, "a known message's rows bill nothing");
+  assert.deepEqual(known.rawUsage, { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, cache_creation: { ephemeral_5m_input_tokens: 0, ephemeral_1h_input_tokens: 0 } }, "a known message's rows bill nothing");
   assert.equal(known.message().content.length, 0, "a known message's blocks are not replayed");
   assert.equal(known.toolUseStopAt, null, "no tool_use stop from a replayed row");
   assert.ok(known.deliveredMessageIds.includes("msg_prev"));

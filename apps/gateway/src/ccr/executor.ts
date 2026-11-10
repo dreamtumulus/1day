@@ -147,7 +147,7 @@ export async function runCcr(input: CcrRunInput): Promise<Response> {
     model: input.clientModel,
     simulateTools: Array.isArray(body.tools) && body.tools.length > 0,
     cacheBaseline: Number(getSetting("ccr_cache_baseline_cloud")),
-    cacheWriteAsInput: getSetting("ccr_cache_write_as_input") !== "0",
+    cacheWriteAsInput: getSetting("ccr_cache_write_as_input") === "1",
   });
 
   // §5.3: sticky-keyed requests reuse a pooled warm session; stateless ones

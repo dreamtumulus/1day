@@ -450,11 +450,52 @@ export function buildSessionEvents(sessionId: string, model: string, prompt: str
 // Response side
 // ---------------------------------------------------------------------
 
+/** Official `usage.cache_creation`: the cache-creation total split by TTL. */
+export interface CacheCreationSplit {
+  ephemeral_5m_input_tokens: number;
+  ephemeral_1h_input_tokens: number;
+}
+
 export interface TranslatedUsage {
   input_tokens: number;
   output_tokens: number;
   cache_read_input_tokens: number;
+  /** Total cache creation; `cache_creation` is its split and always adds up to it. */
   cache_creation_input_tokens: number;
+  /** Absent only on values remembered by a gateway older than the split (session memory): read as "all 5-minute". */
+  cache_creation?: CacheCreationSplit;
+}
+
+const split0: CacheCreationSplit = { ephemeral_5m_input_tokens: 0, ephemeral_1h_input_tokens: 0 };
+const numOr0 = (v: unknown): number => (typeof v === "number" && Number.isFinite(v) && v > 0 ? v : 0);
+
+/**
+ * The 5m / 1h split of a usage object, forced to add up to its `cache_creation_input_tokens`: what the nested
+ * object does not cover (or everything, when the upstream gave only the total — `result.modelUsage` has no split)
+ * counts as 5-minute, the official default TTL; a split larger than the total keeps the 1-hour part first.
+ */
+export function cacheCreationSplit(u: { cache_creation_input_tokens?: unknown; cache_creation?: unknown } | null | undefined): CacheCreationSplit {
+  const nested = u?.cache_creation && typeof u.cache_creation === "object" ? (u.cache_creation as Record<string, unknown>) : null;
+  const m5 = numOr0(nested?.ephemeral_5m_input_tokens), h1 = numOr0(nested?.ephemeral_1h_input_tokens);
+  const total = u?.cache_creation_input_tokens === undefined && nested ? m5 + h1 : numOr0(u?.cache_creation_input_tokens);
+  const hour = Math.min(h1, total);
+  return { ephemeral_5m_input_tokens: total - hour, ephemeral_1h_input_tokens: hour };
+}
+
+/** Field-wise sum of two usage values (parked-turn accounting, docs/worker-sessions.md). */
+export function addTranslatedUsage(a: TranslatedUsage | null | undefined, b: TranslatedUsage): TranslatedUsage {
+  if (!a) return b;
+  const sa = cacheCreationSplit(a), sb = cacheCreationSplit(b);
+  return {
+    input_tokens: a.input_tokens + b.input_tokens,
+    output_tokens: a.output_tokens + b.output_tokens,
+    cache_read_input_tokens: a.cache_read_input_tokens + b.cache_read_input_tokens,
+    cache_creation_input_tokens: a.cache_creation_input_tokens + b.cache_creation_input_tokens,
+    cache_creation: {
+      ephemeral_5m_input_tokens: sa.ephemeral_5m_input_tokens + sb.ephemeral_5m_input_tokens,
+      ephemeral_1h_input_tokens: sa.ephemeral_1h_input_tokens + sb.ephemeral_1h_input_tokens,
+    },
+  };
 }
 
 export interface TranslatorOptions {
@@ -467,14 +508,15 @@ export interface TranslatorOptions {
    * Code system prompt + tool set that the worker/cloud session prepends and that
    * the upstream meter reports as cache_read (steady state) or cache_creation
    * (first use). Subtracted once from the client-visible cache fields, read first
-   * then creation, clamped at 0 (docs/ccr-supply.md §7.1). 0 = bill upstream cache in full.
+   * then creation (its 1-hour bucket before the 5-minute one: Claude Code caches its own
+   * prefix with ttl 1h), clamped at 0 (docs/ccr-supply.md §7.1). 0 = bill upstream cache in full.
    */
   cacheBaseline?: number;
   /**
-   * Bill cache writes beyond the baseline as plain input (settings
-   * `ccr_cache_write_as_input`, default on): this path's caching is imposed by
-   * Claude Code, not requested by the client, so the 1.25× write premium is not
-   * theirs to pay; reads beyond the baseline stay reads (0.1×) in their favour.
+   * Escape hatch (settings `ccr_cache_write_as_input` = "1"; default "0" since X-51): report cache
+   * writes beyond the baseline as plain input (1.0×) with cache_creation 0, the pre-X-51 behaviour.
+   * Off (default): official presentation — cache_creation_input_tokens plus the 5m / 1h split,
+   * billed at the write prices. Reads beyond the baseline are reads either way.
    */
   cacheWriteAsInput?: boolean;
   /**
@@ -595,7 +637,7 @@ export class SessionTranslator {
   private blockIndex = -1; // index of the currently open text block (-1 = none)
   private blockText = "";
   private readonly blocks: AnthropicBlock[] = [];
-  private usage: TranslatedUsage = { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 };
+  private usage: TranslatedUsage = { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, cache_creation: { ephemeral_5m_input_tokens: 0, ephemeral_1h_input_tokens: 0 } };
   /** Authoritative upstream meter (result.modelUsage, camelCase incl. costUSD) — platform ledger, never client-billed (§7.1). */
   private upstreamModelUsage: Json | null = null;
   /** Last `rate_limit_event.rate_limit_info` of the turn (Claude Code 2.1.3xx emits one per API call): the worker path's only live window signal. */
@@ -769,29 +811,53 @@ export class SessionTranslator {
     if (!u || typeof u !== "object") return;
     if (this.resultUsageSeen && !fromResult) return; // result usage is authoritative
     const n = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : 0);
+    let split = cacheCreationSplit(u);
     if (fromResult) {
+      // A result that knows only the total (`modelUsage`, cloud sessions) must not erase a split the turn's own
+      // stream events reported: the 1-hour tokens seen in them (on top of the remembered process total) stand.
+      const nested = u.cache_creation && typeof u.cache_creation === "object";
+      const seen1h = this.resultUsageSeen ? 0 : cacheCreationSplit(this.usage).ephemeral_1h_input_tokens;
+      if (!nested && seen1h > 0) {
+        const base1h = this.usageBaseline?.cache_creation?.ephemeral_1h_input_tokens ?? 0;
+        split = cacheCreationSplit({ cache_creation_input_tokens: u.cache_creation_input_tokens, cache_creation: { ephemeral_5m_input_tokens: 0, ephemeral_1h_input_tokens: base1h + seen1h } });
+      }
       // result.usage covers the whole process run (cumulative across turns of a persistent session).
       this.cumulative = {
         input_tokens: n(u.input_tokens),
         output_tokens: n(u.output_tokens),
         cache_read_input_tokens: n(u.cache_read_input_tokens),
-        cache_creation_input_tokens: n(u.cache_creation_input_tokens),
+        cache_creation_input_tokens: split.ephemeral_5m_input_tokens + split.ephemeral_1h_input_tokens,
+        cache_creation: split,
       };
       const b = this.usageBaseline;
-      const inc = (k: keyof TranslatedUsage) => Math.max(0, this.cumulative![k] - (b ? b[k] : 0));
+      const inc = (k: "input_tokens" | "output_tokens" | "cache_read_input_tokens" | "cache_creation_input_tokens") => Math.max(0, this.cumulative![k] - (b ? b[k] : 0));
+      const creation = inc("cache_creation_input_tokens");
+      // The increment's split: per-bucket increments, forced to add up to the total increment. A baseline remembered
+      // without a split (a value from before X-51) cannot say which bucket it was: the increment then gets the
+      // smallest 1-hour share the process totals allow (the customer's favour), the rest is 5-minute.
+      const bs = b ? (b.cache_creation ? cacheCreationSplit(b) : null) : split0;
+      const inc1h = bs
+        ? Math.max(0, split.ephemeral_1h_input_tokens - bs.ephemeral_1h_input_tokens)
+        : Math.max(0, creation - split.ephemeral_5m_input_tokens);
       this.usage = {
         input_tokens: inc("input_tokens"),
         output_tokens: inc("output_tokens"),
         cache_read_input_tokens: inc("cache_read_input_tokens"),
-        cache_creation_input_tokens: inc("cache_creation_input_tokens"),
+        cache_creation_input_tokens: creation,
+        cache_creation: cacheCreationSplit({ cache_creation_input_tokens: creation, cache_creation: { ephemeral_5m_input_tokens: 0, ephemeral_1h_input_tokens: inc1h } }),
       };
       this.resultUsageSeen = true;
     } else {
       // Per-turn assistant usage: sum across turns until a result arrives.
+      const prev = cacheCreationSplit(this.usage);
       this.usage.input_tokens += n(u.input_tokens);
       this.usage.output_tokens += n(u.output_tokens);
       this.usage.cache_read_input_tokens += n(u.cache_read_input_tokens);
-      this.usage.cache_creation_input_tokens += n(u.cache_creation_input_tokens);
+      this.usage.cache_creation_input_tokens += split.ephemeral_5m_input_tokens + split.ephemeral_1h_input_tokens;
+      this.usage.cache_creation = {
+        ephemeral_5m_input_tokens: prev.ephemeral_5m_input_tokens + split.ephemeral_5m_input_tokens,
+        ephemeral_1h_input_tokens: prev.ephemeral_1h_input_tokens + split.ephemeral_1h_input_tokens,
+      };
     }
     this.usageSeen = true;
   }
@@ -817,7 +883,7 @@ export class SessionTranslator {
         content: [],
         stop_reason: null,
         stop_sequence: null,
-        usage: { input_tokens: u.input_tokens, output_tokens: 0, cache_read_input_tokens: u.cache_read_input_tokens, cache_creation_input_tokens: u.cache_creation_input_tokens },
+        usage: { input_tokens: u.input_tokens, output_tokens: 0, cache_read_input_tokens: u.cache_read_input_tokens, cache_creation_input_tokens: u.cache_creation_input_tokens, cache_creation: u.cache_creation },
       },
     });
   }
@@ -1250,6 +1316,7 @@ export class SessionTranslator {
               output_tokens: first.outputTokens,
               cache_read_input_tokens: first.cacheReadInputTokens,
               cache_creation_input_tokens: first.cacheCreationInputTokens,
+              // modelUsage carries no 5m / 1h split: cacheCreationSplit() counts the total as 5-minute.
             };
           }
         }
@@ -1330,32 +1397,44 @@ export class SessionTranslator {
    * upstream) + output_tokens, plus the client's own cache usage = upstream
    * cache minus the identity-context baseline of this execution mode. The
    * baseline is taken from cache_read first (steady state: the identity prefix
-   * is a cache hit), the remainder from cache_creation (first use), clamped at 0.
+   * is a cache hit), the remainder from cache_creation (first use) — its 1-hour
+   * bucket first, then the 5-minute one (Claude Code marks its own system prompt
+   * and tools `ttl: "1h"`, docs/evidence/cc-2.1.3xx) — clamped at 0.
+   *
+   * What is left of cache_creation is reported the official way (X-51): the total
+   * in cache_creation_input_tokens and its split in `cache_creation`. With the
+   * escape hatch `cacheWriteAsInput` it is folded into input_tokens instead.
    */
-  usageOut(): TranslatedUsage {
+  usageOut(): TranslatedUsage & { cache_creation: CacheCreationSplit } {
     const read = this.usage.cache_read_input_tokens;
-    const creation = this.usage.cache_creation_input_tokens;
+    const split = cacheCreationSplit(this.usage);
     const readOut = Math.max(0, read - this.cacheBaseline);
     let leftover = Math.max(0, this.cacheBaseline - read);
-    const creationOut = Math.max(0, creation - leftover);
-    leftover = Math.max(0, leftover - creation);
+    const from1h = Math.min(split.ephemeral_1h_input_tokens, leftover);
+    leftover -= from1h;
+    const from5m = Math.min(split.ephemeral_5m_input_tokens, leftover);
+    leftover -= from5m;
+    const out1h = split.ephemeral_1h_input_tokens - from1h;
+    const out5m = split.ephemeral_5m_input_tokens - from5m;
     // Below the model's cache minimum (Haiku: 2048 tokens) Claude Code's prefix is not cached at all
     // and the upstream meter reports it as plain input: whatever part of the baseline no cache field
     // absorbed comes off the input count (2026-10-17: a 15-token prompt billed 606 on Haiku).
     const inputOut = Math.max(0, this.usage.input_tokens - leftover);
     if (this.cacheWriteAsInput) {
       return {
-        input_tokens: inputOut + creationOut,
+        input_tokens: inputOut + out5m + out1h,
         output_tokens: this.usage.output_tokens,
         cache_read_input_tokens: readOut,
         cache_creation_input_tokens: 0,
+        cache_creation: { ephemeral_5m_input_tokens: 0, ephemeral_1h_input_tokens: 0 },
       };
     }
     return {
       input_tokens: inputOut,
       output_tokens: this.usage.output_tokens,
       cache_read_input_tokens: readOut,
-      cache_creation_input_tokens: creationOut,
+      cache_creation_input_tokens: out5m + out1h,
+      cache_creation: { ephemeral_5m_input_tokens: out5m, ephemeral_1h_input_tokens: out1h },
     };
   }
 
@@ -1439,7 +1518,8 @@ export class SessionTranslator {
     const u = this.usageOut();
     out += sseEvent("message_delta", {
       delta: { stop_reason: this.stopReason, stop_sequence: this.stopSequence, stop_details: this.stopDetails },
-      usage: { output_tokens: u.output_tokens, input_tokens: u.input_tokens, cache_read_input_tokens: u.cache_read_input_tokens, cache_creation_input_tokens: u.cache_creation_input_tokens },
+      // The worker's authoritative usage arrives with `result`, after message_start went out: the final split rides here.
+      usage: { output_tokens: u.output_tokens, input_tokens: u.input_tokens, cache_read_input_tokens: u.cache_read_input_tokens, cache_creation_input_tokens: u.cache_creation_input_tokens, cache_creation: u.cache_creation },
     });
     out += sseEvent("message_stop", {});
     this.done = true;

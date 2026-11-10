@@ -123,7 +123,13 @@ const ANTHROPIC_TO_OPENAI_FINISH: Record<string, string> = {
   refusal: "content_filter",
 };
 
-function openaiUsageFromAnthropic(u: Json | undefined): Json {
+/**
+ * Anthropic usage → OpenAI chat usage. OpenAI has no cache-write field, so nothing non-standard is added:
+ * prompt_tokens = input + cache read + cache creation (every prompt token that is billed, at whatever price),
+ * prompt_tokens_details.cached_tokens = cache read only. Cache creation is therefore inside prompt_tokens and
+ * outside cached_tokens; its 5m / 1h split is visible on the Anthropic protocol and in the console only.
+ */
+export function openaiUsageFromAnthropic(u: Json | undefined): Json {
   const input = Number(u?.input_tokens ?? 0);
   const cacheRead = Number(u?.cache_read_input_tokens ?? 0);
   const cacheWrite = Number(u?.cache_creation_input_tokens ?? 0);
@@ -352,7 +358,9 @@ function anthropicUsageFromOpenai(u: Json | undefined): Json {
     input_tokens: Math.max(prompt - cached, 0),
     output_tokens: Number(u?.completion_tokens ?? 0),
     cache_read_input_tokens: cached,
+    // OpenAI upstreams report no cache writes; the fields are present with the official shape.
     cache_creation_input_tokens: 0,
+    cache_creation: { ephemeral_5m_input_tokens: 0, ephemeral_1h_input_tokens: 0 },
   };
 }
 

@@ -5,12 +5,30 @@ type Json = Record<string, any>;
 // Usage extraction normalizes every wire format to Anthropic semantics:
 // input_tokens excludes cache reads, which are billed separately.
 
+/**
+ * Split a cache-creation total into its 5-minute / 1-hour buckets (official `usage.cache_creation`).
+ * `total` undefined = the wire carried only the nested object. The buckets always add up to the total:
+ * a total without a split (or with a split that covers less) goes to the 5-minute tier — the official
+ * default TTL and the cheaper price; a split larger than the total is cut down, 1-hour first kept.
+ */
+export function splitCacheCreation(total: number | undefined, m5: number | undefined, h1: number | undefined): { total: number; m5: number; h1: number } {
+  const a = m5 ?? 0, b = h1 ?? 0;
+  const t = total ?? a + b;
+  const hour = Math.min(b, t);
+  return { total: t, m5: t - hour, h1: hour };
+}
+
 /** Accumulates usage across a response or a stream of events. */
 export class UsageAccumulator {
   input = 0;
   output = 0;
   cacheRead = 0;
+  /** Total cache creation (`cache_creation_input_tokens`). */
   cacheWrite = 0;
+  /** Nested `cache_creation.ephemeral_5m_input_tokens` / `ephemeral_1h_input_tokens`, when the wire carried them. */
+  private cacheWrite5m: number | undefined;
+  private cacheWrite1h: number | undefined;
+  private cacheWriteTotalSeen = false;
   seen = false;
   text = ""; // generated text, for estimation when upstream reports nothing
   actualModel: string | null = null;
@@ -38,7 +56,21 @@ export class UsageAccumulator {
       ["cache_read_input_tokens", "cacheRead"], ["cache_creation_input_tokens", "cacheWrite"]] as const;
     for (const [wire, field] of fields) {
       const n = this.count(u[wire]);
-      if (n !== undefined) { this[field] = n; this.seen = true; }
+      if (n !== undefined) {
+        this[field] = n; this.seen = true;
+        if (field === "cacheWrite") this.cacheWriteTotalSeen = true;
+      }
+    }
+    // Official split of the total by TTL. message_start carries it; a later message_delta that repeats only the
+    // total keeps the split seen so far (reconciled against the final total in finalize()).
+    const split = u.cache_creation;
+    if (split && typeof split === "object" && !Array.isArray(split)) {
+      const m5 = this.count(split.ephemeral_5m_input_tokens), h1 = this.count(split.ephemeral_1h_input_tokens);
+      if (m5 !== undefined || h1 !== undefined) {
+        this.cacheWrite5m = m5 ?? 0;
+        this.cacheWrite1h = h1 ?? 0;
+        this.seen = true;
+      }
     }
   }
 
@@ -117,8 +149,9 @@ export class UsageAccumulator {
    * actually forwarded, and the row is flagged estimated. Never lowered: a reported count above the estimate stands.
    */
   finalize(requestBody: unknown, opts: { partial?: boolean } = {}): { usage: TokenUsage; estimated: boolean } {
+    const w = splitCacheCreation(this.cacheWriteTotalSeen ? this.cacheWrite : undefined, this.cacheWrite5m, this.cacheWrite1h);
     const usage = { input_tokens: this.input, output_tokens: this.output,
-      cache_read_tokens: this.cacheRead, cache_write_tokens: this.cacheWrite };
+      cache_read_tokens: this.cacheRead, cache_write_tokens: w.total, cache_write_5m_tokens: w.m5, cache_write_1h_tokens: w.h1 };
     try { validateTokenUsage(usage); } catch { this.invalid = true; }
     if (this.seen && !this.invalid) {
       if (opts.partial) {
@@ -133,6 +166,8 @@ export class UsageAccumulator {
         output_tokens: estimateTokens(this.text),
         cache_read_tokens: 0,
         cache_write_tokens: 0,
+        cache_write_5m_tokens: 0,
+        cache_write_1h_tokens: 0,
       },
       estimated: true,
     };
