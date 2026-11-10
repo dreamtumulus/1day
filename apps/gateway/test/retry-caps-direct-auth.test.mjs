@@ -1,4 +1,5 @@
-// Review 2026-11-09, items A (retry caps on the organisation-scoped path) and C (direct-lane 401 / 403 handling).
+// Review 2026-11-09, items A (retry caps on the organisation-scoped path), C (direct-lane 401 / 403 handling) and,
+// at the end, B as the gateway sees it (a client disconnect during a token refresh).
 // The only "upstream" is the fake console tunnel below (a local HTTP server): nothing leaves the machine.
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -26,6 +27,7 @@ const attempts = [];      // upstream model calls, in order: { accountId, isolat
 const tokenCalls = [];    // token-endpoint calls (forced refresh), by account
 const behaviors = new Map();
 let nextSession = 0;
+let tokenDelayMs = 0;
 const ok = (accountId, model) => ({ status: 200, body: JSON.stringify({ id: "msg_1", type: "message", role: "assistant", model, content: [{ type: "text", text: `reply:${accountId}` }], stop_reason: "end_turn", usage: { input_tokens: 1, output_tokens: 1 } }) });
 const errorBody = (type, message) => JSON.stringify({ type: "error", error: { type, message } });
 const consoleServer = http.createServer(async (req, res) => {
@@ -50,6 +52,7 @@ const consoleServer = http.createServer(async (req, res) => {
     let out;
     if (new URL(spec.url).pathname.endsWith("/oauth/token")) {
       tokenCalls.push(session.accountId);
+      if (tokenDelayMs) await new Promise((r) => setTimeout(r, tokenDelayMs));
       out = { status: 200, body: JSON.stringify({ access_token: `at-${tokenCalls.length}`, refresh_token: `rt-${tokenCalls.length}`, expires_in: 28800 }) };
     } else {
       const request = raw ? JSON.parse(raw) : {};
@@ -345,5 +348,41 @@ for (const c of [
     assert.equal(a.status, "active");
     assert.equal(a.t, null, "not even cooled: a data problem is not a failure of the upstream");
     assert.equal(metrics.counterValue(`credential_unusable_total{reason=${c.reason}}`), 4);
+  });
+}
+
+// ---------- B: the request's abort signal never reaches the token endpoint ----------
+
+for (const c of [
+  { name: "client disconnects while the token endpoint is answering", abortAfterMs: 60 },
+  { name: "client disconnects the moment the refresh starts", abortAfterMs: 0 },
+]) {
+  test(`B: ${c.name} — the caller's wait ends, the refresh completes and the rotated pair is stored`, async () => {
+    const { freshCredential } = await import("../dist/upstream.js");
+    const cred = { accessToken: "at-old", refreshToken: "rt-old", orgUuid: TEAMS[0], expiresAt: new Date(Date.now() + 30_000).toISOString() };
+    const f = seed([{ team: 0, cred }]);
+    const row = core.one("SELECT * FROM accounts WHERE id=?", f.ids[0]);
+    const stored = () => core.readCredential(core.one("SELECT credential_enc FROM accounts WHERE id=?", f.ids[0]));
+    const tokens = tokenCalls.length;
+    tokenDelayMs = 250;
+    try {
+      const client = new AbortController();
+      const pending = freshCredential(row, false, undefined, client.signal);
+      const rejected = assert.rejects(pending);
+      await new Promise((r) => setTimeout(r, c.abortAfterMs));
+      const t0 = Date.now();
+      client.abort();
+      await rejected;
+      assert.ok(Date.now() - t0 < 150, "the request does not wait for the refresh once its client is gone");
+      assert.equal(stored().refreshToken, "rt-old", "the answer is not in yet");
+      await new Promise((r) => setTimeout(r, 700));
+      assert.equal(tokenCalls.length, tokens + 1, "exactly one token-endpoint call, and it was not cut off");
+      assert.match(stored().refreshToken, /^rt-\d+$/, "the rotated refresh token was persisted after the client left");
+      assert.notEqual(stored().accessToken, "at-old");
+      // the next request finds a fresh credential: the old refresh token is never sent again
+      const again = await freshCredential(core.one("SELECT * FROM accounts WHERE id=?", f.ids[0]), false, undefined, undefined);
+      assert.equal(again.refreshToken, stored().refreshToken);
+      assert.equal(tokenCalls.length, tokens + 1);
+    } finally { tokenDelayMs = 0; }
   });
 }
