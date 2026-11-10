@@ -89,13 +89,13 @@ if (process.getuid?.() === 0 && fs.readFileSync("/etc/passwd", "utf8").includes(
       content: [{ type: "text", text: '[TOOL]lookup {"q":"old-team-secret"}' }] }));
     await waitFor(() => data(s.frames, "tools").some((x) => x.type === "1dayapi_tool_call"), "tool parked");
     const init = data(s.frames, "tools").find((x) => x.subtype === "init");
-    const mcpUrl = JSON.parse(fs.readFileSync(path.join(init.cwd, "mcp-config.json"))).mcpServers.caller.url;
+    const mcpUrl = JSON.parse(fs.readFileSync(path.join(init.home, "mcp-config.json"))).mcpServers.caller.url;
     s.manager.handleClose({ type: "cc_worker.close", sessionId: "tools", reasonCode: "gateway_closed" });
     assert.equal(s.manager.stats().pool.awaitingTools, 1, "ordinary close deliberately parks the old process");
     s.manager.resetConversation(context());
     assert.equal(s.manager.stats().pool.live, 0);
     assert.equal(s.manager.stats().pool.awaitingTools, 0);
-    await waitFor(() => !fs.existsSync(init.cwd), "old scratch removed");
+    await waitFor(() => !fs.existsSync(init.home), "old scratch removed");
     const deadTool = await fetch(mcpUrl, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 9, method: "tools/list" }) });
     assert.equal(deadTool.status, 404, "old MCP capability is revoked");
     s.manager.handleOpen(open("late"));
