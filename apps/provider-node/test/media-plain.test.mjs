@@ -13,7 +13,8 @@ assert.equal(needsPlainProcess("a string"), false);
 
 // wiring: the spawn decision and the continue path both consult it, and the process remembers how it was started
 const src = fs.readFileSync(new URL("../src/cc-worker.ts", import.meta.url), "utf8");
-assert.match(src, /const tui = canonical && this\.tuiEnabled && !needsPlainProcess\(firstContent\)/);
+// X-60: one-shot opens (stdin is closed after the message) never go through the shim either
+assert.match(src, /const tui = canonical && this\.tuiEnabled && persist && !needsPlainProcess\(firstContent\)/);
 assert.match(src, /const mediaOnTui = !!proc && proc\.tui && needsPlainProcess\(msg\.content\)/);
 assert.match(src, /hasTools: nativeTools\.length > 0, tui, credHash/);
 console.log("media-plain: ALL PASSED");

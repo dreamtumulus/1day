@@ -388,6 +388,9 @@ test("stop_sequences: split across deltas, cut before the match, held-back tail 
   assert.deepEqual(t.message().content, [{ type: "text", text: "ONE\nTWO\nTHREE\nFOUR\n" }]);
   assert.equal(t.message().stop_reason, "stop_sequence");
   assert.equal(t.message().stop_sequence, "FIVE");
+  // X-60: cut before the upstream's final message_delta, the output is counted from what was produced (19 chars → 5),
+  // not left at the message_start placeholder
+  assert.equal(t.message().usage.output_tokens, 5);
   const delta = evs.find((e) => e.type === "message_delta");
   assert.equal(delta.delta.stop_reason, "stop_sequence");
   assert.equal(delta.delta.stop_sequence, "FIVE");

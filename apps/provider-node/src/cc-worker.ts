@@ -1232,8 +1232,12 @@ export class CcWorkerManager {
       // TUI worker: the shim wraps the binary and turns the -p argv into the interactive mode's (cc-tui-shim, vendored
       // magpie claudetui). It answers the trust dialog itself (the cwd is the account's own), and waits for the node's MCP
       // server to have listed the caller tools (the marker file) before it pastes the first message.
-      const tui = canonical && this.tuiEnabled && !needsPlainProcess(firstContent);
-      if (canonical && this.tuiEnabled && !tui) this.log(`session ${msg.sessionId}: image/document content -> plain -p process for this open (TUI cannot paste it)`);
+      // X-60: a one-shot open (a suggestion side request, or a second request for a conversation whose process is busy)
+      // gives the process its message and closes stdin; the shim reads that as the caller leaving and ends without a
+      // result ("worker exited without a result", 29 × 502 in 40 minutes once all three nodes ran TUI). One-shots run
+      // as plain `-p`, as they did on the `-p` nodes.
+      const tui = canonical && this.tuiEnabled && persist && !needsPlainProcess(firstContent);
+      if (canonical && this.tuiEnabled && !tui) this.log(`session ${msg.sessionId}: ${persist ? "image/document content" : "one-shot open"} -> plain -p process (not through the TUI shim)`);
       if (tui) {
         env.ONEDAY_CC_TUI_TRUST = "1";
         // Interactive Claude Code moves an MCP tool call that is still running after 120 s to the background and hands

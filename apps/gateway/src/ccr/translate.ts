@@ -970,6 +970,11 @@ export class SessionTranslator {
     this.stopReason = reason;
     this.done = true;
     this.cutShortFlag = true;
+    // X-60: the message ends here, before the upstream's final message_delta — the only place the output count is
+    // reported. Until now such an answer carried `output_tokens: 0` beside real content (224 of 2,211 answers in
+    // 40 minutes on 2026-11-10, all stop-sequence classifier calls). What was produced is counted from the blocks.
+    const produced = this.blocks.reduce((n, b) => n + (typeof b?.text === "string" ? b.text.length : 0) + (typeof b?.thinking === "string" ? b.thinking.length : 0), 0);
+    if (produced > 0) this.usage.output_tokens = Math.max(this.usage.output_tokens, Math.ceil(produced / 4));
     return out;
   }
 
