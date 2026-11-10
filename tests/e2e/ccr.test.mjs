@@ -123,14 +123,17 @@ r = await messages(ccrKey);
 u = await lastUsage(admin);
 check("still skipped by stale full snapshot until reset", u.accountName === "ccr-mock", u);
 
-// ---- failover: session API 401 marks the account error, request still served ----
+// ---- failover: session API 401 counts toward the auth-failure threshold, request still served ----
+// Since 2026-11-10 (docs/code-review-2026-11-10.md, gateway C) one 401 no longer takes the account out for good:
+// it cools the account and records "auth failure ×1 of N"; status=error needs N hits inside the window
+// (AUTH_FAILURE_THRESHOLD / AUTH_FAILURE_WINDOW_MS, unit-tested in apps/gateway/test).
 const bad = await createAccount({
   name: "ccr-401", platform: "anthropic", type: "oauth", protocol: "anthropic", baseUrl: MOCK,
   accessToken: "mock-401", orgUuid: fixture.orgUuid, environmentId: "env_mock", executor: "ccr", priority: 0, groupIds: [grp.data.id],
 });
 r = await messages(ccrKey);
 const badNow = (await admin.call("GET", "/api/admin/accounts")).data.items.find((a) => a.id === bad.data.id);
-check("401 on session api -> account error + failover", r.status === 200 && badNow.status === "error", { status: r.status, badNow });
+check("401 on session api -> failover, first strike recorded (not error yet)", r.status === 200 && badNow.status === "active" && /auth failure ×1 of \d+/.test(badNow.errorMessage ?? ""), { status: r.status, accountStatus: badNow.status, errorMessage: badNow.errorMessage });
 
 // ---- dual-mode routing (docs/ccr-supply.md §5.2): CC clients take the direct path ----
 const dualGrp = await admin.call("POST", "/api/admin/groups", { name: "dual-only" });

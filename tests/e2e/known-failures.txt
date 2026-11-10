@@ -19,4 +19,3 @@
 # 2026-11-09 baseline, pre-existing: the test "archive snapshot survives account deletion and node outage, then
 # retries on the same team exit" leaves a timer running that touches the closed database after the file ends
 # ("database is not open" → uncaughtException → the file is reported failed; its 6 tests pass). Console owners.
-unit/console: test/audit-fixes.test.mjs

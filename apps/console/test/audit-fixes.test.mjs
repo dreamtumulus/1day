@@ -20,7 +20,9 @@ const {sweepStaleJobs}=await import("../dist/onboard/jobs.js");
 const {enqueueArchive,retryArchiveCleanup}=await import("../dist/node/archive-cleanup.js");
 const {pollAllWindows,refreshExpiringTokens}=await import("../dist/ccr/window-poll.js");
 const app=await buildApp();
-after(async()=>{await app.close();core.db.close();rmSync(dir,{recursive:true,force:true});});
+// app.close() stops the archive-cleanup loop, but a pass already in flight still writes once more: let it settle
+// before the database goes away (was: "database is not open" after the last test, flaky since 2026-10-28).
+after(async()=>{await app.close();await new Promise(r=>setTimeout(r,400));core.db.close();rmSync(dir,{recursive:true,force:true});});
 async function login(key){
  const r=await app.inject({method:"POST",url:"/auth/login",payload:{key}});
  const cookie=r.headers["set-cookie"].split(";")[0];
