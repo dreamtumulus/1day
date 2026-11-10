@@ -28,7 +28,7 @@ say() { printf '%s\n' "$*"; }
 die() { say "RELEASE BUILD FAILED: $*" >&2; exit 1; }
 
 if [ "${1:-}" = "--list" ]; then
-  cur=$(readlink -f "$RELEASES_DIR/current" 2>/dev/null || true)
+  cur=; [ -L "$RELEASES_DIR/current" ] && cur=$(readlink -f "$RELEASES_DIR/current" 2>/dev/null || true)
   for d in "$RELEASES_DIR"/*/; do
     [ -d "$d" ] || continue
     d=${d%/}; name=$(basename "$d")
@@ -48,7 +48,7 @@ dest="$RELEASES_DIR/$sha"
 part="$dest.partial"
 if [ -e "$dest/RELEASE_OK" ]; then say "already built and verified: $dest ($(head -1 "$dest/RELEASE_OK"))"; exit 0; fi
 if [ -e "$dest" ]; then
-  [ "$(readlink -f "$RELEASES_DIR/current" 2>/dev/null)" != "$dest" ] || die "$dest is the current release but has no RELEASE_OK marker; not touching it"
+  [ ! -L "$RELEASES_DIR/current" ] || [ "$(readlink -f "$RELEASES_DIR/current" 2>/dev/null)" != "$dest" ] || die "$dest is the current release but has no RELEASE_OK marker; not touching it"
   [ "${RELEASE_SKIP_GATE:-0}" != 1 ] || { say "already built (unverified): $dest"; exit 0; }
   say "removing the unverified directory $dest and rebuilding it with the gate"
   rm -rf "$dest"
@@ -92,6 +92,9 @@ else
   gate_line=$(grep -m1 '^== gate summary' "$part/.release-gate.log" | sed 's/^== //')
   say "   $gate_line"
 fi
+# A release directory holds code only. Anything a build or test step left in <release>/data (core's default
+# DATA_DIR) is throwaway: the export never contains /data, and services run with an explicit DATA_DIR.
+if [ -e "$part/data" ]; then say "   removing $part/data left behind by a build/test step"; rm -rf "$part/data"; fi
 
 mv "$part" "$dest" || die "cannot rename $part to $dest"
 trap - EXIT

@@ -42,6 +42,12 @@ fi
 unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY all_proxy ALL_PROXY DB_PATH DATA_DIR
 LOGS=${GATE_LOG_DIR:-$(mktemp -d -t 1dayapi-gate.XXXXXX)}
 mkdir -p "$LOGS"
+# Several unit tests import core without choosing a DATA_DIR; core then opens <checkout>/data, and on the production
+# checkout that is the live database (import = open + migrate). Give every test a throwaway default instead; tests
+# and the e2e runner that set their own DATA_DIR are not affected.
+GATE_DATA=$(mktemp -d -t 1dayapi-gate-data.XXXXXX) || exit 2
+export DATA_DIR="$GATE_DATA"
+trap 'rm -rf "$GATE_DATA"' EXIT
 RESULTS="$LOGS/results.tsv"   # status<TAB>id   (status: pass | fail)
 : > "$RESULTS"
 cd "$ROOT" || exit 2
