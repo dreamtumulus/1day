@@ -9,7 +9,8 @@ import {
   parseAllowlist,
   parseJsonArray,
   parseJsonMap,
-  type AccountRow, parseKeyPolicy, parseKeyPolicyDoc, parseWindowModel, planLabel } from "@1dayapi/core";
+  type AccountRow, parseKeyPolicy, parseKeyPolicyDoc, parseWindowModel, planLabel,
+  CREDITS_REJECTION_KEY, creditsLive, creditsServing, parseUsageCredits } from "@1dayapi/core";
 
 // Row -> API shapes (camelCase) shared by the user / provider / admin routes.
 
@@ -165,6 +166,35 @@ export function accountUsageStats(ids: string[]): Map<string, AccountUsageStats>
   return m;
 }
 
+/**
+ * Usage credits of a subscription account (docs/usage-credits.md): the normalised state from the last usage poll (no
+ * raw body, no disclaimer text) and whether the scheduler is serving the account on credits right now.
+ */
+function usageCreditsFields(a: AccountRow) {
+  const usageCredits = parseUsageCredits(a.usage_json);
+  let serving = { window: false, fable: false };
+  let live = false;
+  let rejectedAt: string | null = null;
+  try {
+    serving = creditsServing(a);
+    live = creditsLive(a);
+    rejectedAt = parseModelCooldowns(a.model_cooldowns)[CREDITS_REJECTION_KEY]?.rejectedAt ?? null;
+  } catch {
+    /* settings unreadable: report the parsed state only */
+  }
+  return {
+    usageCredits,
+    /** Requests for an exhausted quota are currently scheduled onto this account and paid from its credits. */
+    onCredits: serving.window || serving.fable,
+    /** Which quota is bridged: "window" (5h / weekly, all models), "fable" (Fable weekly share). */
+    onCreditsScopes: [serving.window ? "window" : null, serving.fable ? "fable" : null].filter((s): s is string => !!s),
+    /** Credits look usable AND the upstream has not refused the account since the last usage poll. */
+    creditsLive: live,
+    /** Last upstream refusal at a plan limit, when it is newer than the usage poll (credits distrusted until the next poll). */
+    creditsRejectedAt: rejectedAt && (!a.usage_checked_at || rejectedAt >= a.usage_checked_at) ? rejectedAt : null,
+  };
+}
+
 /** Fields safe to show the account owner (no credential material). */
 export function providerAccountShape(
   a: AccountRow,
@@ -197,6 +227,7 @@ export function providerAccountShape(
     subscriptionStatus: a.subscription_status,
     windowModel: parseWindowModel(a.window_model),
     usageCheckedAt: a.usage_checked_at,
+    ...usageCreditsFields(a),
 
     concurrency: a.concurrency,
     rpmLimit: a.rpm_limit,
@@ -294,7 +325,7 @@ export function adminAccountShape(
     window7dResetAt: a.window_7d_reset_at,
     windowReason:extra?.showTeam?a.window_reason:a.window_reason?"Account window temporarily unavailable":null,
     /** Per-model-family cooldowns, e.g. {fable: {until, reason, used, resetAt}} (docs/gateway.md §3). */
-    modelCooldowns: Object.fromEntries(Object.entries(parseModelCooldowns(a.model_cooldowns)).map(([k,v])=>[k,extra?.showTeam?v:{...v,reason:v.reason?"Model temporarily unavailable":v.reason}])),
+    modelCooldowns: Object.fromEntries(Object.entries(parseModelCooldowns(a.model_cooldowns)).filter(([k])=>k!==CREDITS_REJECTION_KEY).map(([k,v])=>[k,extra?.showTeam?v:{...v,reason:v.reason?"Model temporarily unavailable":v.reason}])),
     cost30d: stats?.cost ?? usage.d30.costUsd,
     usage,
     /** Live in-flight requests on the gateway (null when the gateway could not be reached). */
