@@ -89,6 +89,13 @@ TUI 特有的 502：粘贴后提交失败 41（原因被 300 字 stderr 尾巴�
 
 **版本升级注意**：垫片靠屏幕文本工作（trust 对话框、`[Pasted text #n`、`[Image #n]`、首次运行页、/usage 面板、transcript 字段）。升级 Claude Code 必须并排安装到 `/opt/claude-<ver>`，先在一台 TUI 节点 canary 半天看 502 分类，再推全量；`-p` 节点可以直接换二进制，TUI 节点不能。重建垫片需 Go 1.26（`go.mod`）：2026-11-10 起主服务器装有 go1.26.10（`/root/.local/go/bin/go`，即 `sync.sh` 的默认路径；模块缓存 `/root/.local/gopath`），`cd /opt/1dayapi/third_party/magpie-claudetui && GO=/root/.local/go/bin/go ./sync.sh <magpie 检出>` 重新 vendor + 构建，产物 `dist/cc-tui-shim` 由控制台部署时下发到节点。
 
+## 9. 2026-11-10 事故：`seedFolderTrust` 改写设备 ID（X-49）
+
+§8 的 `seedFolderTrust` 把 `.claude.json` 换成了 root 属主的文件（开机器身份时跳过了 chown），交互式 Claude Code 读不了、按首次启动重建并生成新 `userID`。
+修复 `4ad8a94`（替换文件沿用原属主）、节点包 `dbb831f0`；经过与恢复见 `deployment/2026-11-10-x49-device-identity.md`，发布核对项见 `operations.md` §4。
+对 TUI 的特别提醒：交互式 Claude Code **自己也会重写** `.claude.json`（首次运行页、迁移、`projects` 作用域），`-p` 基本不写；所以 TUI 节点上
+「这个文件的属主 / 可读性 / `userID`」是每次发布都要核对的东西，而不是一次性假设。`-p` 节点切 TUI 时沿用原 worker 根目录即可保留设备 ID（worker-01 的做法）。
+
 ## 7. 待办
 
 - 两行伪 jsonl 兜底；单进程 RSS 预算；工具调用前文字丢失的度量（captures `toolUses` 与 tap 事件对照）。

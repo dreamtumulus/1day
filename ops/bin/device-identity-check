@@ -1,0 +1,70 @@
+#!/usr/bin/env python3
+"""Device identity check (X-49, docs/operations.md §4): every account's .claude.json on its worker node must
+carry the registered device id (accounts.device_id) and belong to the uid Claude Code runs as.
+
+  ops/bin/device-identity-check              # on the main server, as root; read-only
+  ops/bin/device-identity-check --save FILE  # also write "account userID" lines (a baseline to diff after a release)
+
+Run it before AND after every node bundle / Claude Code / node unit change, and after the first real requests on
+the changed node. Exit 1 on: a userID that differs from accounts.device_id, a root-owned or unreadable
+.claude.json, a node host that cannot be reached. Reads only; never prints credentials."""
+import json, sqlite3, subprocess, sys
+
+DB = "/opt/1dayapi/data/1dayapi.db"
+REMOTE = r'''
+import glob, json, os, subprocess
+roots = set()
+units = subprocess.run("systemctl list-units --type=service --all --no-legend '1dayapi-node*' | awk '{print $1}'", shell=True, capture_output=True, text=True).stdout.split()
+for u in units:
+    env = subprocess.run(["systemctl", "show", u, "-p", "Environment", "--value"], capture_output=True, text=True).stdout.split()
+    root = [e.split("=", 1)[1] for e in env if e.startswith("CC_WORKER_ROOT=")]
+    roots.add(root[-1] if root else "/var/lib/1dayapi-cc-worker")
+for root in sorted(roots):
+    for f in glob.glob(root + "/teams/*/cc-accounts/*/.claude.json") + glob.glob(root + "/cc-accounts/*/.claude.json"):
+        st = os.stat(f)
+        try: uid = json.load(open(f)).get("userID") or "-"
+        except Exception: uid = "UNREADABLE"
+        print(os.path.basename(os.path.dirname(f)), uid, st.st_uid, oct(st.st_mode & 0o777), int(st.st_mtime), root)
+'''
+
+def main():
+    save = sys.argv[sys.argv.index("--save") + 1] if "--save" in sys.argv else None
+    db = sqlite3.connect(f"file:{DB}?mode=ro", uri=True)
+    nodes = {}
+    for node_id, meta in db.execute("select node_id, deploy_meta from nodes"):
+        try: m = json.loads(meta or "{}")
+        except Exception: m = {}
+        if m.get("host"): nodes[node_id] = (m.get("name") or node_id[:13], m["host"])
+    accounts = db.execute("select id, node_id, device_id, status from accounts where device_id is not null and node_id is not null").fetchall()
+    fail = 0; seen = {}; lines = []
+    for host in sorted({h for _, h in nodes.values()}):
+        r = subprocess.run(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", f"root@{host}", "python3 -"], input=REMOTE, capture_output=True, text=True, timeout=120)
+        if r.returncode != 0:
+            print(f"FAIL  host {host}: unreachable ({r.stderr.strip()[:120]})"); fail = 1; continue
+        for l in r.stdout.splitlines():
+            p = l.split()
+            if len(p) >= 6: seen.setdefault((host, p[0]), []).append({"userID": p[1], "uid": int(p[2]), "mode": p[3], "mtime": int(p[4]), "root": p[5]})
+    stats = {}
+    for acct, node_id, dev, status in accounts:
+        if node_id not in nodes: continue
+        name, host = nodes[node_id]
+        s = stats.setdefault(name, {"ok": 0, "bad": 0, "nodir": 0})
+        rows = sorted(seen.get((host, acct), []), key=lambda x: -x["mtime"])
+        if not rows: s["nodir"] += 1; continue      # never ran on the node yet: the id is seeded at first open
+        cur = rows[0]; lines.append(f"{acct} {cur['userID']}")
+        why = []
+        if cur["userID"] != dev: why.append(f"userID {cur['userID'][:8]} != registered {dev[:8]}")
+        if cur["uid"] == 0: why.append("owned by root")
+        if cur["mode"] != "0o600": why.append(f"mode {cur['mode']}")
+        if why:
+            s["bad"] += 1; fail = 1
+            print(f"FAIL  {name} account {acct[:8]} ({status}): {'; '.join(why)}")
+        else: s["ok"] += 1
+    for name, s in sorted(stats.items()):
+        print(f"{'ok  ' if not s['bad'] else 'FAIL'}  {name}: {s['ok']} match, {s['bad']} drifted, {s['nodir']} not started on the node yet")
+    if save:
+        open(save, "w").write("\n".join(sorted(lines)) + "\n"); print(f"baseline saved: {save} ({len(lines)} accounts)")
+    print("DEVICE IDENTITY OK" if not fail else "DEVICE IDENTITY DRIFT — stop the release, roll back, restore from the baseline")
+    sys.exit(fail)
+
+main()

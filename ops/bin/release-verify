@@ -3,7 +3,8 @@
 #   ops/bin/release-verify            # on the main server, as root
 # Checks: gateway health; one real claude-sonnet-5-5 request with the monitor's consumer key returns 200;
 # the public pool has at least one online account (or the count did not drop vs. the saved baseline);
-# nodes are online; one monitor run is green. Exit non-zero on any failure.
+# nodes are online; one monitor run is green; device identities on every node match the registered ones (X-49).
+# Exit non-zero on any failure.
 set -uo pipefail
 KEY=$(cat /root/monitor/apikey.txt 2>/dev/null || true)
 fail=0
@@ -56,6 +57,13 @@ if (cd /root/monitor && timeout 300 python3 func.py > /tmp/release-verify-monito
   printf '%s' "$out" | grep -q 'false' && { say "  FAIL (a probe failed)"; fail=1; }
 else
   say "  FAIL (monitor did not run: $(tail -1 /tmp/release-verify-monitor.log))"; fail=1
+fi
+
+say "6. device identity (X-49): every account's .claude.json userID = accounts.device_id, owned by its worker uid"
+if out=$(/opt/1dayapi/ops/bin/device-identity-check 2>&1); then
+  printf '%s\n' "$out" | sed 's/^/  /'
+else
+  printf '%s\n' "$out" | sed 's/^/  /'; say "  FAIL (device identity drift)"; fail=1
 fi
 
 if [ "$fail" = 0 ]; then say "RELEASE VERIFIED"; else say "RELEASE NOT VERIFIED"; fi

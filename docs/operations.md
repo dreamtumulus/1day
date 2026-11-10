@@ -96,8 +96,23 @@ ops/bin/gateway-switch            # 控制面与节点就绪后切换网关（�
 worker 会话全部 fresh 重放（gateway.md §3、worker-sessions.md 进度 2026-10-22）。
 
 **发布完成的定义（2026-10-28 起）**：`ops/bin/release-verify` 通过才算完成——网关 `/health`、一条真实 claude-sonnet-5-5 请求 200、
-公开池 online 账号数不低于发布前、节点心跳新鲜、探针一轮全绿。发布记录附它的输出。只有本地模拟测试通过的发布不算完成
+公开池 online 账号数不低于发布前、节点心跳新鲜、探针一轮全绿、**各节点账号设备 ID 与登记值一致（第 6 步，X-49）**。发布记录附它的输出。只有本地模拟测试通过的发布不算完成
 （10-27 / 10-28 两次发布测试全过，上线后平台 36 小时无法服务，无人知晓）。
+
+**节点变更的设备身份核对（2026-11-10 起，X-49，强制）**：账号的设备 ID（`.claude.json` 的 `userID` = `accounts.device_id`）、
+机器身份、出口绑定是账号的「硬件」，任何发布都不得改变。凡是动节点包、Claude Code 版本、节点 unit / 环境变量、worker 根目录的发布：
+
+1. **发布前**：`ops/bin/device-identity-check --save /root/monitor/device-baseline-<ts>.txt` 必须 `DEVICE IDENTITY OK`（不 OK 先查清，不带病发布）；
+   在目标节点备份全部 `.claude.json`（`tar` 保留属主；worker-01 的做法见 `deployment/2026-11-10-x49-device-identity.md`）。
+2. **先发一台**，等这台节点上**至少 3 个不同账号各完成一次新开会话**（节点日志 `started tun_…`），再跑一次 `ops/bin/device-identity-check`；
+   通过才发下一台。只看「请求 200」不够：X-48 被改写设备 ID 的那一轮请求本身是 200。
+3. **发布后 30 分钟**再跑一次，输出贴进发布记录；同时确认节点日志 `worker_spawn_failed` 为 0、网关日志没有 `fixed team device identity changed`。
+4. 任一步出现 `DEVICE IDENTITY DRIFT`：立即回滚该节点（旧包 + 重启），按基线 / `accounts.device_id` 写回（脚本同上记录），再查原因。
+5. 改到「节点替账号写文件」的代码（`.claude.json`、`.credentials.json`、`settings.json`、账号目录）时，评审必须回答：写完之后属主、权限是谁？
+   Claude Code 以哪个 uid 读？并有以 root 运行的属主断言测试（参照 `apps/provider-node/test/trust-seed.test.mjs`）。
+   假上游探针必须经 machine-identity launcher 以团队 uid 运行，以 root 直跑的探针发现不了这类问题。
+
+`ops/bin/release-verify` 第 6 步已包含该检查；它失败 = 发布未完成。
 
 **告警（2026-10-28 起）**：`/root/monitor/func.py` 末尾挂了 `ops/monitor/func-alert-hook.py`，连续 2 轮失败经 `ops/monitor/alert.py`
 推送（Telegram 或 webhook，配置 `/root/monitor/alert.conf`）；worker-01 上 `1dayapi-extprobe.timer` 每 2 分钟从外部打
@@ -160,7 +175,8 @@ curl -s -o /dev/null -w '%{http_code}\n' https://1dayapi.com/login   # 期望 20
 | 关闭号商隧道 | 停用 `route=node` 的账户或禁用号商 / 移除节点（v3 起无 `PROVIDER_TUNNEL_ENABLED`） |
 | 查看前端错误 | `data/client-errors.log`（目前前端未上报） |
 | 证书续期 | certbot timer 自动；手动 `certbot renew --dry-run` 检查 |
-| 发布后验证 | `ops/bin/release-verify`（真实请求 + 探针 + 池 online 数）；不通过不算发布完成 |
+| 发布后验证 | `ops/bin/release-verify`（真实请求 + 探针 + 池 online 数 + 设备身份）；不通过不算发布完成 |
+| 设备身份核对（X-49） | `ops/bin/device-identity-check [--save 基线文件]`（只读；各节点账号 `.claude.json` 的 `userID` 对 `accounts.device_id`、属主、权限）；节点包 / Claude Code / unit 变更前后各跑一次 |
 | 灰度核对（铁律 2） | `ops/bin/canary-verify`（灰度 Key 打三协议、列三态开关、`/health.counters` 必须为零项、24h journald 告警行）；每轮开关切 `canary` 后与 24h 观察结束时各跑一次，输出贴进发布记录 |
 | 告警通道 | `/root/monitor/alert.conf`；`python3 /root/monitor/alert.py test` |
 | 新增 worker 节点 | 见下方检查清单 |
