@@ -1,0 +1,196 @@
+#!/usr/bin/env bash
+# 1dayAPI backup (docs/operations.md §5). Canonical script since the 2026-11-10 review; replaces the unversioned
+# /usr/local/bin/1dayapi-backup.sh, which put the database snapshot AND provider-cred.key + internal.key + monitor
+# credentials into one plaintext tar.gz and copied it to worker-01, a machine that runs customer-driven processes.
+#
+#   ops/bin/backup              # as root on the main server; run by 1dayapi-backup.timer (ops/systemd/)
+#   ops/bin/backup --check      # configuration and tools only, writes nothing
+#
+# What it does, safe to re-run at any time:
+#   1. database: `VACUUM INTO` online snapshot + `PRAGMA integrity_check` → tar.gz of the snapshot ONLY → encrypted
+#      with `age` to the recipient public key(s) in $BACKUP_RECIPIENTS → $BACKUP_DIR/db-<UTC ts>.tar.gz.age (0600);
+#      the newest $BACKUP_KEEP_LOCAL are kept; the new file is pushed with rsync to $BACKUP_REMOTE (when set) and
+#      the remote directory is pruned to the newest $BACKUP_KEEP_REMOTE.
+#   2. key material (provider-cred.key, internal.key, plus $BACKUP_KEYS_EXTRA) goes into a SEPARATE encrypted archive
+#      $BACKUP_KEYS_DIR/keys-<UTC ts>-<sha>.tar.gz.age, written only when the content checksum changed, and pushed
+#      only to $BACKUP_KEYS_REMOTE. That remote is a separate setting and EMPTY by default: key archives never go
+#      to a node that runs workers unless somebody decides so in writing. Empty = local only + a loud reminder.
+#
+# There is NO plaintext fallback: without `age` or without the recipients file the script refuses to run (exit 2).
+# The private identity is not on this machine; decryption happens elsewhere (ops/bin/backup-restore-test).
+#
+# Configuration: environment, or /etc/1dayapi/backup.conf (KEY=value lines, root-owned, sourced):
+#   DATA_DIR=/opt/1dayapi/data              DB_PATH=$DATA_DIR/1dayapi.db
+#   BACKUP_RECIPIENTS=/etc/1dayapi/backup.pub      age recipients file (one `age1…` public key per line)
+#   BACKUP_DIR=/opt/1dayapi/backups/enc            BACKUP_KEEP_LOCAL=168   (hourly → 7 days)
+#   BACKUP_REMOTE=                                  rsync target, e.g. root@worker-01:/  with a forced rrsync (§5)
+#   BACKUP_KEEP_REMOTE=360                          (hourly → 15 days)
+#   BACKUP_KEYS_DIR=/opt/1dayapi/backups/keys-enc  BACKUP_KEYS_KEEP=20
+#   BACKUP_KEYS_REMOTE=                             separate target for key archives; empty = local only
+#   BACKUP_KEYS_EXTRA="/root/monitor/apikey.txt /root/monitor/alert.conf"   extra secret files (missing ones skipped)
+#   BACKUP_SSH_KEY=                                 ssh identity used for rsync (default: ssh's own)
+# Exit: 0 ok · 1 a step failed (the line `BACKUP FAILED: …` says which) · 2 refused (configuration / tools).
+set -uo pipefail
+umask 077
+CONF=${BACKUP_CONF:-/etc/1dayapi/backup.conf}
+# shellcheck disable=SC1090
+[ -r "$CONF" ] && . "$CONF"
+DATA_DIR=${DATA_DIR:-/opt/1dayapi/data}
+DB_PATH=${DB_PATH:-$DATA_DIR/1dayapi.db}
+BACKUP_RECIPIENTS=${BACKUP_RECIPIENTS:-/etc/1dayapi/backup.pub}
+BACKUP_DIR=${BACKUP_DIR:-/opt/1dayapi/backups/enc}
+BACKUP_KEEP_LOCAL=${BACKUP_KEEP_LOCAL:-168}
+BACKUP_REMOTE=${BACKUP_REMOTE:-}
+BACKUP_KEEP_REMOTE=${BACKUP_KEEP_REMOTE:-360}
+BACKUP_KEYS_DIR=${BACKUP_KEYS_DIR:-/opt/1dayapi/backups/keys-enc}
+BACKUP_KEYS_KEEP=${BACKUP_KEYS_KEEP:-20}
+BACKUP_KEYS_REMOTE=${BACKUP_KEYS_REMOTE:-}
+BACKUP_KEYS_EXTRA=${BACKUP_KEYS_EXTRA-/root/monitor/apikey.txt /root/monitor/alert.conf}
+BACKUP_SSH_KEY=${BACKUP_SSH_KEY:-}
+AGE=${AGE_BIN:-age}
+check_only=0
+case "${1:-}" in
+  --check) check_only=1 ;;
+  -h|--help) sed -n 2,32p "$0"; exit 0 ;;
+  '') ;;
+  *) echo "unknown option: $1" >&2; exit 2 ;;
+esac
+say() { printf '%s %s\n' "$(date -u +%FT%TZ)" "$*"; }
+refuse() { say "BACKUP REFUSED: $*" >&2; exit 2; }
+
+# ---- preflight: refuse rather than degrade ----
+command -v "$AGE" >/dev/null 2>&1 || refuse "\`age\` is not installed (apt install age). No plaintext fallback."
+command -v python3 >/dev/null 2>&1 || refuse "python3 is needed for the SQLite snapshot"
+[ -s "$BACKUP_RECIPIENTS" ] || refuse "no recipient public key at $BACKUP_RECIPIENTS (see docs/operations.md §5 one-time setup). No plaintext fallback."
+grep -Eq '^(age1[0-9a-z]+|ssh-(ed25519|rsa) )' "$BACKUP_RECIPIENTS" || refuse "$BACKUP_RECIPIENTS holds no age / ssh public key"
+if grep -q 'AGE-SECRET-KEY' "$BACKUP_RECIPIENTS"; then refuse "$BACKUP_RECIPIENTS contains a PRIVATE age identity; it must hold the public key only, and that identity must be considered leaked"; fi
+[ -r "$DB_PATH" ] || refuse "database not readable: $DB_PATH"
+for n in "$BACKUP_KEEP_LOCAL" "$BACKUP_KEEP_REMOTE" "$BACKUP_KEYS_KEEP"; do
+  case "$n" in ''|*[!0-9]*|0) refuse "retention counts must be positive integers (got '$n')" ;; esac
+done
+if [ -n "$BACKUP_REMOTE$BACKUP_KEYS_REMOTE" ]; then command -v rsync >/dev/null 2>&1 || refuse "rsync is needed for the configured remote"; fi
+for r in "$BACKUP_REMOTE" "$BACKUP_KEYS_REMOTE"; do
+  case "$r" in ''|*/) ;; *) refuse "remote '$r' must be a directory and end with / (e.g. root@host:/ behind a forced rrsync)" ;; esac
+done
+if [ -n "$BACKUP_KEYS_REMOTE" ] && [ "${BACKUP_KEYS_REMOTE%%:*}" = "${BACKUP_REMOTE%%:*}" ] && [ -n "$BACKUP_REMOTE" ]; then
+  say "WARNING: key archives and database archives go to the same host (${BACKUP_KEYS_REMOTE%%:*}); both are encrypted to the same recipient, so whoever holds the private identity and that host holds everything."
+fi
+if [ "$check_only" = 1 ]; then
+  say "backup configuration ok: db=$DB_PATH dir=$BACKUP_DIR keep=$BACKUP_KEEP_LOCAL remote=${BACKUP_REMOTE:-(none)} keys-dir=$BACKUP_KEYS_DIR keys-remote=${BACKUP_KEYS_REMOTE:-(none, local only)} recipients=$(grep -Ec '^(age1|ssh-)' "$BACKUP_RECIPIENTS")"
+  exit 0
+fi
+
+mkdir -p "$BACKUP_DIR" "$BACKUP_KEYS_DIR" || refuse "cannot create $BACKUP_DIR / $BACKUP_KEYS_DIR"
+chmod 700 "$BACKUP_DIR" "$BACKUP_KEYS_DIR"
+# One run at a time (timer + a manual run).
+exec 9> "$BACKUP_DIR/.lock"
+if command -v flock >/dev/null 2>&1 && ! flock -n 9; then refuse "another backup run holds $BACKUP_DIR/.lock"; fi
+TS=$(date -u +%Y%m%dT%H%M%SZ)
+WORK=$(mktemp -d "$BACKUP_DIR/.work-$TS.XXXXXX") || refuse "cannot create a work directory in $BACKUP_DIR"
+cleanup() { rm -rf "$WORK"; rm -f "$BACKUP_DIR"/.partial-* "$BACKUP_KEYS_DIR"/.partial-* 2>/dev/null; }
+trap cleanup EXIT
+failed=()
+rsync_ssh() { if [ -n "$BACKUP_SSH_KEY" ]; then echo "ssh -i $BACKUP_SSH_KEY -o BatchMode=yes -o ConnectTimeout=20"; else echo "ssh -o BatchMode=yes -o ConnectTimeout=20"; fi; }
+
+# push <file> <remote>: one file, never the directory (the remote side keeps its own, longer history).
+push() { rsync -t --chmod=F600 --timeout=120 -e "$(rsync_ssh)" "$1" "$2"; }
+
+# prune_remote <remote> <glob-prefix> <keep>: delete all but the newest <keep> matching files, using rsync itself
+# (works through a forced `rrsync` on the other side, where no shell command can be run).
+prune_remote() {
+  local remote=$1 prefix=$2 keep=$3 names extra empty
+  names=$(rsync --list-only --timeout=60 -e "$(rsync_ssh)" "$remote" 2>/dev/null | awk '{print $NF}' | grep -E "^${prefix}[0-9TZ]+.*\.age$" | sort) || return 1
+  extra=$(printf '%s\n' "$names" | grep -c . || true)
+  [ "$extra" -gt "$keep" ] || return 0
+  empty=$(mktemp -d "$WORK/empty.XXXXXX")
+  printf '%s\n' "$names" | head -n $((extra - keep)) | sed 's/^/+ /' > "$WORK/prune.filter"
+  echo '- *' >> "$WORK/prune.filter"
+  rsync -r --delete --filter="merge $WORK/prune.filter" --timeout=120 -e "$(rsync_ssh)" "$empty/" "$remote" && say "remote pruned: $((extra - keep)) old file(s) removed from $remote"
+}
+
+# ---- 1. database ----
+SNAP="$WORK/1dayapi.db"
+if ! python3 - "$DB_PATH" "$SNAP" <<'PY'
+import sqlite3, sys
+src, dst = sys.argv[1], sys.argv[2]
+con = sqlite3.connect(f"file:{src}?mode=ro", uri=True, timeout=60, isolation_level=None)
+con.execute("PRAGMA busy_timeout=60000")
+con.execute("VACUUM INTO ?", (dst,))          # consistent online snapshot, includes what is still in the WAL
+con.close()
+snap = sqlite3.connect(f"file:{dst}?mode=ro", uri=True)
+res = [r[0] for r in snap.execute("PRAGMA integrity_check")]
+if res != ["ok"]:
+    sys.exit("integrity_check on the snapshot: " + "; ".join(res[:5]))
+n = snap.execute("SELECT COUNT(*) FROM sqlite_master WHERE type='table'").fetchone()[0]
+if n == 0:
+    sys.exit("snapshot has no tables")
+PY
+then
+  say "BACKUP FAILED: database snapshot (VACUUM INTO / integrity_check) failed; nothing was written"
+  exit 1
+fi
+DB_OUT="$BACKUP_DIR/db-$TS.tar.gz.age"
+if tar -C "$WORK" -czf - 1dayapi.db | "$AGE" -R "$BACKUP_RECIPIENTS" -o "$BACKUP_DIR/.partial-db-$TS" && [ -s "$BACKUP_DIR/.partial-db-$TS" ]; then
+  chmod 600 "$BACKUP_DIR/.partial-db-$TS" && mv "$BACKUP_DIR/.partial-db-$TS" "$DB_OUT"
+  say "database archive: $DB_OUT ($(du -h "$DB_OUT" | cut -f1), snapshot $(du -h "$SNAP" | cut -f1))"
+else
+  say "BACKUP FAILED: encrypting the database snapshot failed; nothing was kept"
+  exit 1
+fi
+rm -f "$SNAP"
+# shellcheck disable=SC2012
+ls -1 "$BACKUP_DIR"/db-*.tar.gz.age 2>/dev/null | sort -r | tail -n +$((BACKUP_KEEP_LOCAL + 1)) | xargs -r rm -f
+if [ -n "$BACKUP_REMOTE" ]; then
+  if push "$DB_OUT" "$BACKUP_REMOTE"; then
+    say "database archive pushed to $BACKUP_REMOTE"
+    prune_remote "$BACKUP_REMOTE" "db-" "$BACKUP_KEEP_REMOTE" || say "WARNING: could not prune $BACKUP_REMOTE (it will grow until this works)"
+  else
+    failed+=("push of the database archive to $BACKUP_REMOTE")
+  fi
+else
+  say "WARNING: BACKUP_REMOTE is empty: the database archive exists on this machine only"
+fi
+
+# ---- 2. key material: separate archive, only when it changed ----
+key_files=()
+for f in "$DATA_DIR/provider-cred.key" "$DATA_DIR/internal.key" $BACKUP_KEYS_EXTRA; do [ -r "$f" ] && key_files+=("$f"); done
+[ -r "$DATA_DIR/provider-cred.key" ] || failed+=("key material: $DATA_DIR/provider-cred.key is missing or unreadable (if the master key comes from PROVIDER_CRED_KEY, back that up by hand)")
+if [ ${#key_files[@]} -gt 0 ]; then
+  sum=$(sha256sum "${key_files[@]}" | sha256sum | cut -c1-64)
+  last=$(cat "$BACKUP_KEYS_DIR/.last-sha256" 2>/dev/null || true)
+  newest_keys=$(ls -1 "$BACKUP_KEYS_DIR"/keys-*.tar.gz.age 2>/dev/null | sort | tail -1)
+  if [ "$sum" = "$last" ] && [ -n "$newest_keys" ]; then
+    say "key material unchanged since $(basename "$newest_keys"): no new key archive"
+  else
+    KEYS_OUT="$BACKUP_KEYS_DIR/keys-$TS-${sum:0:12}.tar.gz.age"
+    # Absolute paths are stored without the leading / so a restore unpacks under a directory of the operator's choice.
+    if tar -czf - -P --transform 's,^/,,' "${key_files[@]}" 2>/dev/null | "$AGE" -R "$BACKUP_RECIPIENTS" -o "$BACKUP_KEYS_DIR/.partial-keys-$TS" && [ -s "$BACKUP_KEYS_DIR/.partial-keys-$TS" ]; then
+      chmod 600 "$BACKUP_KEYS_DIR/.partial-keys-$TS" && mv "$BACKUP_KEYS_DIR/.partial-keys-$TS" "$KEYS_OUT"
+      printf '%s\n' "$sum" > "$BACKUP_KEYS_DIR/.last-sha256"
+      newest_keys=$KEYS_OUT
+      say "key archive: $KEYS_OUT (${#key_files[@]} file(s): ${key_files[*]})"
+      # shellcheck disable=SC2012
+      ls -1 "$BACKUP_KEYS_DIR"/keys-*.tar.gz.age 2>/dev/null | sort -r | tail -n +$((BACKUP_KEYS_KEEP + 1)) | xargs -r rm -f
+    else
+      failed+=("encrypting the key archive")
+    fi
+  fi
+  # Push the newest key archive once per remote (also after the remote was configured later, or a push failed).
+  if [ -n "$BACKUP_KEYS_REMOTE" ] && [ -n "$newest_keys" ]; then
+    mark="$(basename "$newest_keys") $BACKUP_KEYS_REMOTE"
+    if [ "$(cat "$BACKUP_KEYS_DIR/.pushed" 2>/dev/null || true)" != "$mark" ]; then
+      if push "$newest_keys" "$BACKUP_KEYS_REMOTE"; then printf '%s\n' "$mark" > "$BACKUP_KEYS_DIR/.pushed"; say "key archive pushed to $BACKUP_KEYS_REMOTE"
+      else failed+=("push of the key archive to $BACKUP_KEYS_REMOTE"); fi
+    fi
+  fi
+  if [ -z "$BACKUP_KEYS_REMOTE" ]; then
+    say "!!!! REMINDER: BACKUP_KEYS_REMOTE is empty. The key archive ($(basename "${newest_keys:-none}")) exists ONLY on this machine."
+    say "!!!! Lose this disk and every database backup is undecryptable. Copy it off-box by hand (operator laptop / password manager / offline medium), NOT to a worker node."
+  fi
+fi
+
+if [ ${#failed[@]} -gt 0 ]; then
+  for f in "${failed[@]}"; do say "BACKUP FAILED: $f"; done
+  exit 1
+fi
+say "BACKUP OK: $(basename "$DB_OUT")"
