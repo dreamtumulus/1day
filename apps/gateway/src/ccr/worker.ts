@@ -148,6 +148,15 @@ export function renderedImportMaxChars(): number {
   return Number.isFinite(n) && n > 0 ? Math.floor(n) : RENDERED_IMPORT_MAX_CHARS;
 }
 
+/**
+ * A canonical `continue` is only what it says when exactly one new block follows the remembered conversation
+ * (planTurn's `content` = the blocks after the client's echo of the last answer). More than one → fresh.
+ */
+export function closeContinueGap(plan: TurnPlan, blocks: Json[]): TurnPlan {
+  if (plan.mode !== "continue" || plan.content.length <= 1) return plan;
+  return { mode: "fresh", content: blocks, hashes: plan.hashes, reason: `continue_gap:${plan.content.length - 1}` };
+}
+
 export function canonicalTurn(body: Json, planMode: "fresh" | "continue" | "tool_result", hasLiveSession: boolean, allowHistoryImport = false, ccClientCompat = false, renderedImport: Json[] | null = null, renderedMaxChars = RENDERED_IMPORT_MAX_CHARS): { appendSystemPrompt: string; content: Json[] | null; importHistory: Json[] | null; error: { code: string; message: string } | null; rendered?: boolean } {
   const msgs: Json[] = Array.isArray(body.messages) ? body.messages : [];
   const appendSystemPrompt = [callerSystemText(body), ccClientCompat ? CANONICAL_ENV_NOTE_V2 : CANONICAL_ENV_NOTE].filter(Boolean).join("\n\n");
@@ -393,6 +402,15 @@ export async function runCcrWorker(input: CcrWorkerInput): Promise<Response | nu
   // anything the live process does not hold is refused up front, not re-folded.
   // Claude Code client compat (X-42): system tail = live turn, no built-in tools beside the caller's MCP tools, stronger environment note.
   const ccClientCompat = canonical && featureFor("canonical_cc_client_compat", { groupId: input.groupId, accountId: account.id });
+  // X-56 (2026-11-10): a canonical continue feeds the live native session ONE new turn (the request's last message).
+  // A request whose history grew by more than that since the session's last answer — the conversation went on at
+  // another upstream and came back — is not a continuation: the session never saw those turns. Until now they were
+  // silently dropped (HTTP 200, input the size of turn 1). Such a request opens fresh over the whole conversation.
+  plan = canonical ? closeContinueGap(plan, persistentBlocks) : plan;
+  if (plan.mode === "fresh" && plan.reason?.startsWith("continue_gap")) {
+    bump("canonical_continue_gap_total");
+    console.log(`[ccr-worker] ${input.requestId} canonical: ${plan.reason} — the request carries turns the live session never saw; opening fresh over the whole conversation`);
+  }
   const renderedAllowed = canonical && !!reuseKey && featureFor("canonical_rendered_import", { groupId: input.groupId, accountId: account.id });
   const canon = canonical ? canonicalTurn(body, plan.mode, !!mem && !!reuseKey, featureFor("canonical_history_import", { groupId: input.groupId, accountId: account.id }), ccClientCompat, renderedAllowed ? fullBlocks : null, renderedImportMaxChars()) : null;
   if (canon?.error) throw new TunnelRequestError(canon.error.code, canon.error.message);
