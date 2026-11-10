@@ -35,7 +35,7 @@ const tools = [{ type: "function", function: { name: "get_weather", description:
 const LONG = " The quick brown fox jumps over the lazy dog.".repeat(60);
 // X-57: the caller asks for caching (cache_control), so the cache write beyond the platform baseline is its own line;
 // plainLongMsg() is the same prompt without the marker: there the write stays plain input, as at the official API.
-const longMsg = () => [{ role: "user", content: [{ type: "text", text: `ccr ${uniq()}${LONG}`, cache_control: { type: "ephemeral" } }] }];
+const longMsg = () => [{ role: "user", content: [{ type: "text", text: `ccr ${uniq()}${LONG}`, cache_control: { type: "ephemeral", ttl: "1h" } }] }]; // the caller asks for the 1-hour tier: shown and billed as such
 const plainLongMsg = () => [{ role: "user", content: `ccr ${uniq()}${LONG}` }];
 const lastUsage = async (admin) => (await admin.call("GET", "/api/admin/usage?pageSize=1")).data.items[0];
 

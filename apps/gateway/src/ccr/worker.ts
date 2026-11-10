@@ -222,6 +222,7 @@ export interface CcrWorkerInput {
    * conversation (conversation.ts drops the markers), so the gateway decides on the request as received.
    */
   callerAsksForCaching?: boolean;
+  callerCacheTier?: "5m" | "1h" | null;
   clientModel: string;
   upstreamModel: string;
   stream: boolean;
@@ -498,6 +499,7 @@ export async function runCcrWorker(input: CcrWorkerInput): Promise<Response | nu
     cacheBaseline: Number(getSetting("ccr_cache_baseline_worker")),
     // "1" = always as input (the old rule); otherwise a cache write is shown and billed as one only when the caller asked for caching (X-57)
     cacheWriteAsInput: getSetting("ccr_cache_write_as_input") === "1" || !(input.callerAsksForCaching ?? requestAsksForCaching(body)),
+    callerCacheTier: input.callerCacheTier ?? null,
     // Continued / resumed turn: bill only the increment over what the process already reported.
     usageBaseline: plan.mode === "fresh" ? null : (mem?.usage ?? null),
     // Messages earlier requests already delivered: their whole rows, told late by the TUI shim, are not a new answer.

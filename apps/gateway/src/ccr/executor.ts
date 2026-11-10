@@ -27,6 +27,7 @@ export interface CcrRunInput {
   body: Json;
   /** X-57: whether the caller's request as received carried cache_control (see CcrWorkerInput). */
   callerAsksForCaching?: boolean;
+  callerCacheTier?: "5m" | "1h" | null;
   /** Model to report back to the client. */
   clientModel: string;
   /** Model after model_mapping (what the session is configured with). */
@@ -152,6 +153,7 @@ export async function runCcr(input: CcrRunInput): Promise<Response> {
     cacheBaseline: Number(getSetting("ccr_cache_baseline_cloud")),
     // "1" = always as input (the old rule); otherwise a cache write is shown and billed as one only when the caller asked for caching (X-57)
     cacheWriteAsInput: getSetting("ccr_cache_write_as_input") === "1" || !(input.callerAsksForCaching ?? requestAsksForCaching(body)),
+    callerCacheTier: input.callerCacheTier ?? null,
   });
 
   // §5.3: sticky-keyed requests reuse a pooled warm session; stateless ones

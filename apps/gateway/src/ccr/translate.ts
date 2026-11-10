@@ -127,6 +127,26 @@ export function requestAsksForCaching(body: Json | null | undefined): boolean {
   return Array.isArray(body.messages) && body.messages.some((m: Json) => marked(m?.content));
 }
 
+/**
+ * The cache tier the caller asked for: "1h" when any of its cache_control markers says `ttl: "1h"`, else "5m" (the
+ * official default for `{type:"ephemeral"}`), null when it asked for no caching. Claude Code writes its own cache with
+ * the 1-hour TTL whatever the caller sent; a caller who asked for the default tier is shown and billed the 5-minute
+ * write price (1.25× input), as at the official API (X-57).
+ */
+export function requestCacheTier(body: Json | null | undefined): "5m" | "1h" | null {
+  if (!requestAsksForCaching(body)) return null;
+  let oneHour = false;
+  const walk = (v: unknown, depth: number): void => {
+    if (oneHour || depth > 6 || !v || typeof v !== "object") return;
+    if (Array.isArray(v)) { for (const x of v) walk(x, depth + 1); return; }
+    const o = v as Json;
+    if (o.cache_control && typeof o.cache_control === "object" && (o.cache_control as Json).ttl === "1h") { oneHour = true; return; }
+    for (const k of ["system", "tools", "messages", "content"]) if (k in o) walk(o[k], depth + 1);
+  };
+  walk(body, 0);
+  return oneHour ? "1h" : "5m";
+}
+
 export function ccrUnsupportedReason(body: Json, opts: { images?: boolean; documents?: boolean; toolChoice?: boolean } = {}): CcrUnsupported | null {
   const tc = body.tool_choice;
   // `toolChoice: true` (worker executor): a forced choice is emulated by toolChoiceInstruction() instead.
@@ -541,6 +561,8 @@ export interface TranslatorOptions {
    * billed at the write prices. Reads beyond the baseline are reads either way.
    */
   cacheWriteAsInput?: boolean;
+  /** X-57: the tier the caller's own cache_control asked for; "5m" presents every cache write in the 5-minute bucket. */
+  callerCacheTier?: "5m" | "1h" | null;
   /**
    * Persistent session (docs/worker-sessions.md): Claude Code's `result.modelUsage`
    * is cumulative over every turn of the process, so a continued turn passes the
@@ -628,6 +650,7 @@ export class SessionTranslator {
   private readonly model: string;
   private readonly simulateTools: boolean;
   private readonly cacheWriteAsInput: boolean;
+  private readonly callerCacheTier: "5m" | "1h" | null;
   /**
    * Tool simulation while streaming: text is forwarded as it arrives, except a
    * tail that could still be the start of a ```tool_call fence (held back), and
@@ -735,6 +758,7 @@ export class SessionTranslator {
     this.simulateTools = o.simulateTools;
     this.cacheBaseline = Math.max(0, Math.floor(o.cacheBaseline ?? 0));
     this.cacheWriteAsInput = o.cacheWriteAsInput ?? false;
+    this.callerCacheTier = o.callerCacheTier ?? null;
     this.overheadPlan = o.overhead ?? null;
     this.usageBaseline = o.usageBaseline ?? null;
     this.nativeTools = o.nativeTools ?? false;
@@ -1471,12 +1495,15 @@ export class SessionTranslator {
         cache_creation: { ephemeral_5m_input_tokens: 0, ephemeral_1h_input_tokens: 0 },
       };
     }
+    // X-57: the caller's own tier decides the presentation — Claude Code's 1-hour writes are shown as 5-minute writes
+    // to a caller who asked for the default TTL.
+    const as5m = this.callerCacheTier === "5m";
     return {
       input_tokens: inputOut,
       output_tokens: this.usage.output_tokens,
       cache_read_input_tokens: readOut,
       cache_creation_input_tokens: out5m + out1h,
-      cache_creation: { ephemeral_5m_input_tokens: out5m, ephemeral_1h_input_tokens: out1h },
+      cache_creation: { ephemeral_5m_input_tokens: as5m ? out5m + out1h : out5m, ephemeral_1h_input_tokens: as5m ? 0 : out1h },
     };
   }
 
