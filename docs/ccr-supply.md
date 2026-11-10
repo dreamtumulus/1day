@@ -249,12 +249,23 @@ cache_read 16608–16777，云端约 28K，几乎全是 Claude Code 系统提示
   两者最低 0。基线 = 该执行模式的身份上下文 token 数，settings `ccr_cache_baseline_worker`（2026-10-17 起 **700**：worker 改用
   `--system-prompt-file` 替换 Claude Code 默认系统提示词后固定前缀只剩约 710 token；此前 16600）/
   `ccr_cache_baseline_cloud`（默认 28000），控制台「设置」可调，填 0 = 上游缓存全额计给客户。
-  **缓存写入按输入价（2026-10-17 用户拍板）**：settings `ccr_cache_write_as_input`（默认 1）—— CCR 路径的 cache_control 是 Claude Code
-  自动打的、客户并未要求，所以超出基线的 `cache_creation` 并入 `input_tokens` 按 1.0× 计，不收 1.25× 写入溢价；`cache_read` 仍按
-  0.1× 读价让利客户。填 0 = 原样透传上游口径。**配套的翻译层改造**：worker 的历史不再折叠成单个文本块，而是**每轮一个内容块**
+  **基线扣减顺序（X-51）**：先扣 `cache_read`，扣不完的部分从 `cache_creation` 的 **1 小时档**扣，再扣 **5 分钟档**，最后（缓存字段都没吸收掉的部分）扣
+  `input_tokens`，各项最低 0。先扣 1 小时档的依据：`docs/evidence/cc-2.1.301 / 312 / 316` 的请求抓包里，Claude Code 给自己的系统提示词块、工具集和消息尾部
+  打的 `cache_control` 全部是 `{type: "ephemeral", ttl: "1h"}`（带 `extended-cache-ttl-2025-04-11` beta），没有一处 5 分钟标记——平台前置的身份前缀是按 1 小时档写入的。
+  **未能从抓包证实的部分**：这些抓包的上游是本地 mock，`usage` 里没有 `cache_creation` 嵌套对象，`stdoutTail` 又在约 300 字符处截断，所以「真实 Claude Code 的
+  `result.usage` 是否带 5m / 1h 拆分」仓库内无证据；代码两种情况都处理（见下），发布后需用生产 worker 抓样核对（docs/worker-sessions.md 的 `worker_capture_*`）。
+  **缓存写入按官方口径呈现和计费（X-51，2026-11-10 运营方决定；取代 2026-10-17 的「缓存写入按输入价」）**：settings `ccr_cache_write_as_input` 默认 **`0`**
+  —— 超出基线的 `cache_creation` 报为 `cache_creation_input_tokens`，并带官方的 `cache_creation: {ephemeral_5m_input_tokens, ephemeral_1h_input_tokens}` 拆分，
+  按写入价计费（5 分钟档 = 输入价 × 1.25，1 小时档 = 输入价 × 2）；`cache_read` 仍按读价。客户账单从此有「缓存写入」这一行，与官方 API 的呈现一致。
+  `1` = 逃生开关：回到旧做法，超出基线的写入并入 `input_tokens` 按 1.0× 计、`cache_creation` 恒为 0（两种取值下 `input + cache_creation + cache_read` 的合计相同）。
+  **拆分来源**：`result.usage`（蛇形，worker 的权威用量）或 `assistant` / `message_start` 事件里的 `cache_creation` 嵌套对象；`result.modelUsage`（驼峰，云端会话）
+  只有总数——此时沿用本轮流事件里见到的 1 小时 token 数，流事件也没有拆分则**整笔记入 5 分钟档**（官方默认 TTL；对客户有利的一档）。持久会话按进程累计值做差，
+  两档分别做差后再与总增量对齐；会话记忆里没有拆分的旧基线取总量允许的最小 1 小时份额。
+  **配套的翻译层改造**：worker 的历史不再折叠成单个文本块，而是**每轮一个内容块**
   （`messagesToBlocks`，超过 64 轮按固定边界分块），前缀块逐字节一致，同一对话粘在同一账号（sticky key 改为"系统提示 + 首条 user
   消息"而非整段历史）时后续轮次才能命中上游缓存——此前每轮全量 cache_creation、几乎零命中（3 小时 opus：1.19 亿写 / 29 万读）。
-  翻译层 `usageOut()` 输出即客户可见 usage（JSON 与 `message_delta` 同一组数字），结算管道不变（× 模型标准价 × 分组倍率），
+  翻译层 `usageOut()` 输出即客户可见 usage（JSON、`message_start`、`message_delta` 同一组数字，含 `cache_creation` 拆分），结算管道不变（网关把这份 Anthropic 形状的
+  usage 再解析成 `cache_write_tokens` + 5m / 1h 两档 × 模型标准价 × 分组倍率；`-p` legacy、canonical、TUI、云端会话，流式与非流式，Chat / Responses 转换都经同一个 `usageOut()`），
   客户可见 token 与扣费同源一致。**此前（同日上午）客户可见缓存恒为 0，客户内容被缓存命中时少计费，已修正。**
 - **平台账（对内）**：`result.modelUsage`（含 costUSD、cache 全量）为账号经济流水口径，翻译层保留 `translator.upstreamUsage`，
   执行器完成时打一行网关日志摘要；本期不落新库字段。

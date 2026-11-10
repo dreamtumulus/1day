@@ -20,6 +20,10 @@ export interface EarningRow {
   inputTokens: number;
   outputTokens: number;
   cacheTokens: number;
+  cacheReadTokens?: number;
+  cacheWriteTokens?: number;
+  cacheWrite5mTokens?: number;
+  cacheWrite1hTokens?: number;
   totalCost: number;
   providerEarning: number;
   statusCode: number;

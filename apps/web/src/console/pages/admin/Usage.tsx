@@ -2,6 +2,7 @@ import { useState } from "react";
 import { api, type AdminUser, type Paged, type UsageRow, type UsageStats } from "../../api";
 import { PathBadge } from "./_path";
 import { ShareBars } from "../../charts";
+import { CostBreakdown, cacheWriteText } from "../../CostBreakdown";
 import { useCT } from "../../i18n";
 import {
   Async,
@@ -235,11 +236,13 @@ export function AdminUsage() {
         { label: t("admin.usage.dProxyGroup"), value: `${r.proxyGroup ?? "—"}${r.proxyCountry ? ` · ${r.proxyCountry}` : ""}${r.proxyId ? ` · ${r.proxyId}` : ""}` },
         { label: t("admin.usage.colInput"), value: fmtNum(r.inputTokens) },
         { label: t("admin.usage.colOutput"), value: fmtNum(r.outputTokens) },
-        { label: t("admin.usage.colCacheRW"), value: `${fmtNum(r.cacheReadTokens)} / ${fmtNum(r.cacheWriteTokens)}` },
+        { label: t("common.cost.cacheRead"), value: fmtNum(r.cacheReadTokens) },
+        { label: t("common.cost.cacheWrite"), value: cacheWriteText(r) },
         { label: t("admin.usage.colCacheHit"), value: hitText(r.cacheReadTokens, r.inputTokens) },
         { label: t("admin.usage.colStandard"), value: fmtUsd(r.totalCost ?? 0) },
         { label: t("admin.usage.colRate"), value: `×${r.rateMultiplier}` },
         { label: t("admin.usage.colCharged"), value: fmtUsd(r.actualCost) },
+        !!r.costBreakdown && r.costBreakdown.lines.length > 0 && { label: t("common.cost.breakdown"), value: <CostBreakdown breakdown={r.costBreakdown} rateMultiplier={r.rateMultiplier} />, wide: true },
         { label: t("admin.usage.colEarning"), value: r.providerEarning ? fmtUsd(r.providerEarning) : "—" },
         { label: t("admin.usage.dDuration"), value: ms(r.durationMs) },
         { label: t("admin.usage.dTtft"), value: ms(r.firstTokenMs) },

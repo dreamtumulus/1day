@@ -5,6 +5,7 @@
 // history back verbatim. Any mismatch → fresh (never a wrong reuse).
 
 import { sha256Hex } from "@1dayapi/core";
+import type { TranslatedUsage } from "./translate.js";
 
 type Json = Record<string, any>;
 
@@ -16,7 +17,7 @@ export interface TurnMemory {
   /** Completed turns on the node; sent as `expectedTurn` with the next continue. */
   turn: number;
   /** Cumulative result usage of the process after the last turn (Claude Code reports totals, not increments). */
-  usage: { input_tokens: number; output_tokens: number; cache_read_input_tokens: number; cache_creation_input_tokens: number } | null;
+  usage: TranslatedUsage | null;
   /** Native tools: the turn is parked on the node waiting for these tool results (client tool_use id → node callId). */
   pendingCalls?: Array<{ toolUseId: string; callId: string; name: string }>;
   /** Upstream message ids already delivered to the client (last 16): a whole row of one told on a later tunnel is not a new message. */

@@ -114,6 +114,7 @@ export function responsesToAnthropic(body: Json, upstreamModel: string): Json {
   return out;
 }
 
+/** Same mapping as chat (convert.ts openaiUsageFromAnthropic): input_tokens = input + cache read + cache creation; cached_tokens = cache read. */
 export function responsesUsageFromAnthropic(u: Json | undefined): Json {
   const input = Number(u?.input_tokens ?? 0);
   const cacheRead = Number(u?.cache_read_input_tokens ?? 0);

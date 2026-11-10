@@ -53,17 +53,19 @@ const lastUsage = async () => (await admin("GET", "/api/admin/usage?pageSize=1")
 let r = await messages(wkey);
 let j = JSON.parse(r.text);
 check("messages via worker", r.status === 200 && j.content?.[0]?.text === "Hello from fake claude." && /^msg_[A-Za-z0-9_-]+$/.test(j.id ?? ""), r.text);
-// Default billing folds 1200 cache-write tokens into input; identity cache baseline is excluded.
-check("worker usage from result.modelUsage (default cache-write-as-input)", j.usage?.input_tokens === 1212 && j.usage?.output_tokens === 7 && j.usage?.cache_read_input_tokens === 17125 && j.usage?.cache_creation_input_tokens === 0, j.usage);
+// X-51 (official cache presentation, ccr_cache_write_as_input default 0): the identity cache baseline is excluded and the
+// 1200 cache-creation tokens are reported as cache creation, no longer folded into input (was: input 1212, cache
+// creation 0). The fake's result carries only the total (modelUsage), so the split falls to the 5-minute tier.
+check("worker usage from result.modelUsage (official cache presentation)", j.usage?.input_tokens === 12 && j.usage?.output_tokens === 7 && j.usage?.cache_read_input_tokens === 17125 && j.usage?.cache_creation_input_tokens === 1200 && j.usage?.cache_creation?.ephemeral_5m_input_tokens === 1200 && j.usage?.cache_creation?.ephemeral_1h_input_tokens === 0, j.usage);
 let u = await lastUsage();
-check("billed on the worker account", u.accountName === "ccr-worker-1" && u.actualCost > 0 && u.inputTokens === 1212 && u.cacheReadTokens === 17125 && u.cacheWriteTokens === 0 && u.usageEstimated === false, u);
+check("billed on the worker account", u.accountName === "ccr-worker-1" && u.actualCost > 0 && u.inputTokens === 12 && u.cacheReadTokens === 17125 && u.cacheWriteTokens === 1200 && u.cacheWrite5mTokens === 1200 && u.cacheWrite1hTokens === 0 && u.usageEstimated === false, u);
 
 r = await messages(wkey, { stream: true });
 check("stream via worker", r.status === 200 && r.text.includes("event: message_start") && r.text.includes("Hello from fake claude.") && r.text.includes("event: message_stop") && r.text.includes('"output_tokens":7'), r.text.slice(0, 400));
 
 r = await post(wkey, "/v1/chat/completions", { model: "claude-sonnet-5", messages: [{ role: "user", content: `worker ${uniq()}` }] });
 j = JSON.parse(r.text);
-// OpenAI prompt_tokens includes cached tokens: 1212 input + 17125 cache read.
+// OpenAI prompt_tokens = every billed prompt token: 12 input + 17125 cache read + 1200 cache creation (unchanged by X-51).
 check("chat via worker (ccr-chat)", r.status === 200 && j.choices?.[0]?.message?.content === "Hello from fake claude." && j.usage?.prompt_tokens === 18337 && j.usage?.prompt_tokens_details?.cached_tokens === 17125, r.text);
 
 // tools: prompt-level simulation, identical to cloud mode

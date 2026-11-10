@@ -208,7 +208,7 @@ export function usageQuery(
   return { where: w };
 }
 
-export const USAGE_SELECT = `SELECT l.*, k.name AS key_name, u.name AS user_name, a.name AS account_name, pu.name AS provider_name,
+export const USAGE_SELECT = `SELECT l.*, (SELECT ps.pricing_json FROM usage_pricing_snapshots ps WHERE ps.request_id = l.request_id) AS pricing_json, k.name AS key_name, u.name AS user_name, a.name AS account_name, pu.name AS provider_name,
   COALESCE(l.team_id, a.team_id) AS eff_team_id, COALESCE(l.proxy_id, a.bound_proxy_id) AS eff_proxy_id,
   (SELECT ut.name FROM upstream_teams ut WHERE ut.id = COALESCE(l.team_id, a.team_id)) AS team_name,
   (SELECT oo.name FROM onboard_orgs oo WHERE lower(oo.org_uuid) = lower(COALESCE(l.team_id, a.team_id)) LIMIT 1) AS org_name,
@@ -219,20 +219,22 @@ export const USAGE_SELECT = `SELECT l.*, k.name AS key_name, u.name AS user_name
   LEFT JOIN users pu ON pu.id = l.provider_id`;
 
 export function usageStats(where: Where) {
-  const totals = one<{ requests: number; cost: number; input: number; output: number; cache: number; cacheRead: number; cacheWrite: number }>(
+  const totals = one<{ requests: number; cost: number; input: number; output: number; cache: number; cacheRead: number; cacheWrite: number; cacheWrite5m: number; cacheWrite1h: number }>(
     `SELECT SUM(CASE WHEN l.status_code < 300 THEN 1 ELSE 0 END) AS requests, COALESCE(SUM(l.actual_cost),0) AS cost,
             COALESCE(SUM(l.input_tokens),0) AS input, COALESCE(SUM(l.output_tokens),0) AS output,
             COALESCE(SUM(l.cache_read_tokens + l.cache_write_tokens),0) AS cache,
-            COALESCE(SUM(l.cache_read_tokens),0) AS cacheRead, COALESCE(SUM(l.cache_write_tokens),0) AS cacheWrite
+            COALESCE(SUM(l.cache_read_tokens),0) AS cacheRead, COALESCE(SUM(l.cache_write_tokens),0) AS cacheWrite,
+            COALESCE(SUM(l.cache_write_5m_tokens),0) AS cacheWrite5m, COALESCE(SUM(l.cache_write_1h_tokens),0) AS cacheWrite1h
      FROM usage_logs l ${where.sql}`,
     ...where.params,
   );
-  const daily = all<{ day: string; requests: number; cost: number; tokens: number; input: number; output: number; cacheRead: number; cacheWrite: number }>(
+  const daily = all<{ day: string; requests: number; cost: number; tokens: number; input: number; output: number; cacheRead: number; cacheWrite: number; cacheWrite5m: number; cacheWrite1h: number }>(
     `SELECT substr(l.created_at,1,10) AS day, SUM(CASE WHEN l.status_code < 300 THEN 1 ELSE 0 END) AS requests,
             COALESCE(SUM(l.actual_cost),0) AS cost,
             COALESCE(SUM(l.input_tokens + l.output_tokens + l.cache_read_tokens + l.cache_write_tokens),0) AS tokens,
             COALESCE(SUM(l.input_tokens),0) AS input, COALESCE(SUM(l.output_tokens),0) AS output,
-            COALESCE(SUM(l.cache_read_tokens),0) AS cacheRead, COALESCE(SUM(l.cache_write_tokens),0) AS cacheWrite
+            COALESCE(SUM(l.cache_read_tokens),0) AS cacheRead, COALESCE(SUM(l.cache_write_tokens),0) AS cacheWrite,
+            COALESCE(SUM(l.cache_write_5m_tokens),0) AS cacheWrite5m, COALESCE(SUM(l.cache_write_1h_tokens),0) AS cacheWrite1h
      FROM usage_logs l ${where.sql} GROUP BY day ORDER BY day`,
     ...where.params,
   );
@@ -251,6 +253,8 @@ export function usageStats(where: Where) {
       cacheTokens: totals?.cache ?? 0,
       cacheReadTokens: totals?.cacheRead ?? 0,
       cacheWriteTokens: totals?.cacheWrite ?? 0,
+      cacheWrite5mTokens: totals?.cacheWrite5m ?? 0,
+      cacheWrite1hTokens: totals?.cacheWrite1h ?? 0,
     },
     daily: daily.map((d) => ({
       day: d.day,
@@ -261,6 +265,8 @@ export function usageStats(where: Where) {
       outputTokens: d.output,
       cacheReadTokens: d.cacheRead,
       cacheWriteTokens: d.cacheWrite,
+      cacheWrite5mTokens: d.cacheWrite5m,
+      cacheWrite1hTokens: d.cacheWrite1h,
     })),
     byModel: byModel.map((m) => ({
       model: m.model,

@@ -128,7 +128,12 @@ export interface UsageRow {
   inputTokens: number;
   outputTokens: number;
   cacheReadTokens: number;
+  /** Total cache creation; the 5m / 1h fields are its split by cache TTL (both 0 on rows from before the split). */
   cacheWriteTokens: number;
+  cacheWrite5mTokens?: number;
+  cacheWrite1hTokens?: number;
+  /** Per-meter lines: tokens, list unit price (USD / 1M) and the billed amount after the group multiplier. null = not charged. */
+  costBreakdown?: UsageCostBreakdown | null;
   usageEstimated: boolean;
   rateMultiplier: number;
   actualCost: number;
@@ -163,8 +168,15 @@ export interface UsageRow {
   providerEarning?: number;
 }
 
+export type UsageCostMeter = "input" | "output" | "cache_read" | "cache_write_5m" | "cache_write_1h" | "cache_write";
+export interface UsageCostBreakdown {
+  /** settlement = the tariff the row was charged with; current = today's price (rows older than the snapshots). */
+  priceSource: "settlement" | "current";
+  lines: Array<{ meter: UsageCostMeter; tokens: number; pricePerM: number; costUsd: number }>;
+}
+
 export interface UsageStats {
-  totals: { requests: number; costUsd: number; inputTokens: number; outputTokens: number; cacheTokens: number; cacheReadTokens: number; cacheWriteTokens: number };
+  totals: { requests: number; costUsd: number; inputTokens: number; outputTokens: number; cacheTokens: number; cacheReadTokens: number; cacheWriteTokens: number; cacheWrite5mTokens?: number; cacheWrite1hTokens?: number };
   daily: Array<{
     day: string;
     requests: number;
@@ -174,6 +186,8 @@ export interface UsageStats {
     outputTokens: number;
     cacheReadTokens: number;
     cacheWriteTokens: number;
+    cacheWrite5mTokens?: number;
+    cacheWrite1hTokens?: number;
   }>;
   byModel: Array<{ model: string; requests: number; costUsd: number; inputTokens: number; outputTokens: number }>;
   byAccount?: Array<{ accountId: string; name: string | null; requests: number; costUsd: number }>;
@@ -827,7 +841,10 @@ export interface ModelPrices {
   inputPerM: number;
   outputPerM: number;
   cacheReadPerM: number;
+  /** 1-hour cache write price. */
   cacheWritePerM: number;
+  /** 5-minute cache write price (effective: an override without its own value = cacheWritePerM x 0.625). */
+  cacheWrite5mPerM: number;
 }
 
 export interface AdminModel {
@@ -839,6 +856,8 @@ export interface AdminModel {
   overridden: boolean;
   prices: ModelPrices;
   catalogPrices: ModelPrices | null;
+  /** false: the override has no 5-minute price of its own (derived from the 1-hour price). */
+  cacheWrite5mExplicit?: boolean;
 }
 
 export interface RedeemCode {

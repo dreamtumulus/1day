@@ -277,11 +277,11 @@ function SettingsForm({ initial, groups, onSaved }: { initial: Settings; groups:
             </Field>
             <Field label={t("admin.settings.cacheWriteAsInput")} hint={t("admin.settings.cacheWriteAsInputHint")}>
               <Select
-                value={s.ccr_cache_write_as_input ?? "1"}
+                value={s.ccr_cache_write_as_input ?? "0"}
                 onChange={(e) => set("ccr_cache_write_as_input", e.target.value)}
                 options={[
-                  { value: "1", label: t("admin.settings.cacheWriteAsInputOn") },
                   { value: "0", label: t("admin.settings.cacheWriteAsInputOff") },
+                  { value: "1", label: t("admin.settings.cacheWriteAsInputOn") },
                 ]}
               />
             </Field>

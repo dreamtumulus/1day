@@ -367,8 +367,8 @@ CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
   `enabled=0` 下架。
 - **不在注册表内的模型直接拒绝**：404 `model_not_found`（v2 中未知模型计费为 0 的问题由此消除）。
 - 标准价 `total_cost`：
-  - 有 `model_prices` 行：`Σ tokens × 单价 / 1e6`（四个计量项）；
-  - 否则：目录 `estimateCost`（含 5m/1h 缓存写等全部 SKU）。
+  - 有 `model_prices` 行：`Σ tokens × 单价 / 1e6`（输入 / 输出 / 缓存读 / 缓存写 5m / 缓存写 1h；5m 单价为空时 = 1h 单价 × 0.625，X-51）；
+  - 否则：目录 `estimateCost`（缓存写 5m / 1h 各按自己的 SKU，拆分前的旧记录按单一 SKU）。
 - 分组白名单 `{enabled, models[]}`：`*` 通配、锚定、大小写不敏感，候选名 {原名, 去 `models/` 前缀}；
   `enabled` 且列表空 → 配置时 400。准入失败 403 `model_not_allowed`；`GET /v1/models` 按 Key 分组过滤。
 

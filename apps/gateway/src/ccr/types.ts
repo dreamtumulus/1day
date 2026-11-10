@@ -96,6 +96,8 @@ export interface AnthropicUsage {
   output_tokens?: number;
   cache_read_input_tokens?: number;
   cache_creation_input_tokens?: number;
+  /** Official split of the total by cache TTL; absent on upstreams / fakes that report only the total. */
+  cache_creation?: { ephemeral_5m_input_tokens?: number; ephemeral_1h_input_tokens?: number };
 }
 
 export interface AnthropicBlock {

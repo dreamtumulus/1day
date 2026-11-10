@@ -10,7 +10,8 @@ import {
   parseJsonArray,
   parseJsonMap,
   type AccountRow, parseKeyPolicy, parseKeyPolicyDoc, parseWindowModel, planLabel,
-  CREDITS_REJECTION_KEY, creditsLive, creditsServing, parseUsageCredits } from "@1dayapi/core";
+  CREDITS_REJECTION_KEY, creditsLive, creditsServing, parseUsageCredits,
+  getModelEntry, usageCostLines, type BasicPrices, type UsageCostMeter } from "@1dayapi/core";
 
 // Row -> API shapes (camelCase) shared by the user / provider / admin routes.
 
@@ -439,6 +440,11 @@ export interface UsageRowDb {
   output_tokens: number;
   cache_read_tokens: number;
   cache_write_tokens: number;
+  /** migration 41; undefined / 0 on rows from before the split (cache_write_tokens is then the unsplit total). */
+  cache_write_5m_tokens?: number | null;
+  cache_write_1h_tokens?: number | null;
+  /** usage_pricing_snapshots.pricing_json of the row (USAGE_SELECT), the tariff it was settled with. */
+  pricing_json?: string | null;
   usage_estimated: number;
   total_cost: number;
   rate_multiplier: number;
@@ -467,6 +473,36 @@ export interface UsageRowDb {
   proxy_country?: string | null;
 }
 
+/**
+ * Per-meter cost lines of a settled row (X-51): tokens, list unit price (USD / 1M) and the billed amount (after the
+ * group multiplier). Unit prices are the ones the row was settled with (pricing snapshot); rows older than the
+ * snapshots fall back to today's price and say so. null for rows that were not charged.
+ */
+export function usageCostBreakdown(u: UsageRowDb): { priceSource: "settlement" | "current"; lines: Array<{ meter: UsageCostMeter; tokens: number; pricePerM: number; costUsd: number }> } | null {
+  if (u.status_code >= 300) return null;
+  let prices: BasicPrices | null = null;
+  let priceSource: "settlement" | "current" = "settlement";
+  if (u.pricing_json) {
+    try {
+      const snap = JSON.parse(u.pricing_json) as { prices?: BasicPrices | null };
+      if (snap?.prices && typeof snap.prices.inputPerM === "number") prices = snap.prices;
+    } catch {
+      /* unreadable snapshot: fall back to the current price */
+    }
+  }
+  if (!prices) {
+    prices = getModelEntry(u.model)?.prices ?? null;
+    priceSource = "current";
+  }
+  if (!prices) return null;
+  const lines = usageCostLines(
+    { input_tokens: u.input_tokens, output_tokens: u.output_tokens, cache_read_tokens: u.cache_read_tokens, cache_write_tokens: u.cache_write_tokens,
+      cache_write_5m_tokens: u.cache_write_5m_tokens ?? 0, cache_write_1h_tokens: u.cache_write_1h_tokens ?? 0 },
+    prices,
+  ).map((l) => ({ ...l, costUsd: l.costUsd * u.rate_multiplier }));
+  return { priceSource, lines };
+}
+
 export function usageShape(u: UsageRowDb) {
   return {
     id: u.id,
@@ -487,7 +523,11 @@ export function usageShape(u: UsageRowDb) {
     inputTokens: u.input_tokens,
     outputTokens: u.output_tokens,
     cacheReadTokens: u.cache_read_tokens,
+    /** Total cache creation; the two below are its split by TTL (both 0 on rows from before the split). */
     cacheWriteTokens: u.cache_write_tokens,
+    cacheWrite5mTokens: u.cache_write_5m_tokens ?? 0,
+    cacheWrite1hTokens: u.cache_write_1h_tokens ?? 0,
+    costBreakdown: usageCostBreakdown(u),
     usageEstimated: u.usage_estimated === 1,
     rateMultiplier: u.rate_multiplier,
     actualCost: u.actual_cost,

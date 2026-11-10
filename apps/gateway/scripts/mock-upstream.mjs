@@ -230,7 +230,9 @@ async function runWorker(s, userText) {
   // (33725 cache_read on a two-token answer); client-visible usage is logical
   // only (§7.1 双账本). Snake usage rides the assistant event; the result
   // carries modelUsage (camelCase, per model, with costUSD) and NO snake usage.
-  const usage = { input_tokens: 10, output_tokens: 6, cache_read_input_tokens: 33725, cache_creation_input_tokens: 1200 };
+  // The snake usage carries the official 5m / 1h split (Claude Code writes its caches with ttl 1h); modelUsage has
+  // only the total, so the gateway has to keep the split it saw in the events (X-51).
+  const usage = { input_tokens: 10, output_tokens: 6, cache_read_input_tokens: 33725, cache_creation_input_tokens: 1200, cache_creation: { ephemeral_5m_input_tokens: 0, ephemeral_1h_input_tokens: 1200 } };
   const modelUsage = { [s.model]: { inputTokens: 10, outputTokens: 6, cacheReadInputTokens: 33725, cacheCreationInputTokens: 1200, thinkingTokens: 0, costUSD: 0.0042, costBasis: "api", contextWindow: 200000, maxOutputTokens: 64000 } };
   pushEvent(s, { type: "env_manager_log", level: "info", message: "sandbox provisioned" });
   pushEvent(s, { type: "system", subtype: "init", session_id: s.id, model: s.model });

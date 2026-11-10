@@ -54,7 +54,7 @@ test("worker line family -> SessionTranslator -> final Messages JSON", () => {
   const msg = t.message();
   assert.equal(msg.content[0].text, "Hello worker.");
   assert.equal(msg.model, "claude-sonnet-5");
-  assert.deepEqual(msg.usage, { input_tokens: 12, output_tokens: 7, cache_read_input_tokens: 33725, cache_creation_input_tokens: 1200 }, "no baseline: upstream modelUsage cache passes through");
+  assert.deepEqual(msg.usage, { input_tokens: 12, output_tokens: 7, cache_read_input_tokens: 33725, cache_creation_input_tokens: 1200, cache_creation: { ephemeral_5m_input_tokens: 1200, ephemeral_1h_input_tokens: 0 } }, "no baseline: upstream modelUsage cache passes through");
   assert.equal(t.upstreamUsage["claude-sonnet-5-5"].costUSD, 0.0051, "upstream meter (with costUSD) kept for the platform ledger");
   assert.equal(msg.stop_reason, "end_turn");
 });
@@ -84,11 +84,11 @@ test("identity cache baseline is subtracted once: read first, then creation, cla
     return t.message().usage;
   };
   // upstream: cache_read 33725 (identity prefix hit + client content), cache_creation 1200 (client content)
-  assert.deepEqual(run(16600), { input_tokens: 12, output_tokens: 7, cache_read_input_tokens: 17125, cache_creation_input_tokens: 1200 }, "baseline fully covered by cache_read");
-  assert.deepEqual(run(34000), { input_tokens: 12, output_tokens: 7, cache_read_input_tokens: 0, cache_creation_input_tokens: 925 }, "remainder of the baseline comes off cache_creation");
+  assert.deepEqual(run(16600), { input_tokens: 12, output_tokens: 7, cache_read_input_tokens: 17125, cache_creation_input_tokens: 1200, cache_creation: { ephemeral_5m_input_tokens: 1200, ephemeral_1h_input_tokens: 0 } }, "baseline fully covered by cache_read");
+  assert.deepEqual(run(34000), { input_tokens: 12, output_tokens: 7, cache_read_input_tokens: 0, cache_creation_input_tokens: 925, cache_creation: { ephemeral_5m_input_tokens: 925, ephemeral_1h_input_tokens: 0 } }, "remainder of the baseline comes off cache_creation");
   // A baseline no cache field could absorb comes off plain input (an uncached Claude Code prefix is metered as input), never below 0.
-  assert.deepEqual(run(100000), { input_tokens: 0, output_tokens: 7, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }, "never negative");
-  assert.deepEqual(run(0), { input_tokens: 12, output_tokens: 7, cache_read_input_tokens: 33725, cache_creation_input_tokens: 1200 });
+  assert.deepEqual(run(100000), { input_tokens: 0, output_tokens: 7, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, cache_creation: { ephemeral_5m_input_tokens: 0, ephemeral_1h_input_tokens: 0 } }, "never negative");
+  assert.deepEqual(run(0), { input_tokens: 12, output_tokens: 7, cache_read_input_tokens: 33725, cache_creation_input_tokens: 1200, cache_creation: { ephemeral_5m_input_tokens: 1200, ephemeral_1h_input_tokens: 0 } });
 });
 
 test("planThinking: enabled → budget; adaptive → thinking wanted + default effort high; effort passthrough; none → off", async () => {

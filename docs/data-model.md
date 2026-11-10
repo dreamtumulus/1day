@@ -81,12 +81,20 @@
   删除账户时同事务释放）。
 
 ### model_prices
-- 有行 = 覆盖（目录模型）或新增（自定义模型）；`enabled=0` 下架。四个单价单位 USD / 1M tokens。
-- 有覆盖行时按四个计量项计价（5m/1h 缓存写并入 `cache_write_per_m`）；无覆盖行时用目录全部 SKU。
+- 有行 = 覆盖（目录模型）或新增（自定义模型）；`enabled=0` 下架。单价单位 USD / 1M tokens。
+- 缓存写入两档（X-51，迁移 42）：`cache_write_per_m` = **1 小时档单价**（也是拆分前唯一的写入价，旧行余量仍按它计）；
+  `cache_write_5m_per_m` = 5 分钟档单价，可空，**NULL = `cache_write_per_m × 0.625`**（官方 1.25 / 2）。迁移不回填任何行。
+- 有覆盖行时：输入 / 输出 / 缓存读 / 缓存写 5m / 缓存写 1h 五项按行内单价；无覆盖行时用目录 SKU（catalog.md §3）。
+- 控制台首次覆盖一个目录模型且请求未带 `cacheWrite5mPerM` 时，5 分钟价取目录价；之后不带该字段的更新保持原值，显式 `null` 清空（回到 × 0.625）。
 
 ### usage_logs
 - 每次请求一行，`request_id` 唯一（结算幂等键）。失败请求 `status_code ≥ 300`、费用 0、`error_code` 有值。
-- `input_tokens` **不含**缓存读；`cache_read_tokens`、`cache_write_tokens` 单列。`usage_estimated=1` 表示上游未报告或报告非法 usage，按请求正文和已生成文本估算；图片/文档按媒体块估算，不按 base64 字节收费。计数必须为有限非负整数，每项及提示词合计最多十亿。
+- `input_tokens` **不含**缓存读；`cache_read_tokens`、`cache_write_tokens` 单列。
+- **缓存写入拆分（X-51，迁移 41）**：`cache_write_tokens` 是缓存写**总数**；`cache_write_5m_tokens` / `cache_write_1h_tokens` 是它按缓存 TTL 的拆分
+  （官方 `usage.cache_creation.ephemeral_5m_input_tokens` / `ephemeral_1h_input_tokens`），`NOT NULL DEFAULT 0`。新行恒有 `5m + 1h = 总数`
+  （上游只给总数时整笔记入 5 分钟档——官方默认 TTL）。**迁移前的旧行不回填，保持 0 / 0**：所有读方把 `总数 − 5m − 1h` 当作「拆分未知、按旧的单一写入价
+  （= 1 小时价）计」，所以历史费用展示不变。汇总 token 时只加 `cache_write_tokens`，不要把三列相加。
+-`usage_estimated=1` 表示上游未报告或报告非法 usage，按请求正文和已生成文本估算；图片/文档按媒体块估算，不按 base64 字节收费。计数必须为有限非负整数，每项及提示词合计最多十亿。
 - 费用三列：`total_cost`（标准价）、`actual_cost = q8(total × rate_multiplier)`（实扣）、`provider_earning = q8(total × payout_rate)`（仅号商账户；**倍率 0 的分组不记分成**——免费组即号商自用池，平台没收钱也不分钱，2026-10-29）。
 - `account_id` / `provider_id` 不设外键，账户删除后历史仍可查。
 - 迁移 32 的可观测字段：`actual_model`（上游实际返回模型，区别于请求映射 `upstream_model`）、`selection_ms`（首次取得账号租约耗时）、`stream_truncated`、`tool_calls`、`tool_results`；失败另有 `error_scope`、`retryable`、`credential_version`、`execution_sequence`，见 errors.md。
@@ -165,6 +173,7 @@ console 定时任务每 `cache_refund_interval_sec`（默认 86400）跑一轮�
 | `window_passive_max_age_sec` | `21600` | 账号超过此秒数无任何窗口采样才主动探测 usage（被动优先，ccr-supply.md §7） |
 | `ccr_cache_baseline_worker` | `16600` | worker 模式身份上下文缓存基线（token），客户可见缓存 = 上游缓存 − 基线（ccr-supply.md §7.1） |
 | `ccr_cache_baseline_cloud` | `28000` | 云端会话模式同上 |
+| `ccr_cache_write_as_input` | `0` | CCR 路径超出基线的缓存写入怎么呈现和计费：`0`（默认，X-51）= 官方口径，报为 `cache_creation_input_tokens` + 5m / 1h 拆分并按写入价计；`1` = 逃生开关，并入 `input_tokens` 按输入价计（2026-10-17～11-10 的做法） |
 | `cache_refund_enabled` / `cache_refund_percent` / `cache_refund_interval_sec` | `1` / `80` / `86400` | 缓存重建返还（本节 cache_refunds）：是否自动跑、返还差额的百分比（0 = 只标记不返钱）、定时间隔（≥ 3600）。关闭只停定时任务，手动返还仍可用 |
 
 设置表另有内部键 `__revision__`（2026-11-01）：初始为 1，管理台每次原子写入整份设置后加 1。`GET /api/admin/settings` 在 data 中返回 `_revision` 并带 `ETag: "settings-N"`；`PUT` 必须携带该 revision 或对应 `If-Match`，缺失 428、冲突 409。它不属于 `SETTING_DEFAULTS`，不会被业务读取或覆盖。
@@ -259,9 +268,13 @@ console 定时任务每 `cache_refund_interval_sec`（默认 86400）跑一轮�
 
 **迁移 32（控制面、调度与观测，2026-11-01）**：仅新增列与 `accounts_credential_version_update` 触发器；`accounts` 增加凭据版本及 profile/refresh/inference 检查时间，`usage_logs` 增加实际模型、选号耗时、流截断、工具统计和统一错误对象。旧账号/账本不回填、不修改；新库由 `SCHEMA_V3` 直接带列，触发器在迁移时创建。测试：`settings-revision.test.mjs`、`control-plane.test.mjs`、`merkle-affinity.test.mjs`、`tests/e2e/p0-p2.test.mjs`。
 
+**迁移 41 / 42（缓存写入分档，X-51，2026-11-10）**：仅新增列，不回填、不改旧行。41：`usage_logs.cache_write_5m_tokens` /
+`cache_write_1h_tokens`（`INTEGER NOT NULL DEFAULT 0`）；42：`model_prices.cache_write_5m_per_m`（`REAL`，可空）。新库由 `SCHEMA_V3` 直接带列，
+两条迁移用 `addColumns`（列已存在则跳过），可重复执行。回滚到旧版本代码时多出的列被忽略（旧代码按列名插入）。
+
 ### 结算持久化与恢复
 
-生产网关使用 `settleRequestDurably`：先把 requestId、用量、倍率、实际费用及价格快照写入 `data/settlement-journal/` 并 fsync，再提交 SQLite 账本事务。事务失败保留意图；每 10 秒自动重放，推理准入也尝试恢复。重放始终用原快照，以 `usage_logs.request_id` 幂等，不重新调用模型。
+生产网关使用 `settleRequestDurably`：先把 requestId、用量、倍率、实际费用及价格快照写入 `data/settlement-journal/` 并 fsync，再提交 SQLite 账本事务。事务失败保留意图；每 10 秒自动重放，推理准入也尝试恢复。重放始终用原快照，以 `usage_logs.request_id` 幂等，不重新调用模型。日志条目的 `input.usage` 自 X-51 起带 `cache_write_5m_tokens` / `cache_write_1h_tokens`，`pricing.prices` 带 `cacheWrite5mPerM`；上一版本写下的条目没有这些字段，重放时拆分记 0 / 0、金额用条目里已固定的数（`packages/core/test/cache-write-tiers.test.mjs` 有旧形状条目的重放用例）。
 
 有未成功补账条目或日志目录不能可靠写入时，新推理返回 503 `settlement_unavailable`，并记录明确错误。数据库仍可访问时管理查询继续可用。非流式响应在安全记录后交付；流式已交付的增量不能撤回，进程在终止事件与持久化之间突然退出仍有最终用量丢失窗口。此日志解决已生成结算意图后的 SQLite 失败，不能声称消除磁盘/主机同时损坏或所有执行中崩溃。
 

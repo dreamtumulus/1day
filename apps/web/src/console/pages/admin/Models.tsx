@@ -22,13 +22,19 @@ import {
   type Column,
 } from "../../ui";
 
-const PRICE_KEYS: Array<keyof ModelPrices> = ["inputPerM", "outputPerM", "cacheReadPerM", "cacheWritePerM"];
+// cacheWritePerM is the 1-hour cache write price (what the platform billed every cache write with before X-51);
+// cacheWrite5mPerM is the 5-minute one and may be left blank on an override: 0.625 x the 1-hour price then.
+const PRICE_KEYS: Array<keyof ModelPrices> = ["inputPerM", "outputPerM", "cacheReadPerM", "cacheWrite5mPerM", "cacheWritePerM"];
 const PRICE_LABEL: Record<keyof ModelPrices, string> = {
   inputPerM: "admin.models.colInput",
   outputPerM: "admin.models.colOutput",
   cacheReadPerM: "admin.models.colCacheRead",
-  cacheWritePerM: "admin.models.colCacheWrite",
+  cacheWrite5mPerM: "admin.models.colCacheWrite5m",
+  cacheWritePerM: "admin.models.colCacheWrite1h",
 };
+const CACHE_WRITE_5M_FALLBACK_RATIO = 0.625;
+/** The override row has no 5-minute price of its own: the shown one is derived from the 1-hour price. */
+const derived5m = (m: AdminModel | null | undefined): boolean => !!m && m.overridden && m.cacheWrite5mExplicit === false;
 
 function price(n: number): string {
   if (!n) return "$0";
@@ -42,7 +48,10 @@ function PriceCell({ m, k }: { m: AdminModel; k: keyof ModelPrices }) {
   const changed = m.overridden && cat !== undefined && Math.abs(cat - cur) > 1e-9;
   return (
     <div className="font-mono tabular-nums">
-      <div className={changed ? "font-semibold text-primary" : ""}>{price(cur)}</div>
+      <div className={changed ? "font-semibold text-primary" : ""} title={k === "cacheWrite5mPerM" && derived5m(m) ? t("admin.models.cacheWrite5mDerived") : undefined}>
+        {price(cur)}
+        {k === "cacheWrite5mPerM" && derived5m(m) && <span className="ml-0.5 text-on-surface-faint">*</span>}
+      </div>
       {changed && (
         <div className="text-[11.5px] text-on-surface-faint line-through" title={t("admin.models.catalogWas", { price: price(cat!) })}>
           {price(cat!)}
@@ -83,6 +92,8 @@ export function AdminModels() {
         displayName: m.displayName,
         platform: m.platform,
         ...m.prices,
+        // keep a derived 5-minute price derived (null), do not freeze today's computed value into the row
+        cacheWrite5mPerM: derived5m(m) ? null : m.prices.cacheWrite5mPerM,
         enabled,
       });
       toast.success(t("admin.models.toggled"));
@@ -201,7 +212,7 @@ export function AdminModels() {
               columns={columns}
               rows={rows}
               rowKey={(m) => m.modelId}
-              minWidth={1080}
+              minWidth={1180}
               loading={state.loading}
               empty={<EmptyState title={t("admin.models.empty")} />}
             />
@@ -242,6 +253,7 @@ function ModelModal({
     inputPerM: "0",
     outputPerM: "0",
     cacheReadPerM: "0",
+    cacheWrite5mPerM: "",
     cacheWritePerM: "0",
   });
   const [err, setErr] = useState<string | null>(null);
@@ -258,6 +270,8 @@ function ModelModal({
       inputPerM: String(model?.prices.inputPerM ?? 0),
       outputPerM: String(model?.prices.outputPerM ?? 0),
       cacheReadPerM: String(model?.prices.cacheReadPerM ?? 0),
+      // blank = no own 5-minute price (0.625 x the 1-hour price)
+      cacheWrite5mPerM: !model || derived5m(model) ? "" : String(model.prices.cacheWrite5mPerM ?? 0),
       cacheWritePerM: String(model?.prices.cacheWritePerM ?? 0),
     });
   }, [open, model]);
@@ -270,6 +284,10 @@ function ModelModal({
     }
     const body: Record<string, unknown> = { displayName: name.trim() || modelId, platform, enabled };
     for (const k of PRICE_KEYS) {
+      if (k === "cacheWrite5mPerM" && prices[k].trim() === "") {
+        body[k] = null;
+        continue;
+      }
       const n = Number(prices[k]);
       if (!Number.isFinite(n) || n < 0) {
         setErr(`${t(PRICE_LABEL[k])}: ≥ 0`);
@@ -322,17 +340,26 @@ function ModelModal({
         </div>
         <div>
           <div className="label">{t("admin.models.perM")}</div>
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
             {PRICE_KEYS.map((k) => (
               <Field
                 key={k}
                 label={<span className="text-[13px]">{t(PRICE_LABEL[k])}</span>}
                 hint={model?.catalogPrices ? t("admin.models.catalogWas", { price: price(model.catalogPrices[k]) }) : undefined}
               >
-                <Input type="number" min={0} step="0.0001" value={prices[k]} onChange={(e) => setPrices((p) => ({ ...p, [k]: e.target.value }))} className="font-mono" />
+                <Input
+                  type="number"
+                  min={0}
+                  step="0.0001"
+                  value={prices[k]}
+                  placeholder={k === "cacheWrite5mPerM" && Number(prices.cacheWritePerM) > 0 ? String(Number((Number(prices.cacheWritePerM) * CACHE_WRITE_5M_FALLBACK_RATIO).toFixed(6))) : undefined}
+                  onChange={(e) => setPrices((p) => ({ ...p, [k]: e.target.value }))}
+                  className="font-mono"
+                />
               </Field>
             ))}
           </div>
+          <div className="mt-2 text-[12.5px] text-on-surface-faint">{t("admin.models.cacheWriteHint")}</div>
         </div>
         <Toggle checked={enabled} onChange={setEnabled} label={t("common.enabled")} />
       </div>

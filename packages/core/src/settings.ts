@@ -125,10 +125,11 @@ export const SETTING_DEFAULTS = {
   // 基线 = 真 Claude Code 系统提示词 + 工具集的 token 数，按执行模式实测（worker 2026-10-16：16608–16777）；0 = 上游缓存全额计给客户。
   ccr_cache_baseline_worker: "16600",
   ccr_cache_baseline_cloud: "28000",
-  // CCR 路径的提示词缓存是本平台强加的（Claude Code 自动打 cache_control），客户并未要求：
-  // "1" = 超出基线的 cache_creation 按普通输入计（1.0×，不收 1.25× 写入溢价），cache_read 仍按读价（0.1×）让利给客户；
-  // "0" = 原样透传上游口径（写 1.25× / 读 0.1×）。2026-10-17 用户拍板默认 1。
-  ccr_cache_write_as_input: "1",
+  // CCR 路径超出身份基线的 cache_creation 怎么呈现和计费（X-51，2026-11-10 运营方决定与官方 API 对齐）：
+  // "0"（默认）= 官方口径：报为 cache_creation_input_tokens（含 cache_creation 的 5m / 1h 拆分），按写入价计（5m 1.25× / 1h 2×）；
+  // "1" = 逃生开关，回到 2026-10-17 的做法：并入 input_tokens 按普通输入价（1.0×），响应里 cache_creation 恒为 0。
+  // cache_read 两种取值下都按读价。
+  ccr_cache_write_as_input: "0",
   // worker 路径抓样（2026-11-03，gateway ccr/capture.ts）：按比例把「客户请求 → 发给节点的内容 → 返回」记成 NDJSON
   // （<DATA_DIR>/captures/worker-<日期>.ndjson），用 ops/bin/worker-capture-review 看 worker 回的是不是用户要的东西。
   // worker_capture_sample：0 = 关；0.05 = 5%；1 = 全部。worker_capture_keys：逗号分隔的 api_keys.id（或前缀），这些 Key 100% 抓。

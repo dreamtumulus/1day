@@ -326,6 +326,8 @@ const MIGRATIONS: Array<{ version: number; up: (d: DatabaseSync, log: Log) => vo
   { version: 38, up: migration38 },
   { version: 39, up: migration39 },
   { version: 40, up: migration40 },
+  { version: 41, up: migration41 },
+  { version: 42, up: migration42 },
 ];
 
 // 上号员令牌（独立鉴权的上号站点 /onboard）：admin 签发，绑定目标节点；
@@ -1085,4 +1087,22 @@ CREATE TABLE IF NOT EXISTS node_proxy_shares (
 );
 CREATE INDEX IF NOT EXISTS idx_node_proxy_shares_node ON node_proxy_shares(node_id);`);
   log("migration 40: node_proxy_shares (cross-node proxy sharing)");
+}
+
+// Official cache billing parity (X-51, 2026-11-10): cache creation split by TTL. cache_write_tokens stays the total.
+// Nothing is backfilled: the split of an existing row is unknown, so it keeps 0 / 0 and every reader treats
+// cache_write_tokens - 5m - 1h as "priced at the old single cache-write price" (historical costs do not move).
+function migration41(d: DatabaseSync, log: Log): void {
+  addColumns(d, log, "usage_logs", [
+    ["cache_write_5m_tokens", "INTEGER NOT NULL DEFAULT 0"],
+    ["cache_write_1h_tokens", "INTEGER NOT NULL DEFAULT 0"],
+  ]);
+  log("migration 41: usage_logs.cache_write_5m_tokens / cache_write_1h_tokens");
+}
+
+// X-51: admin price overrides get a 5-minute cache write price. cache_write_per_m keeps its meaning (the 1-hour price,
+// the only tier billed so far); NULL here = cache_write_per_m x 0.625 (official 1.25 / 2), so no row needs a backfill.
+function migration42(d: DatabaseSync, log: Log): void {
+  addColumns(d, log, "model_prices", [["cache_write_5m_per_m", "REAL"]]);
+  log("migration 42: model_prices.cache_write_5m_per_m");
 }

@@ -303,7 +303,7 @@ export function registerProviderRoutes(app: FastifyInstance): void {
     )!;
     const rows = all<Record<string, any>>(
       `SELECT l.id, l.created_at, l.account_id, a.name AS account_name, l.model, l.input_tokens, l.output_tokens,
-              l.cache_read_tokens, l.cache_write_tokens, l.total_cost, l.provider_earning, l.status_code
+              l.cache_read_tokens, l.cache_write_tokens, l.cache_write_5m_tokens, l.cache_write_1h_tokens, l.total_cost, l.provider_earning, l.status_code
        FROM usage_logs l LEFT JOIN accounts a ON a.id = l.account_id ${w.sql}
        ORDER BY l.created_at DESC, l.rowid DESC LIMIT ? OFFSET ?`,
       ...w.params,
@@ -322,6 +322,10 @@ export function registerProviderRoutes(app: FastifyInstance): void {
             inputTokens: r.input_tokens,
             outputTokens: r.output_tokens,
             cacheTokens: r.cache_read_tokens + r.cache_write_tokens,
+            cacheReadTokens: r.cache_read_tokens,
+            cacheWriteTokens: r.cache_write_tokens,
+            cacheWrite5mTokens: r.cache_write_5m_tokens ?? 0,
+            cacheWrite1hTokens: r.cache_write_1h_tokens ?? 0,
             totalCost: r.total_cost,
             providerEarning: r.provider_earning,
             statusCode: r.status_code,
