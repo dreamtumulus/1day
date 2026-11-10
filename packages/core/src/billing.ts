@@ -1,6 +1,6 @@
 import { newId } from "./crypto.js";
 import { db, one, run, tx } from "./db.js";
-import { canonicalModelId, computeCost, getModelEntry, validateTokenUsage, type BasicPrices, type TokenUsage } from "./models.js";
+import { cacheWriteBuckets, canonicalModelId, computeCost, getModelEntry, validateTokenUsage, type BasicPrices, type TokenUsage } from "./models.js";
 import { q8 } from "./money.js";
 import { nowIso } from "./time.js";
 import type { UpstreamErrorScope } from "./upstream-error.js";
@@ -87,8 +87,7 @@ export function prepareSettlementPricing(p: SettleInput): SettlementPricing {
   // A free group (rate_multiplier 0) is a self-use pool — the provider consuming its own supply —
   // so nothing was collected and nothing is shared (docs/data-model.md §3, 2026-10-29).
   const providerEarning = p.providerId && p.rateMultiplier > 0 ? q8(totalCost * p.payoutRate) : 0;
-  const prompt = p.usage.input_tokens + (p.usage.cache_read_tokens ?? 0) + (p.usage.cache_write_tokens ?? 0)
-    + (p.usage.cache_write_5m_tokens ?? 0) + (p.usage.cache_write_1h_tokens ?? 0);
+  const prompt = p.usage.input_tokens + (p.usage.cache_read_tokens ?? 0) + cacheWriteBuckets(p.usage).total;
   const ideal = ok && p.accountSwitched ? computeCost(p.model, {
     input_tokens: 0, output_tokens: p.usage.output_tokens, cache_read_tokens: prompt,
   }) : totalCost;
@@ -113,12 +112,14 @@ export function settlePreparedRequest(p: SettleInput, price: SettlementPricing):
   const { totalCost, actualCost, providerEarning } = price;
   const ok = p.statusCode >= 200 && p.statusCode < 300;
   const now = nowIso();
+  // A journal entry written before the 5m / 1h split has no bucket fields: both 0, total in cache_write_tokens.
+  const cacheWrite = cacheWriteBuckets(p.usage);
 
   return tx(() => {
     const columns = [
       "id", "request_id", "user_id", "api_key_id", "group_id", "account_id", "provider_id", "model", "upstream_model",
       "endpoint", "stream", "status_code", "error_code", "input_tokens", "output_tokens", "cache_read_tokens",
-      "cache_write_tokens", "usage_estimated", "total_cost", "rate_multiplier", "actual_cost", "provider_earning",
+      "cache_write_tokens", "cache_write_5m_tokens", "cache_write_1h_tokens", "usage_estimated", "total_cost", "rate_multiplier", "actual_cost", "provider_earning",
       "duration_ms", "first_token_ms", "client_ip", "cc_shape", "error_message", "mode", "upstream_status", "node_id",
       "account_switched", "team_id", "proxy_id", "actual_model", "selection_ms", "stream_truncated", "tool_calls",
       "tool_results", "error_scope", "retryable", "credential_version", "execution_sequence", "upstream_retries", "created_at",
@@ -145,7 +146,9 @@ export function settlePreparedRequest(p: SettleInput, price: SettlementPricing):
         p.usage.input_tokens,
         p.usage.output_tokens,
         p.usage.cache_read_tokens ?? 0,
-        (p.usage.cache_write_tokens ?? 0) + (p.usage.cache_write_5m_tokens ?? 0) + (p.usage.cache_write_1h_tokens ?? 0),
+        cacheWrite.total,
+        cacheWrite.m5,
+        cacheWrite.h1,
         p.usageEstimated ? 1 : 0,
         totalCost,
         p.rateMultiplier,

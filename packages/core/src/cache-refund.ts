@@ -9,7 +9,7 @@ import { nowIso } from "./time.js";
 //
 // When a sticky conversation is forced onto another account (cooldown, failover,
 // proxy down) its prompt cache is rebuilt on the new account and the client pays
-// cache writes (1.25×) for tokens that would have been cache reads (0.1×) had the
+// cache writes (5-minute 1.25× / 1-hour 2×) for tokens that would have been cache reads (0.1×) had the
 // session stayed put. The gateway marks such requests (usage_logs.account_switched,
 // ForceCacheBilling already bills their input at the read price); this module pays
 // a percentage of the remaining excess back: first against the credit line the

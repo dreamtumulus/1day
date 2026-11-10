@@ -139,7 +139,10 @@ CREATE TABLE model_prices (
   input_per_m REAL NOT NULL DEFAULT 0,
   output_per_m REAL NOT NULL DEFAULT 0,
   cache_read_per_m REAL NOT NULL DEFAULT 0,
+  -- the 1-hour cache write price (and the price of usage rows written before the 5m / 1h split)
   cache_write_per_m REAL NOT NULL DEFAULT 0,
+  -- migration 42: 5-minute cache write price; NULL = cache_write_per_m x 0.625
+  cache_write_5m_per_m REAL,
   enabled INTEGER NOT NULL DEFAULT 1,
   updated_at TEXT NOT NULL DEFAULT (${SQL_NOW})
 );
@@ -167,7 +170,11 @@ CREATE TABLE usage_logs (
   input_tokens INTEGER NOT NULL DEFAULT 0,
   output_tokens INTEGER NOT NULL DEFAULT 0,
   cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+  -- total cache creation; migration 41 adds its split by TTL. Rows from before the split keep 0 / 0:
+  -- cache_write_tokens - 5m - 1h is then "split unknown", priced at the old single cache-write price.
   cache_write_tokens INTEGER NOT NULL DEFAULT 0,
+  cache_write_5m_tokens INTEGER NOT NULL DEFAULT 0,
+  cache_write_1h_tokens INTEGER NOT NULL DEFAULT 0,
   usage_estimated INTEGER NOT NULL DEFAULT 0,
   total_cost REAL NOT NULL DEFAULT 0,
   rate_multiplier REAL NOT NULL DEFAULT 1,

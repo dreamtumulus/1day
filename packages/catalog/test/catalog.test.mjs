@@ -99,3 +99,46 @@ test("cache prices are ordered: read < input <= write", () => {
   }
   assert.deepEqual(problems, [], report(problems));
 });
+
+// Official parity (X-51): cache writes are billed per TTL tier, 5-minute at 1.25x input and 1-hour at 2x input.
+// The single `cache_write_tokens` SKU prices records written before the split existed and must stay the 1-hour price.
+// A model whose official price really deviates goes into EXCEPTIONS with the reason, never a silent price change.
+const CACHE_WRITE_RATIO_EXCEPTIONS = new Map([
+  // ["model-id", "reason"],
+]);
+const near = (a, b) => Math.abs(a - b) <= 1e-9 * Math.max(1, Math.abs(b));
+
+test("every model has both cache-write tiers: 5m = 1.25x input, 1h = 2x input, single SKU = 1h", () => {
+  const problems = [];
+  for (const p of pricing) {
+    if (CACHE_WRITE_RATIO_EXCEPTIONS.has(p.id)) continue;
+    const price = Object.fromEntries((p.pricing_skus ?? []).map((s) => [s.meter, Number(s.price_usd) / Number(s.quantity)]));
+    const ref = Object.fromEntries((p.pricing_skus ?? []).map((s) => [s.meter, Number(s.reference_price_usd) / Number(s.quantity)]));
+    for (const [label, m] of [["price_usd", price], ["reference_price_usd", ref]]) {
+      if (!(m.input_tokens > 0)) continue;
+      if (!("cache_write_5m_tokens" in m)) problems.push(`${p.id}: no cache_write_5m_tokens SKU`);
+      else if (!near(m.cache_write_5m_tokens, m.input_tokens * 1.25)) problems.push(`${p.id}: ${label} cache_write_5m_tokens is ${(m.cache_write_5m_tokens / m.input_tokens).toFixed(4)}x input, expected 1.25x`);
+      if (!("cache_write_1h_tokens" in m)) problems.push(`${p.id}: no cache_write_1h_tokens SKU`);
+      else if (!near(m.cache_write_1h_tokens, m.input_tokens * 2)) problems.push(`${p.id}: ${label} cache_write_1h_tokens is ${(m.cache_write_1h_tokens / m.input_tokens).toFixed(4)}x input, expected 2x`);
+      if ("cache_write_tokens" in m && "cache_write_1h_tokens" in m && !near(m.cache_write_tokens, m.cache_write_1h_tokens)) problems.push(`${p.id}: ${label} cache_write_tokens differs from cache_write_1h_tokens (old rows are priced with it)`);
+    }
+  }
+  for (const id of CACHE_WRITE_RATIO_EXCEPTIONS.keys()) if (!pricing.some((p) => p.id === id)) problems.push(`exception list names unknown model ${id}`);
+  assert.deepEqual(problems, [], report(problems));
+});
+
+test("estimateCost prices each cache-write tier with its own SKU and the unsplit remainder with the single SKU", async () => {
+  const { estimateCost, cacheWriteBuckets } = await import("../dist/src/index.js");
+  const M = 1_000_000;
+  const base = { input_tokens: 0, output_tokens: 0 };
+  // claude-opus-5-5: input 4, 5m 5, 1h 8, single 8 (USD / 1M)
+  assert.equal(estimateCost("claude-opus-5-5", { ...base, cache_write_tokens: M, cache_write_5m_tokens: M }), 5);
+  assert.equal(estimateCost("claude-opus-5-5", { ...base, cache_write_tokens: M, cache_write_1h_tokens: M }), 8);
+  assert.equal(estimateCost("claude-opus-5-5", { ...base, cache_write_tokens: M }), 8, "pre-split record: old single price");
+  assert.equal(estimateCost("claude-opus-5-5", { ...base, cache_write_tokens: 3 * M, cache_write_5m_tokens: M, cache_write_1h_tokens: M }), 5 + 8 + 8);
+  assert.equal(estimateCost("claude-opus-5-5", { ...base, cache_write_5m_tokens: M }), 5, "buckets without a total are not lost");
+  assert.equal(estimateCost("claude-opus-5-5", { input_tokens: M, output_tokens: M, cache_read_tokens: M }), 4 + 20 + 0.2);
+  assert.deepEqual(cacheWriteBuckets({ cache_write_tokens: 10, cache_write_5m_tokens: 3, cache_write_1h_tokens: 4 }), { total: 10, m5: 3, h1: 4, unsplit: 3 });
+  assert.deepEqual(cacheWriteBuckets({ cache_write_5m_tokens: 3, cache_write_1h_tokens: 4 }), { total: 7, m5: 3, h1: 4, unsplit: 0 });
+  assert.deepEqual(cacheWriteBuckets({}), { total: 0, m5: 0, h1: 0, unsplit: 0 });
+});
