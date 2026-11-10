@@ -46,6 +46,18 @@ export function stderrCause(tail: string, max = 460): string {
   return cause.length <= max ? cause : `${cause.slice(0, max - 80)} … ${cause.slice(-70)}`;
 }
 
+/**
+ * Content the interactive (TUI) mode cannot be given: the shim pastes text and, unreliably, images as file paths
+ * ("Claude Code did not take an image pasted as its path", 42 of 384 opens in one hour on 2026-11-10), and refuses any
+ * other block ("this message can't be pasted into Claude Code's interactive mode: a document block" — every PDF request
+ * on a TUI node was a 502). `-p --input-format stream-json` takes Messages-style image and document blocks as they
+ * are, so a turn carrying one runs without the shim, also on a TUI node (X-53).
+ */
+export function needsPlainProcess(content: unknown): boolean {
+  if (!Array.isArray(content)) return false;
+  return content.some((b) => !!b && typeof b === "object" && ((b as { type?: unknown }).type === "image" || (b as { type?: unknown }).type === "document"));
+}
+
 /** claude 二进制解析：PATH 之外补查常见安装位置（systemd 服务 PATH 很窄）。 */
 function findClaudeBin(): string {
   const candidates = [
@@ -113,6 +125,8 @@ interface Proc {
   awaitingTools: boolean;
   toolDeadline: number;
   hasTools: boolean;
+  /** Started through the TUI shim (interactive Claude Code): it cannot be fed image / document blocks. */
+  tui: boolean;
   /** sha256 of the access token the process was started with: a rotated credential retires an idle process. */
   credHash: string;
   /**
@@ -773,12 +787,13 @@ export class CcWorkerManager {
       const proc = this.procs.get(key);
       // A process parked on tool calls (awaitingTools) is blocked inside an MCP call: a user line
       // written to its stdin is never read, the request hangs until the client gives up (10-22 incident).
-      if (proc && !proc.busy && !proc.retiring && !proc.awaitingTools && proc.child.exitCode === null && proc.turn === msg.expectedTurn) {
+      const mediaOnTui = !!proc && proc.tui && needsPlainProcess(msg.content);
+      if (proc && !mediaOnTui && !proc.busy && !proc.retiring && !proc.awaitingTools && proc.child.exitCode === null && proc.turn === msg.expectedTurn) {
         this.continueTurn(msg, proc);
         return;
       }
       const why = proc
-        ? proc.busy ? "busy" : proc.retiring ? "retiring" : proc.child.exitCode !== null ? "exited" : proc.awaitingTools ? "awaiting_tools" : `turn ${proc.turn} != ${msg.expectedTurn}`
+        ? mediaOnTui ? "image/document turn needs a plain process" : proc.busy ? "busy" : proc.retiring ? "retiring" : proc.child.exitCode !== null ? "exited" : proc.awaitingTools ? "awaiting_tools" : `turn ${proc.turn} != ${msg.expectedTurn}`
         : "no session";
       if (!this.fallBackToFresh(msg, "continue", why)) return;
     }
@@ -1217,7 +1232,8 @@ export class CcWorkerManager {
       // TUI worker: the shim wraps the binary and turns the -p argv into the interactive mode's (cc-tui-shim, vendored
       // magpie claudetui). It answers the trust dialog itself (the cwd is the account's own), and waits for the node's MCP
       // server to have listed the caller tools (the marker file) before it pastes the first message.
-      const tui = canonical && this.tuiEnabled;
+      const tui = canonical && this.tuiEnabled && !needsPlainProcess(firstContent);
+      if (canonical && this.tuiEnabled && !tui) this.log(`session ${msg.sessionId}: image/document content -> plain -p process for this open (TUI cannot paste it)`);
       if (tui) {
         env.ONEDAY_CC_TUI_TRUST = "1";
         // Interactive Claude Code moves an MCP tool call that is still running after 120 s to the background and hands
@@ -1257,7 +1273,7 @@ export class CcWorkerManager {
       session.child = child;
       let proc: Proc | null = null;
       if (persist) {
-        proc = { key: msg.reuseKey!, isolation: msg.isolation, accountId: msg.accountId, child, workDir, turn: msg.expectedTurn ?? 0, busy: session, createdAt: Date.now(), lastUsedAt: Date.now(), lineBuf: "", stderrTail: "", retiring: false, awaitingTools: false, toolDeadline: 0, hasTools: nativeTools.length > 0, credHash: credHash(msg.cred) };
+        proc = { key: msg.reuseKey!, isolation: msg.isolation, accountId: msg.accountId, child, workDir, turn: msg.expectedTurn ?? 0, busy: session, createdAt: Date.now(), lastUsedAt: Date.now(), lineBuf: "", stderrTail: "", retiring: false, awaitingTools: false, toolDeadline: 0, hasTools: nativeTools.length > 0, tui, credHash: credHash(msg.cred) };
         procRef = proc;
         this.procs.set(proc.key, proc);
         session.proc = proc;
