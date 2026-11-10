@@ -9,8 +9,8 @@
 
 | 文件 | 内容 |
 |---|---|
-| `data/models.json` | `{data: CatalogModel[]}`，13 条 Claude 模型（站点展示格式）；2026-10 之前的 45 条多厂商版本保留为 `models.json.bak-allvendors` |
-| `data/pricing.json` | `{data: PricingEntry[]}`，13 条（网关定价格式）；旧版 `pricing.json.bak-allvendors` |
+| `data/models.json` | `{data: CatalogModel[]}`，14 条 Claude 模型（站点展示格式）；2026-10 之前的 45 条多厂商版本保留为 `models.json.bak-allvendors` |
+| `data/pricing.json` | `{data: PricingEntry[]}`，14 条（网关定价格式）；旧版 `pricing.json.bak-allvendors` |
 | `src/index.ts` | 类型定义 + `listModels / listPricing / getModel / getPricing / estimateCost` |
 
 两个 JSON 通过 import attributes（`with { type: "json" }`）编进 `dist`，**改价必须重新构建并重启 gateway/console**。
@@ -59,22 +59,22 @@ interface PricingSku {
 
 | meter | 条目数 | 网关是否会产生该用量 |
 |---|---|---|
-| `input_tokens` | 13 | ✅ |
-| `output_tokens` | 13 | ✅ |
-| `cache_read_tokens` | 13 | ✅（Anthropic `cache_read_input_tokens`；OpenAI 的 cached_tokens 不识别） |
-| `cache_write_tokens` | 13 | ✅（Anthropic `cache_creation_input_tokens`） |
-| `cache_write_5m_tokens` | 13 | ❌ 网关从不产生 |
-| `cache_write_1h_tokens` | 13 | ❌ 网关从不产生 |
+| `input_tokens` | 14 | ✅ |
+| `output_tokens` | 14 | ✅ |
+| `cache_read_tokens` | 14 | ✅（Anthropic `cache_read_input_tokens`；OpenAI 的 cached_tokens 不识别） |
+| `cache_write_tokens` | 14 | ✅（Anthropic `cache_creation_input_tokens`） |
+| `cache_write_5m_tokens` | 14 | ❌ 网关从不产生 |
+| `cache_write_1h_tokens` | 14 | ❌ 网关从不产生 |
 
-## 4. 厂商与模型（13 个，全部 anthropic / `active`；2026-11-01 核对 `data/`）
+## 4. 厂商与模型（14 个，全部 anthropic / `active`；2026-11-01 核对 `data/`）
 
 | vendor | 数量 | 模型 | 网关可用性 |
 |---|---|---|---|
-| anthropic | 13 | claude-fable-5, claude-fable-5-1, claude-haiku-4-5, claude-haiku-5-5, claude-opus-4-6/4-7/4-8, claude-opus-5, claude-opus-5-5, claude-sonnet-4-5/4-6, claude-sonnet-5, claude-sonnet-5-5 | ✅ |
+| anthropic | 14 | claude-fable-5, claude-fable-5-1, claude-fable-5-2, claude-haiku-4-5, claude-haiku-5-5, claude-opus-4-6/4-7/4-8, claude-opus-5, claude-opus-5-5, claude-sonnet-4-5/4-6, claude-sonnet-5, claude-sonnet-5-5 | ✅ |
 
 另有 4 个不带版本号的别名由注册表提供（见 `architecture.md`）。目录里没有 OpenAI 协议模型，`/v1/responses` 当前没有可用上游（2026-11-01 审计 B1，待决定接 OpenAI 供给或下线该端点）。
 2026-10 之前的 45 条多厂商目录（openai / moonshot / opencode / volcengine / xai / zhipu / qwen / minimax / google / xiaomi）保留在 `*.bak-allvendors`，不被加载。
-输出模态：text 13。
+输出模态：text 14（claude-fable-5-2 于 2026-11-10 加入：$8 / $40，cache read $0.20，cache write 5m $10 / 1h $16，来源为发布报道，官方价目表未直接核对）。
 
 ## 5. API
 
