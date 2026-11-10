@@ -105,6 +105,9 @@ import {
 } from "./upstream.js";
 import { wait, responseBytes, renewWithRetry } from "./lifecycle.js";
 import { bump } from "./metrics.js";
+import { NETWORK_FAILURE_CLASS, capBeforeAttempt, httpFailureClass, newRetryState, noteFailureClass, upstreamErrorType, type CapReason, type RetryState } from "./retry-policy.js";
+import { credentialProblem, directAuthSignal } from "./direct-auth.js";
+import { disposalKinds, failureSignals, requestEchoText, signalText, workerFailureEvidence, type DisposalKind, type FailureSource, type SignalDecision } from "./ccr/failure-evidence.js";
 // Canonical worker turns the legacy worker takes over (2026-11-05, probe toolround-import): a tool round no live native
 // session holds / an external history canonical may not import, or canonical needing the persistent pool. The legacy
 // fold carries any history, so these are a hand-over, not a 409.
@@ -434,6 +437,10 @@ interface Ctx {
   jsonEarly: { keepalive: NodeJS.Timeout | null } | null;
   scope?: ConversationScope;
   accountLease?: AccountLease;
+  /** Retry caps of this client request (retry-policy.ts); kept across organisation switches. */
+  retry: RetryState;
+  /** The account whose answer was in hand when the conversation's ownership turned out to have changed (F). */
+  scopeLossAccount?: AccountRow | null;
 }
 
 const PASSTHROUGH_STATUSES = new Set([400, 404, 413, 422]);
@@ -831,6 +838,7 @@ async function proxyRequest(req: FastifyRequest, reply: FastifyReply, format: Cl
     jsonArm: null,
     jsonEarly: null,
     scope,
+    retry: newRetryState(),
   };
   ctx.body = body;
   if (scope) { scope.abort = ctx.abort; scope.responseCtx = ctx; }
@@ -962,7 +970,10 @@ async function proxyRequest(req: FastifyRequest, reply: FastifyReply, format: Cl
         if (scope.row.team_id !== current) return proxyRequest(req, reply, format, endpoint, caller, scope);
       } else {
         const next = teams.find((a) => !scope.triedTeams.has(accountTeamId(a)!));
-        if (next) { await switchTeam(scope, accountTeamId(next)!, format, "team_pool_exhausted", caller.policy.historyPolicy === "passthrough"); return proxyRequest(req, reply, format, endpoint, caller, scope); }
+        // No organisation switch once the request's retry caps are used up (A).
+        const capped = next ? capBeforeAttempt(ctx.retry, ctx.startedAt, Date.now(), config) : null;
+        if (capped) tripRetryCap(ctx, capped, null, "before an organisation switch");
+        else if (next) { await switchTeam(scope, accountTeamId(next)!, format, "team_pool_exhausted", caller.policy.historyPolicy === "passthrough"); return proxyRequest(req, reply, format, endpoint, caller, scope); }
       }
     }
   }
@@ -1048,6 +1059,9 @@ async function proxyRequest(req: FastifyRequest, reply: FastifyReply, format: Cl
   busy = [];
   for (const account of ordered) {
     if (!scope && attempts >= config.maxAttempts) break;
+    // Total caps (A): they hold with a conversation scope too, and across organisation switches.
+    const cap = capBeforeAttempt(ctx.retry, ctx.startedAt, Date.now(), config);
+    if (cap) { tripRetryCap(ctx, cap, lastAccount, `last status ${lastStatus || "network"}`); break; }
     assertScope(scope);
     if (ctx.clientGone) {
       logFailure(ctx, lastAccount, 499, "client_closed", "Client closed the connection before an upstream answer");
@@ -1091,6 +1105,7 @@ async function proxyRequest(req: FastifyRequest, reply: FastifyReply, format: Cl
       let refreshed = false;
       for (;;) {
         ctx.executionSequence++;
+        ctx.turnFacts.failure = undefined;
         assertRequestLeases(ctx);
         if (ctx.clientGone) {
           logFailure(ctx, account, 499, "client_closed", "Client closed the connection before an upstream answer");
@@ -1125,7 +1140,9 @@ async function proxyRequest(req: FastifyRequest, reply: FastifyReply, format: Cl
           ctx.credentialVersion = one<{ credential_version: number }>("SELECT credential_version FROM accounts WHERE id = ?", account.id)?.credential_version ?? account.credential_version;
         } catch (err) {
           if (ctx.abort.signal.aborted) { logFailure(ctx, account, 499, "client_closed", "Client closed during credential refresh"); return; }
-          markFailure(account.id, { kind: "auth", message: `credential unreadable: ${(err as Error).message}` });
+          // Not an upstream auth verdict (C): the stored credential cannot be decrypted, or its organisation is not the
+          // conversation's. Skip the account for this request and alert; its status is the operator's call.
+          alertCredentialProblem(ctx, account, err);
           break;
         }
         let res: Response | null;
@@ -1272,6 +1289,7 @@ async function proxyRequest(req: FastifyRequest, reply: FastifyReply, format: Cl
             break;
           }
           attempts++;
+          ctx.retry.attempts++;
           lastStatus = 502;
           lastMessage = (err as Error).message;
           ctx.trace.upstreamStatus = null;
@@ -1281,6 +1299,12 @@ async function proxyRequest(req: FastifyRequest, reply: FastifyReply, format: Cl
           if (raw) {
             // Raw passthrough: no cooldown, no failover — answer once.
             fail(ctx, account, 502, "upstream_error", `Upstream unreachable (${lastMessage}).`, "upstream_error");
+            return;
+          }
+          if (noteFailureClass(ctx.retry, NETWORK_FAILURE_CLASS, config)) {
+            // The same network failure on K consecutive accounts is not theirs: stop, cool nothing further (A).
+            tripRetryCap(ctx, "same_failure", account, `class ${NETWORK_FAILURE_CLASS}`);
+            fail(ctx, account, 502, "upstream_error", `Upstream request failed with the same network error on ${ctx.retry.streakCount} consecutive accounts; it was not retried further.`, "upstream_error");
             return;
           }
           markFailure(account.id, { kind: "transient", message: `network: ${lastMessage}` });
@@ -1294,8 +1318,12 @@ async function proxyRequest(req: FastifyRequest, reply: FastifyReply, format: Cl
         }
         if (res.ok) {
           if (!lease.isValid()) { await res.body?.cancel().catch(() => {}); throw new Error("account scheduling lease lost"); }
-          assertScope(scope);
+          // The conversation moved on while this account answered (F): stop the upstream body before giving up on it.
+          try { assertScope(scope); }
+          catch (err) { ctx.scopeLossAccount = account; await res.body?.cancel().catch(() => {}); throw err; }
           touchAccount(account.id);
+          // A 200 proves the credential is accepted: earlier direct-lane auth hits are forgotten (C).
+          if (!isCcrMode(mode)) directAuthFailures.clear(account.id);
           const prev = sKey ? getSticky(sKey) : undefined;
           if (prev && prev.accountId !== account.id) {
             ctx.forceCacheBilling = true;
@@ -1313,6 +1341,7 @@ async function proxyRequest(req: FastifyRequest, reply: FastifyReply, format: Cl
         const status = res.status;
         const text = (await responseBytes(res, 4000, ctx.abort.signal, true)).toString("utf8");
         attempts++;
+        ctx.retry.attempts++;
         lastStatus = status;
         lastMessage = text;
         ctx.trace.upstreamStatus = status;
@@ -1364,11 +1393,29 @@ async function proxyRequest(req: FastifyRequest, reply: FastifyReply, format: Cl
           passUpstreamError(ctx, account, wireModeFor(mode), status, text);
           return;
         }
+        const ccr = isCcrMode(mode);
+        // Worker / cloud lane (D): which part of the failure text may decide the account's fate.
+        const source: FailureSource = ccr ? workerFailureSource(ctx) : "http_body";
+        const failureText = ccr ? workerErrorText(text) : text;
+        const signals = ccr ? workerSignals(ctx, account, failureText, source) : null;
+        const authSignal = !ccr && (status === 401 || status === 403) ? directAuthSignal(status, text) : null;
+        // Same failure class on K consecutive accounts (A): the failure follows the request or the upstream, not the
+        // accounts. Answer with the upstream error; this account is not cooled, the organisation is not switched.
+        // Failures proven to be the account's own never count and end the streak.
+        const cls = accountOwnFailure(account, status, text, res.headers, ccr, failureText, authSignal) ? null : httpFailureClass(status, text, ccr ? "worker" : "direct");
+        if (noteFailureClass(ctx.retry, cls, config)) {
+          tripRetryCap(ctx, "same_failure", account, `class ${cls}`);
+          // A direct-lane JSON error is the upstream's own answer: hand it over as it is. A proxy / WAF page, a worker
+          // wrapper or a 401 / 403 (which a client would read as its own key being refused) becomes a plain 502.
+          if (!ccr && upstreamErrorType(text) !== null && status !== 401 && status !== 403) passUpstreamError(ctx, account, wireModeFor(mode), status, text, res.headers.get("retry-after"));
+          else fail(ctx, account, 502, "upstream_error", `Upstream request failed with the same error on ${ctx.retry.streakCount} consecutive accounts (last status ${status}); it was not retried further.`, "upstream_error");
+          return;
+        }
         if (PASSTHROUGH_STATUSES.has(status)) {
           // Cloud session / environment API rejected the call: the account's
           // CCR state is bad (stale environment, unsupported config), never the
           // consumer's request. Cool it and fail over; never echo the session-API body.
-          markCcrFailure(ctx, account, `ccr ${status}: ${text.slice(0, 300)}`);
+          markCcrFailure(ctx, account, `ccr ${status}: ${failureText.slice(0, 300)}`, source, signals ?? undefined);
           break;
         }
         // Per-model org suspension (403, time-boxed): cool that model only and let the
@@ -1379,7 +1426,8 @@ async function proxyRequest(req: FastifyRequest, reply: FastifyReply, format: Cl
         // worker path the text is parsed whatever the status.
         // Organization-level error text (spec WP7.2, iron-rules 附 组织级熔断): stop scheduling the whole organization
         // now, alert, no retry / re-auth; this request moves on to another organization's account.
-        const orgCode = orgLevelErrorCode(text);
+        // On the worker lane only trusted text may do either (D): a quote of the screen needs the threshold first.
+        const orgCode = orgLevelErrorCode(signals ? signals.text("org") : text);
         if (orgCode) {
           const teamId = accountTeamId(account);
           ctx.trace.failure = { scope: "account", code: `org_${orgCode}`, message: upstreamMessage(text), retryable: false, status, credentialVersion: ctx.credentialVersion ?? undefined, executionSequence: ctx.executionSequence };
@@ -1391,18 +1439,23 @@ async function proxyRequest(req: FastifyRequest, reply: FastifyReply, format: Cl
           markFailure(account.id, { kind: "transient", message: `organization-level ${orgCode}`, cooldownMs: 3_600_000 });
           break;
         }
-        const suspended = status === 403 || isCcrMode(mode) ? parseModelSuspension(text) : null;
+        const suspended = status === 403 || ccr ? parseModelSuspension(signals ? signals.text("model_suspended") : text) : null;
         if (suspended) {
           ctx.trace.failure = { scope: "account_model", code: "upstream_model_suspended", message: upstreamMessage(text), retryable: true, status: 403, credentialVersion: ctx.credentialVersion ?? undefined, executionSequence: ctx.executionSequence, resetAt: suspended.until };
           markFailure(account.id, { kind: "model_suspended", model: suspended.model, until: suspended.until });
           console.warn(`[proxy] ${ctx.requestId} account ${account.name}: model ${suspended.model} suspended for its organization until ${suspended.until} → model cooldown, trying next account`);
           break;
         }
-        if ((status === 401 || status === 403) && !refreshed && canRefresh(account)) {
+        // 401 / 403 (C). Direct lane: the body decides. Only an authentication verdict (`authentication_error`, a clear
+        // OAuth-invalid message) concerns the account; a proxy / WAF page, `permission_error` or an unknown shape fails
+        // this attempt only. Cloud / worker lane 401 / 403 bodies are our own wrappers (credential without a token …):
+        // an auth verdict as before, under the same threshold.
+        const authVerdict = (status === 401 || status === 403) && (ccr || authSignal === "auth");
+        if (authVerdict && !refreshed && canRefresh(account)) {
           refreshed = true;
           continue; // retry once with a forced token refresh
         }
-        if (status === 401 || status === 403) {
+        if (authVerdict) {
           const authText = `upstream ${status}: ${text.slice(0, 300)}`;
           // The token endpoint rate-limited our refresh (back-off running): this is the expected expiry of a
           // token we were not allowed to renew, so park the account until the back-off ends instead of retiring
@@ -1415,8 +1468,22 @@ async function proxyRequest(req: FastifyRequest, reply: FastifyReply, format: Cl
             markFailure(account.id, { kind: "transient", message: `${authText} (refresh back-off until ${cooling})`, cooldownMs: Math.max(30_000, Date.parse(cooling) - Date.now()) });
             console.warn(`[proxy] ${ctx.requestId} account ${account.name}: ${status} while the token endpoint back-off runs until ${cooling} → cooldown, not status error`);
           } else {
-            markFailure(account.id, { kind: "auth", message: authText });
+            // `status = 'error'` needs N verdicts of this account inside the window (default 3 / 10 min); below that
+            // the account only cools, so one stray 401 (refresh race, upstream hiccup) no longer retires it.
+            const hit = directAuthFailures.record(account.id);
+            if (hit.escalate) {
+              markFailure(account.id, { kind: "auth", message: `auth failure ×${hit.count}: ${authText}` });
+              console.error(`[proxy] ${ctx.requestId} account ${account.name}: upstream ${status} auth failure ×${hit.count} within ${Math.round(config.authFailureWindowMs / 60_000)} min → status error`);
+            } else {
+              markFailure(account.id, { kind: "transient", message: `auth failure ×${hit.count} of ${config.authFailureThreshold}: ${authText}`, cooldownMs: config.directAuthCooldownMs });
+              console.warn(`[proxy] ${ctx.requestId} account ${account.name}: upstream ${status} auth failure ×${hit.count} of ${config.authFailureThreshold} → cooldown ${Math.round(config.directAuthCooldownMs / 1000)}s, status unchanged`);
+            }
           }
+        } else if (status === 401 || status === 403) {
+          ctx.trace.failure = { ...ctx.trace.failure!, scope: "transport", retryable: true };
+          bump("upstream_forbidden_transient_total", { status, shape: upstreamErrorType(text) ?? "non_json" });
+          markFailure(account.id, { kind: "transient", message: `upstream ${status} without an auth verdict (${upstreamErrorType(text) ?? "non-JSON body"})` });
+          console.warn(`[proxy] ${ctx.requestId} account ${account.name}: upstream ${status} is not an authentication verdict (${upstreamErrorType(text) ?? "non-JSON body: proxy / WAF?"}) → this attempt only, no refresh, status unchanged`);
         } else if (status === 402) {
           markFailure(account.id, { kind: "payment" });
         } else if (status === 429) {
@@ -1455,7 +1522,7 @@ async function proxyRequest(req: FastifyRequest, reply: FastifyReply, format: Cl
     }
   }
 
-  if (!busy.length || requestError || ctx.clientGone) break;
+  if (!busy.length || requestError || ctx.clientGone || ctx.retry.tripped) break;
   if (Date.now() >= busyDeadline) {
     fail(ctx, null, 503, "account_pool_busy", "Accounts in this conversation are temporarily busy. Retry shortly; its team and context are retained.", "upstream_error");
     return;
@@ -1471,7 +1538,13 @@ async function proxyRequest(req: FastifyRequest, reply: FastifyReply, format: Cl
   // Every account in this generation was tried before changing organizations. The new
   // generation receives a rebuilt body, never the failed generation's full transcript.
   const toolRound = scope ? isToolContinuation(scope.originalBody, format) : false;
-  if (scope?.row.team_id && !toolRound && !requestError && !ctx.clientGone && !ccrUnsupported) {
+  // A tripped retry cap ends the request here (A): the next organisation would only inherit the same failure —
+  // and the switch itself resets the conversation, so it is not made when no attempt could follow it.
+  if (scope?.row.team_id && !toolRound && !requestError && !ctx.clientGone && !ccrUnsupported && !ctx.retry.tripped && attempts > 0) {
+    const capped = capBeforeAttempt(ctx.retry, ctx.startedAt, Date.now(), config);
+    if (capped) tripRetryCap(ctx, capped, lastAccount, `last status ${lastStatus || "network"}, before an organisation switch`);
+  }
+  if (scope?.row.team_id && !toolRound && !requestError && !ctx.clientGone && !ccrUnsupported && !ctx.retry.tripped) {
     const next = listCandidates(caller.groupId, model).find((a) => accountTeamId(a) && !scope.triedTeams.has(accountTeamId(a)!) && modeFor(format, a, ccClient) !== null);
     if (next) {
       // Heartbeats may have committed HTTP headers, but no model output was delivered.
@@ -1500,6 +1573,9 @@ async function proxyRequest(req: FastifyRequest, reply: FastifyReply, format: Cl
   } else if (toolRound && scope?.row.team_id && attempts > 0 && !ctx.clientGone) {
     // Every account of the organization failed this tool round; it is not moved elsewhere (see above).
     failTeamCapacity(ctx, lastAccount);
+  } else if (ctx.retry.tripped && ctx.retry.attempts > 0) {
+    // Ended by a retry cap, possibly in an organisation where nothing was tried any more: it is still an upstream failure.
+    fail(ctx, lastAccount, 502, "upstream_error", `Upstream request failed (last status ${lastStatus || ctx.trace.upstreamStatus || "network"}); stopped after ${ctx.retry.attempts} attempt(s).`, "upstream_error");
   } else if (attempts === 0 && telemetryUnverified) {
     fail(ctx, null, 503, "native_telemetry_unverified", "No subscription account with verified native telemetry evidence is available for this key's canonical worker (spec §6.4: evidence must be real or secondary). Retry later or ask the operator.", "upstream_error");
   } else if (attempts === 0 && ccrUnsupported) {
@@ -1522,10 +1598,107 @@ async function proxyRequest(req: FastifyRequest, reply: FastifyReply, format: Cl
  * every few seconds (2026-10-17, mirasim: 6 × 502 + 10 × 503 in 3 minutes).
  */
 const authFailures = new AuthFailureTracker();
+/** Direct-lane 401 / 403 authentication verdicts per account (C): N inside the window before `status = 'error'`. */
+const directAuthFailures = new AuthFailureTracker(config.authFailureThreshold, config.authFailureWindowMs);
+/** Worker-lane verdicts seen only through a quote of process output, per account × kind (D): same threshold. */
+const quotedSignals = new AuthFailureTracker(config.authFailureThreshold, config.authFailureWindowMs);
+/** Tests only: forget every auth-failure count. */
+export function resetAuthFailureTrackersForTests(): void {
+  for (const t of [authFailures, directAuthFailures, quotedSignals]) t.reset();
+}
 
-function markCcrFailure(ctx: Ctx, account: AccountRow, message: string): void {
+/** One counter + one log line when a retry cap ends a request (A). */
+function tripRetryCap(ctx: Ctx, reason: CapReason, account: AccountRow | null, detail: string): void {
+  if (ctx.retry.tripped) return;
+  ctx.retry.tripped = reason;
+  bump("retry_cap_tripped_total", { reason });
+  const limit = reason === "attempt_cap" ? `max ${config.maxTotalAttempts} attempts` : reason === "deadline" ? `deadline ${config.retryDeadlineMs} ms` : `same failure on ${config.sameFailureStreak} consecutive accounts`;
+  console.warn(`[retry-cap] ${ctx.requestId} ${reason} (${limit}): ${ctx.retry.attempts} attempt(s) in ${Date.now() - ctx.startedAt} ms across ${ctx.scope ? ctx.scope.triedTeams.size : 0} organisation(s), ${detail}, last account ${account?.name ?? "-"}; no further account is tried or cooled, no organisation switch`);
+}
+
+const credentialAlerts = new Map<string, number>();
+/** The stored credential is unusable for this request (C): alert (at most once per account and 10 min), status untouched. */
+function alertCredentialProblem(ctx: Ctx, account: AccountRow, err: unknown): void {
+  const reason = credentialProblem(err);
+  bump("credential_unusable_total", { reason });
+  const now = Date.now();
+  if (now - (credentialAlerts.get(account.id) ?? 0) < 600_000) return;
+  if (credentialAlerts.size > 5_000) credentialAlerts.clear();
+  credentialAlerts.set(account.id, now);
+  console.error(`[ALERT][credential] ${ctx.requestId} account ${account.name} (${account.id}) skipped for this request: ${reason === "org_mismatch" ? "its credential's organisation is not the conversation's" : "its stored credential cannot be read"} (${(err as Error)?.message ?? err}) — data problem, account status unchanged; operator action required`);
+}
+
+/** Provenance the executor recorded for this attempt's failure text; unknown = a process quote (the cautious tier). */
+function workerFailureSource(ctx: Ctx): FailureSource {
+  const facts: TurnFacts = ctx.turnFacts;
+  return facts.failure?.source ?? "process";
+}
+
+/** The message inside an executor error body (`{type:"error",error:{message}}`), unescaped; the raw text otherwise. */
+function workerErrorText(body: string): string {
+  try {
+    const j = JSON.parse(body) as Json;
+    const m = j?.error?.message ?? j?.message;
+    return typeof m === "string" && m ? m : body;
+  } catch {
+    return body;
+  }
+}
+
+interface WorkerSignals {
+  decide(kind: DisposalKind): SignalDecision;
+  /** The text a parser for `kind` may read ("" when the signal is not allowed to act now). */
+  text(kind: DisposalKind): string;
+}
+
+/**
+ * Worker / cloud lane (D): per verdict kind, may this failure text act on the account? Trusted text (Claude Code's
+ * structured result, an upstream HTTP body, the shim's own cause head) acts at once. A quote of the screen / stderr
+ * or model text acts only after the threshold, and never when the customer's own request carries the same signal.
+ */
+function workerSignals(ctx: Ctx, account: AccountRow, message: string, source: FailureSource): WorkerSignals {
+  const evidence = workerFailureEvidence(message, source);
+  const decide = failureSignals(
+    evidence,
+    () => requestEchoText(ctx.req.body),
+    (kind) => quotedSignals.record(`${account.id}:${kind}`).escalate,
+  );
+  const logged = new Set<DisposalKind>();
+  const decideLogged = (kind: DisposalKind): SignalDecision => {
+    const d = decide(kind);
+    if (d.basis !== "trusted" && d.basis !== "none" && !logged.has(kind)) {
+      logged.add(kind);
+      bump("worker_quoted_signal_total", { kind, basis: d.basis });
+      const what = d.basis === "prompt_echo" ? "also present in the customer's own request → ignored" : d.basis === "quote_pending" ? `seen only in a process-output quote, ×${quotedSignals.count(`${account.id}:${kind}`)} of ${config.authFailureThreshold} → not acted on yet` : kind === "auth" ? "seen only in a process-output quote → counted as one auth failure (threshold applies)" : `seen only in a process-output quote, threshold ${config.authFailureThreshold} reached → acted on`;
+      console.warn(`[proxy] ${ctx.requestId} account ${account.name}: '${kind}' signal (source ${source}) ${what}`);
+    }
+    return d;
+  };
+  return { decide: decideLogged, text: (kind) => signalText(evidence, decideLogged(kind)) };
+}
+
+/**
+ * Is this failed attempt proven to be the account's own problem (dead credential, payment, rejected usage window,
+ * organisation / model suspension)? Such failures never feed the same-failure streak (A).
+ */
+function accountOwnFailure(account: AccountRow, status: number, text: string, headers: Headers, ccr: boolean, failureText: string, authSignal: ReturnType<typeof directAuthSignal> | null): boolean {
+  if (status === 402) return true;
+  if ((status === 401 || status === 403) && (ccr || authSignal === "auth")) return true;
+  if (ccr) return disposalKinds(failureText).size > 0;
+  if (orgLevelErrorCode(text) || (status === 403 && parseModelSuspension(text))) return true;
+  if (status === 429) {
+    const snap = hasSubscriptionWindow(account) ? parseUnifiedRateLimitHeaders(headers) : null;
+    const now = nowIso();
+    const rej = rejectedWindow(snap, now);
+    if (rej || fableRejectedWindow(snap, now) || isCreditsRequired(text)) return true;
+    return classifyDirectRateLimit(text, false).scope === "account_model";
+  }
+  return false;
+}
+
+function markCcrFailure(ctx: Ctx, account: AccountRow, message: string, source: FailureSource = "process", signals: WorkerSignals = workerSignals(ctx, account, message, source)): void {
   // Organization-level error text on the worker path (spec WP7.2): same breaker as the direct path.
-  const orgCode = orgLevelErrorCode(message);
+  const orgCode = orgLevelErrorCode(signals.text("org"));
   if (orgCode) {
     const teamId = accountTeamId(account);
     if (teamId && suspendTeam(teamId, orgCode, message.slice(0, 300))) console.error(`[ALERT][org] ${ctx.requestId} organization ${teamId} suspended: ${orgCode} on account ${account.name} (worker): ${message.slice(0, 200)} — operator action required`);
@@ -1533,30 +1706,32 @@ function markCcrFailure(ctx: Ctx, account: AccountRow, message: string): void {
     markFailure(account.id, { kind: "transient", message: `organization-level ${orgCode}`, cooldownMs: 3_600_000 });
     return;
   }
-  const limit = ccLimitReset(message);
+  const limit = ccLimitReset(signals.text("limit"));
   if (limit) {
     markFailure(account.id, { kind: "window_exhausted", resetAt: limit.resetAt, window: limit.window });
     console.warn(`[proxy] ${ctx.requestId} account ${account.name}: cc ${limit.window} limit → window_exhausted until ${limit.resetAt ?? "(fallback 1h)"}`);
     return;
   }
-  const suspended = parseModelSuspension(message);
+  const suspended = parseModelSuspension(signals.text("model_suspended"));
   if (suspended) {
     markFailure(account.id, { kind: "model_suspended", model: suspended.model, until: suspended.until });
     console.warn(`[proxy] ${ctx.requestId} account ${account.name}: model ${suspended.model} suspended for its organization until ${suspended.until} → model cooldown`);
     return;
   }
+  // Request-level texts only ever spare the account, so they are read from the whole message.
   const reqErr = classifyCcRequestError(message);
   if (isCcModelUnavailable(message) || reqErr) {
     console.warn(`[proxy] ${ctx.requestId} account ${account.name}: ${reqErr ? reqErr.code : "model unavailable"} on Claude Code — request problem, account not cooled`);
     return;
   }
-  if (isCcAccountOnHold(message)) {
-    // Account put on hold by Anthropic (claude.ai/restricted): unusable at once, no threshold (user rule 2026-10-20).
+  if (isCcAccountOnHold(signals.text("on_hold"))) {
+    // Account put on hold by Anthropic (claude.ai/restricted): unusable at once, no threshold (user rule 2026-10-20) —
+    // when Claude Code itself says so. Words that only stand in a quote of the screen wait for the threshold (D).
     markFailure(account.id, { kind: "auth", message: `account on hold: ${message.slice(0, 400)}` });
-    console.error(`[proxy] ${ctx.requestId} account ${account.name}: account on hold → status error (${message.slice(0, 160)})`);
+    console.error(`[proxy] ${ctx.requestId} account ${account.name}: account on hold (${signals.decide("on_hold").basis}) → status error (${message.slice(0, 160)})`);
     return;
   }
-  if (isCcAuthFailure(message)) {
+  if (isCcAuthFailure(signals.text("auth"))) {
     // Claude Code's "Failed to authenticate …" is the worker path's 401: one hit
     // may be a refresh race (2026-10-17), repeated hits mean the OAuth session is gone.
     const hit = authFailures.record(account.id);
@@ -1575,6 +1750,11 @@ function markCcrFailure(ctx: Ctx, account: AccountRow, message: string): void {
     return;
   }
   markFailure(account.id, { kind: "transient", message });
+}
+
+/** Tests only: the worker-lane disposal exactly as a failed attempt runs it, for a request with this body. */
+export function markWorkerFailureForTests(account: AccountRow, message: string, source: FailureSource | undefined, requestBody: unknown): void {
+  markCcrFailure({ requestId: "test", req: { body: requestBody } } as unknown as Ctx, account, message, source ?? "process");
 }
 
 function logFailure(ctx: Ctx, account: AccountRow | null, status: number, code: string, message?: string): void {
@@ -2212,7 +2392,9 @@ async function deliverStream(
       const reqErr = ccrExecuted || isCcrMode(mode) ? classifyCcRequestError(message) : null;
       // A request-level refusal is not the account's fault: no cooldown (2026-11-08: 162 streamed safeguards refusals of one
       // key in three days each cooled the account that answered them). Raw relay (§4a): no cooldown either.
-      if (!schedulingLost && !reqErr && account.raw_passthrough !== 1) markCcrFailure(ctx, account, `stream: ${message.slice(0, 300)}`);
+      // Worker / cloud stream: the provenance the executor recorded decides what the text may do (D). A direct-lane
+      // `error` event is the upstream's own structured answer.
+      if (!schedulingLost && !reqErr && account.raw_passthrough !== 1) markCcrFailure(ctx, account, `stream: ${message.slice(0, 300)}`, ccrExecuted ? workerFailureSource(ctx) : "http_body");
       ctx.streamTruncated = true;
       ctx.trace.failure = {
         scope: reqErr ? "request" : "transport",
