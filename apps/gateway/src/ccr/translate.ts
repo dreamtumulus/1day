@@ -113,6 +113,20 @@ function fencePrefixTail(s: string): number {
  * `images: true` (worker executor) accepts image blocks: they ride along as
  * stream-json input content (messagesToContent); documents stay unsupported.
  */
+/**
+ * Did the caller ask for prompt caching? The official API caches (and bills a cache write) only where the request
+ * carries `cache_control` — on a system / tool / content block, or the top-level automatic-caching field. On the
+ * worker lane Claude Code caches on its own; a caller who never asked sees and pays plain input for that part, as
+ * they would at the official API (X-57). Cache reads stay reads either way: they only lower the bill.
+ */
+export function requestAsksForCaching(body: Json | null | undefined): boolean {
+  if (!body || typeof body !== "object") return false;
+  if (body.cache_control && typeof body.cache_control === "object") return true;
+  const marked = (v: unknown): boolean => Array.isArray(v) && v.some((b) => !!b && typeof b === "object" && (!!(b as Json).cache_control || marked((b as Json).content)));
+  if (marked(body.system) || marked(body.tools)) return true;
+  return Array.isArray(body.messages) && body.messages.some((m: Json) => marked(m?.content));
+}
+
 export function ccrUnsupportedReason(body: Json, opts: { images?: boolean; documents?: boolean; toolChoice?: boolean } = {}): CcrUnsupported | null {
   const tc = body.tool_choice;
   // `toolChoice: true` (worker executor): a forced choice is emulated by toolChoiceInstruction() instead.

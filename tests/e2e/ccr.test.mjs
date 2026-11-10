@@ -33,7 +33,10 @@ const tools = [{ type: "function", function: { name: "get_weather", description:
 // sent; for a one-sentence request the small-turn cap now shows only the customer's own few tokens (checked below), so
 // the checks that pin the baseline arithmetic and the X-51 cache-write presentation send a prompt that is not "small".
 const LONG = " The quick brown fox jumps over the lazy dog.".repeat(60);
-const longMsg = () => [{ role: "user", content: `ccr ${uniq()}${LONG}` }];
+// X-57: the caller asks for caching (cache_control), so the cache write beyond the platform baseline is its own line;
+// plainLongMsg() is the same prompt without the marker: there the write stays plain input, as at the official API.
+const longMsg = () => [{ role: "user", content: [{ type: "text", text: `ccr ${uniq()}${LONG}`, cache_control: { type: "ephemeral" } }] }];
+const plainLongMsg = () => [{ role: "user", content: `ccr ${uniq()}${LONG}` }];
 const lastUsage = async (admin) => (await admin.call("GET", "/api/admin/usage?pageSize=1")).data.items[0];
 
 const admin = await session(pick("admin    login key"));

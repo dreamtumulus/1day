@@ -30,7 +30,10 @@ const messages = (key, extra = {}, headers = {}) => post(key, "/v1/messages", { 
 // sent; for a one-sentence request the small-turn cap now shows only the customer's own few tokens (checked below), so
 // the checks that pin the baseline arithmetic and the X-51 cache-write presentation send a prompt that is not "small".
 const LONG = " The quick brown fox jumps over the lazy dog.".repeat(60);
-const longMsg = () => [{ role: "user", content: `worker ${uniq()}${LONG}` }];
+// X-57: the caller asks for caching (cache_control), so the cache write beyond the platform baseline is its own line;
+// plainLongMsg() is the same prompt without the marker: there the write stays plain input, as at the official API.
+const longMsg = () => [{ role: "user", content: [{ type: "text", text: `worker ${uniq()}${LONG}`, cache_control: { type: "ephemeral" } }] }];
+const plainLongMsg = () => [{ role: "user", content: `worker ${uniq()}${LONG}` }];
 
 const admin = await session(pick("admin    login key"));
 const prov = await session(pick("provider login key"));
@@ -65,6 +68,12 @@ check("messages via worker", r.status === 200 && j.content?.[0]?.text === "Hello
 check("worker usage from result.modelUsage (official cache presentation)", j.usage?.input_tokens === 12 && j.usage?.output_tokens === 7 && j.usage?.cache_read_input_tokens === 17125 && j.usage?.cache_creation_input_tokens === 1200 && j.usage?.cache_creation?.ephemeral_5m_input_tokens === 1200 && j.usage?.cache_creation?.ephemeral_1h_input_tokens === 0, j.usage);
 let u = await lastUsage();
 check("billed on the worker account", u.accountName === "ccr-worker-1" && u.actualCost > 0 && u.inputTokens === 12 && u.cacheReadTokens === 17125 && u.cacheWriteTokens === 1200 && u.cacheWrite5mTokens === 1200 && u.cacheWrite1hTokens === 0 && u.usageEstimated === false, u);
+{
+  // X-57: the same prompt without cache_control — the caller did not ask for caching, the write is plain input
+  const pr = await messages(wkey, { messages: plainLongMsg() });
+  const pj = JSON.parse(pr.text);
+  check("no cache_control -> cache write stays input (X-57)", pr.status === 200 && pj.usage?.cache_creation_input_tokens === 0 && pj.usage?.input_tokens === 1212 && pj.usage?.cache_read_input_tokens === 17125, pj.usage);
+}
 
 r = await messages(wkey, { stream: true });
 check("stream via worker", r.status === 200 && r.text.includes("event: message_start") && r.text.includes("Hello from fake claude.") && r.text.includes("event: message_stop") && r.text.includes('"output_tokens":7'), r.text.slice(0, 400));

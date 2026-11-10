@@ -14,7 +14,7 @@ import { config } from "../config.js";
 import { pinnedTunnelTransport, type IsolationContext } from "../tunnel.js";
 import { CcrClient, CcrHttpError } from "./client.js";
 import { CcrSessionPool, type PoolEntry } from "./session-pool.js";
-import { SessionTranslator, buildSessionEvents, messagesToPrompt } from "./translate.js";
+import { SessionTranslator, requestAsksForCaching, buildSessionEvents, messagesToPrompt } from "./translate.js";
 import type { EventPayload, SessionEvent, TurnFacts } from "./types.js";
 import { overheadLogLine, planOverhead, recordOverheadSample, type OverheadPlan } from "./overhead.js";
 
@@ -25,6 +25,8 @@ export interface CcrRunInput {
   cred: Credential;
   /** Anthropic Messages body (chat clients are converted before this point). */
   body: Json;
+  /** X-57: whether the caller's request as received carried cache_control (see CcrWorkerInput). */
+  callerAsksForCaching?: boolean;
   /** Model to report back to the client. */
   clientModel: string;
   /** Model after model_mapping (what the session is configured with). */
@@ -148,7 +150,8 @@ export async function runCcr(input: CcrRunInput): Promise<Response> {
     model: input.clientModel,
     simulateTools: Array.isArray(body.tools) && body.tools.length > 0,
     cacheBaseline: Number(getSetting("ccr_cache_baseline_cloud")),
-    cacheWriteAsInput: getSetting("ccr_cache_write_as_input") === "1",
+    // "1" = always as input (the old rule); otherwise a cache write is shown and billed as one only when the caller asked for caching (X-57)
+    cacheWriteAsInput: getSetting("ccr_cache_write_as_input") === "1" || !(input.callerAsksForCaching ?? requestAsksForCaching(body)),
   });
 
   // §5.3: sticky-keyed requests reuse a pooled warm session; stateless ones

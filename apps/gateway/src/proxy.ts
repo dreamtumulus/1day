@@ -85,7 +85,7 @@ import { CORS_HEADERS, conversationResponseHeaders, clientIp, errorBody, makeTee
 import { armNonStreamHeartbeat, beginEarlyStream, endEarlyJson, endEarlyJsonWithError, endEarlyStreamWithError, stopEarlyKeepalive, stopNonStreamHeartbeat } from "./heartbeat.js";
 import { runCcr, retireCcrConversation } from "./ccr/executor.js";
 import { runCcrWorker } from "./ccr/worker.js";
-import { ccrUnsupportedReason, type CcrUnsupported } from "./ccr/translate.js";
+import { ccrUnsupportedReason, requestAsksForCaching, type CcrUnsupported } from "./ccr/translate.js";
 import { openaiChatToAnthropic } from "./convert.js";
 import { postRaw } from "./rawhttp.js";
 import { SharedAccountGates, type AccountLease } from "./limits.js";
@@ -783,6 +783,9 @@ async function switchTeam(scope: ConversationScope, nextTeam: string, format: Cl
 async function proxyRequest(req: FastifyRequest, reply: FastifyReply, format: ClientFormat, endpoint: string, caller: CallerContext, scope?: ConversationScope): Promise<void> {
   assertScope(scope);
   let body = scope ? scope.originalBody : (req.body && typeof req.body === "object" ? req.body : {}) as Json;
+  // X-57: decided on the request as the caller sent it — the body is rebuilt from the stored conversation further down
+  // and loses the caller's cache_control markers on the way.
+  const callerAsksForCaching = requestAsksForCaching((req.body && typeof req.body === "object" ? req.body : {}) as Json) || requestAsksForCaching(body);
   // Response profile for Claude Code clients (spec WP1 §6, settings cc_client_response_profile, three-state): a real
   // Claude Code sees an Anthropic-shaped answer — no x-1day-* diagnostic headers (request-id / retry-after stay).
   // Decided on the UA before the shape gate so the conversation headers set below follow the same rule.
@@ -1283,6 +1286,7 @@ async function proxyRequest(req: FastifyRequest, reply: FastifyReply, format: Cl
                 account,
                 cred,
                 body: ccrReq,
+                callerAsksForCaching,
                 clientModel: model,
                 upstreamModel,
                 stream: ctx.stream,
@@ -1337,6 +1341,7 @@ async function proxyRequest(req: FastifyRequest, reply: FastifyReply, format: Cl
                 account,
                 cred,
                 body: ccrReq,
+                callerAsksForCaching,
                 clientModel: model,
                 upstreamModel,
                 stream: ctx.stream,

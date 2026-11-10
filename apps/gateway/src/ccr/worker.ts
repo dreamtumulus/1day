@@ -14,7 +14,7 @@ import { StreamDemand } from "../lifecycle.js";
 import { config } from "../config.js";
 import { TunnelRequestError, openCcWorker, type IsolationContext } from "../tunnel.js";
 import { SessionMemory, blockHash, blockTail, blockTails, diffContext, firstDiffOffset, planToolResult, planTurn, type TurnMemory, type TurnPlan } from "./session-memory.js";
-import { SessionTranslator, addTranslatedUsage, callerSystemText, contentText, isSuggestionRequest, messagesToBlocks, messagesToBlocksWithRoles, messagesToPrompt, toolChoiceInstruction, workerSystemPrompt } from "./translate.js";
+import { SessionTranslator, requestAsksForCaching, addTranslatedUsage, callerSystemText, contentText, isSuggestionRequest, messagesToBlocks, messagesToBlocksWithRoles, messagesToPrompt, toolChoiceInstruction, workerSystemPrompt } from "./translate.js";
 import { bump } from "../metrics.js";
 import { randomUUID } from "node:crypto";
 import { buildNativeTranscript, countStrippedThinking } from "./native-session.js";
@@ -217,6 +217,11 @@ export interface CcrWorkerInput {
   cred: Credential;
   /** Anthropic Messages body (chat clients are converted before this point). */
   body: Json;
+  /**
+   * X-57: did the caller's ORIGINAL request carry cache_control? The body here may have been rebuilt from the stored
+   * conversation (conversation.ts drops the markers), so the gateway decides on the request as received.
+   */
+  callerAsksForCaching?: boolean;
   clientModel: string;
   upstreamModel: string;
   stream: boolean;
@@ -491,7 +496,8 @@ export async function runCcrWorker(input: CcrWorkerInput): Promise<Response | nu
     nativeTools,
     thinking: thinkingWanted,
     cacheBaseline: Number(getSetting("ccr_cache_baseline_worker")),
-    cacheWriteAsInput: getSetting("ccr_cache_write_as_input") === "1",
+    // "1" = always as input (the old rule); otherwise a cache write is shown and billed as one only when the caller asked for caching (X-57)
+    cacheWriteAsInput: getSetting("ccr_cache_write_as_input") === "1" || !(input.callerAsksForCaching ?? requestAsksForCaching(body)),
     // Continued / resumed turn: bill only the increment over what the process already reported.
     usageBaseline: plan.mode === "fresh" ? null : (mem?.usage ?? null),
     // Messages earlier requests already delivered: their whole rows, told late by the TUI shim, are not a new answer.
