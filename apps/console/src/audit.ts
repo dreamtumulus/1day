@@ -1,19 +1,27 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { all, isoIn, newId, nowIso, one, run } from "@1dayapi/core";
 import { Where, dateRange, page, paged, query } from "./http.js";
+import { redactForAudit } from "./audit-redact.js";
 import { requireAdmin } from "./session.js";
 
 // Admin action audit trail (docs/auth.md §3a, issue A-5): every mutating request under
 // /api/admin/* and /api/provider/* by an authenticated user, plus failed /auth/login
 // attempts, lands in admin_audit (migration 24). The record is one INSERT inside
 // try/catch — auditing never fails or slows a request noticeably — and the stored body
-// is redacted: any key that looks like a secret is dropped, strings are truncated.
+// is redacted: credential fields are dropped, secrets inside any string (proxy passwords,
+// OAuth code/state, tokens) are scrubbed, strings are truncated (audit-redact.ts).
 
-const SECRET_KEY_RE = /key|token|secret|password|sessionkey|credential|cookie|authorization/i;
-const MAX_STRING = 200;
-const MAX_DEPTH = 4;
-const MAX_KEYS = 60;
+// Redaction lives in audit-redact.ts (review fix 2026-11-10): precise key names + scrubbing by value.
+export { redactForAudit, redactString, isSecretKeyName, reRedactSummary } from "./audit-redact.js";
 const RETENTION_DAYS = 180;
+
+/**
+ * Requests that are never audited: the live preview of the own-proxy form (`dryRun: true`) is sent on every keystroke,
+ * changes nothing, and its body is a proxy line with its password being typed (routes/onboarding.ts "Nothing is logged").
+ */
+function skipAudit(path: string, body: unknown): boolean {
+  return /^\/api\/(admin|provider)\/accounts\/onboard\/proxy$/.test(path) && !!body && typeof body === "object" && (body as { dryRun?: unknown }).dryRun === true;
+}
 
 export interface AuditRow {
   id: string;
@@ -25,32 +33,6 @@ export interface AuditRow {
   status: number;
   ip: string | null;
   summary: string | null;
-}
-
-/** Drop secret-looking keys, truncate strings, bound depth/size. Safe on any JSON-ish value. */
-export function redactForAudit(value: unknown, depth = 0): unknown {
-  if (value === null || value === undefined) return value;
-  if (typeof value === "string") return value.length > MAX_STRING ? `${value.slice(0, MAX_STRING)}…(${value.length})` : value;
-  if (typeof value === "number" || typeof value === "boolean") return value;
-  if (depth >= MAX_DEPTH) return "[…]";
-  if (Array.isArray(value)) return value.slice(0, MAX_KEYS).map((v) => redactForAudit(v, depth + 1));
-  if (typeof value === "object") {
-    const out: Record<string, unknown> = {};
-    let n = 0;
-    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-      if (SECRET_KEY_RE.test(k)) {
-        out[k] = "[redacted]";
-        continue;
-      }
-      if (++n > MAX_KEYS) {
-        out["…"] = "[truncated]";
-        break;
-      }
-      out[k] = redactForAudit(v, depth + 1);
-    }
-    return out;
-  }
-  return String(value);
 }
 
 export function recordAudit(e: {
@@ -75,10 +57,21 @@ export function recordAudit(e: {
       e.ip ? e.ip.slice(0, 64) : null,
       e.summary === undefined ? null : JSON.stringify(e.summary).slice(0, 8000),
     );
-  } catch {
-    // Auditing is best-effort: a locked DB or a schema mismatch must not fail the request.
+  } catch (err) {
+    // Auditing is best-effort: a locked DB or a schema mismatch must not fail the request. It is not silent either
+    // (review fix 2026-11-10): the error class is logged at most once per minute, with the number of records lost since.
+    auditFailures++;
+    const now = Date.now();
+    if (now - auditFailureLoggedAt >= 60_000) {
+      const e = err as { name?: string; code?: string; message?: string } | null;
+      console.error(`[audit] ${auditFailures} audit record(s) not written (last: ${e?.name ?? "Error"}${e?.code ? ` ${e.code}` : ""}: ${String(e?.message ?? err).slice(0, 160)})`);
+      auditFailureLoggedAt = now;
+      auditFailures = 0;
+    }
   }
 }
+let auditFailures = 0;
+let auditFailureLoggedAt = 0;
 
 function errorCodeFromPayload(payload: unknown): string | null {
   if (typeof payload !== "string") return null;
@@ -112,6 +105,7 @@ export function registerAuditHook(app: FastifyInstance): void {
     }
     if (!(path.startsWith("/api/admin/") || path.startsWith("/api/provider/"))) return payload;
     if (!req.user) return payload; // unauthenticated attempts are not actions
+    if (skipAudit(path, req.body)) return payload;
     const summary: Record<string, unknown> = {};
     if (req.params && Object.keys(req.params as object).length) summary.params = redactForAudit(req.params);
     if (req.body !== undefined && req.body !== null) summary.body = redactForAudit(req.body);
