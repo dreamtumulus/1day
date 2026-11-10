@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { api, type ApiKey, type Paged, type UsageRow, type UsageStats } from "../../api";
 import { BarChart, ShareBars } from "../../charts";
+import { CostBreakdown, cacheWriteText } from "../../CostBreakdown";
 import { useCT } from "../../i18n";
 import {
   Async,
@@ -183,12 +184,14 @@ export function UserUsage() {
         { label: t("common.model"), value: <span className="font-mono text-[12.5px]">{r.upstreamModel && r.upstreamModel !== r.model ? `${r.model} → ${r.upstreamModel}` : r.model}</span> },
         { label: t("common.input"), value: fmtNum(r.inputTokens) },
         { label: t("common.output"), value: fmtNum(r.outputTokens) },
-        { label: t("user.usage.dCacheRW"), value: `${fmtNum(r.cacheReadTokens)} / ${fmtNum(r.cacheWriteTokens)}` },
+        { label: t("common.cost.cacheRead"), value: fmtNum(r.cacheReadTokens) },
+        { label: t("common.cost.cacheWrite"), value: cacheWriteText(r) },
         { label: t("common.cost"), value: `${fmtUsd(r.actualCost)}${r.rateMultiplier !== 1 ? ` (×${r.rateMultiplier})` : ""}` },
         { label: t("user.usage.dDuration"), value: fmtMs(r.durationMs) },
         { label: t("user.usage.dTtft"), value: fmtMs(r.firstTokenMs) },
         { label: t("common.status"), value: <StatusCodeCell code={r.statusCode} error={r.errorCode} /> },
         !!r.usageEstimated && { label: t("common.estimated"), value: t("user.usage.estimatedHint") },
+        !!r.costBreakdown && r.costBreakdown.lines.length > 0 && { label: t("common.cost.breakdown"), value: <CostBreakdown breakdown={r.costBreakdown} rateMultiplier={r.rateMultiplier} />, wide: true },
         !!r.errorMessage && { label: t("user.usage.dError"), value: <span className="text-error">{r.errorMessage}</span>, wide: true },
       ]}
     />

@@ -31,6 +31,8 @@ interface Row {
   input: number | null;
   output: number | null;
   cacheRead: number | null;
+  cacheWrite5m: number | null;
+  cacheWrite1h: number | null;
 }
 
 export function UserModels() {
@@ -61,6 +63,8 @@ export function UserModels() {
           input: mul(perM(p, "input_tokens")),
           output: mul(perM(p, "output_tokens")),
           cacheRead: mul(perM(p, "cache_read_tokens")),
+          cacheWrite5m: mul(perM(p, "cache_write_5m_tokens") ?? perM(p, "cache_write_tokens")),
+          cacheWrite1h: mul(perM(p, "cache_write_1h_tokens") ?? perM(p, "cache_write_tokens")),
         };
       });
   }, [pricing.data, group, rate, q]);
@@ -83,6 +87,8 @@ export function UserModels() {
     { key: "in", header: t("user.models.inputPerM"), align: "right", render: (r) => <span className="font-mono tabular-nums">{r.input == null ? "—" : fmtUsd(r.input, 4)}</span> },
     { key: "out", header: t("user.models.outputPerM"), align: "right", render: (r) => <span className="font-mono tabular-nums">{r.output == null ? "—" : fmtUsd(r.output, 4)}</span> },
     { key: "cache", header: t("user.models.cacheReadPerM"), align: "right", render: (r) => <span className="font-mono tabular-nums text-on-surface-variant">{r.cacheRead == null ? "—" : fmtUsd(r.cacheRead, 4)}</span> },
+    { key: "cw5", header: t("user.models.cacheWrite5mPerM"), align: "right", render: (r) => <span className="font-mono tabular-nums text-on-surface-variant">{r.cacheWrite5m == null ? "—" : fmtUsd(r.cacheWrite5m, 4)}</span> },
+    { key: "cw1h", header: t("user.models.cacheWrite1hPerM"), align: "right", render: (r) => <span className="font-mono tabular-nums text-on-surface-variant">{r.cacheWrite1h == null ? "—" : fmtUsd(r.cacheWrite1h, 4)}</span> },
   ];
 
   return (

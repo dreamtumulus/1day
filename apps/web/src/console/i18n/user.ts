@@ -114,6 +114,8 @@ const en = {
   "user.models.inputPerM": "Input / 1M",
   "user.models.outputPerM": "Output / 1M",
   "user.models.cacheReadPerM": "Cache read / 1M",
+  "user.models.cacheWrite5mPerM": "Cache write 5 min / 1M",
+  "user.models.cacheWrite1hPerM": "Cache write 1 hour / 1M",
 
   "user.guide.desc": "Point any OpenAI- or Anthropic-compatible client at 1DayAPI.",
   "user.guide.stepN": "Step {n}",
@@ -277,6 +279,8 @@ const zh: typeof en = {
   "user.models.inputPerM": "输入 / 百万",
   "user.models.outputPerM": "输出 / 百万",
   "user.models.cacheReadPerM": "缓存读取 / 百万",
+  "user.models.cacheWrite5mPerM": "缓存写入 5 分钟 / 百万",
+  "user.models.cacheWrite1hPerM": "缓存写入 1 小时 / 百万",
 
   "user.guide.desc": "任何兼容 OpenAI 或 Anthropic 的客户端都可以直接接入 1DayAPI。",
   "user.guide.stepN": "第 {n} 步",

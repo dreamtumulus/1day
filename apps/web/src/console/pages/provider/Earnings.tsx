@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { api, type Paged, type ProviderAccount } from "../../api";
+import { cacheWriteText } from "../../CostBreakdown";
 import { useCT } from "../../i18n";
 import {
   Async,
@@ -48,9 +49,17 @@ export function ProviderEarnings() {
       header: `${t("common.input")} / ${t("common.output")} / ${t("common.cache")}`,
       align: "right",
       render: (r) => (
-        <span className="font-mono text-[12.5px] tabular-nums">
-          {fmtNum(r.inputTokens)} / {fmtNum(r.outputTokens)} / {fmtNum(r.cacheTokens)}
-        </span>
+        <div className="font-mono text-[12.5px] tabular-nums">
+          <div>
+            {fmtNum(r.inputTokens)} / {fmtNum(r.outputTokens)} / {fmtNum(r.cacheTokens)}
+          </div>
+          {r.cacheReadTokens !== undefined && r.cacheTokens > 0 && (
+            <div className="text-[11.5px] text-on-surface-faint">
+              {t("common.cost.cacheRead")} {fmtNum(r.cacheReadTokens)} · {t("common.cost.cacheWrite")}{" "}
+              {cacheWriteText({ cacheWriteTokens: r.cacheWriteTokens ?? 0, cacheWrite5mTokens: r.cacheWrite5mTokens, cacheWrite1hTokens: r.cacheWrite1hTokens })}
+            </div>
+          )}
+        </div>
       ),
     },
     { key: "std", header: t("provider.earnings.standard"), align: "right", render: (r) => <span className="font-mono tabular-nums text-on-surface-variant">{fmtUsd(r.totalCost)}</span> },

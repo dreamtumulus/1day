@@ -395,12 +395,17 @@ function BreakdownPanel({ stats }: { stats: UsageStats }) {
   const accounts = stats.byAccount ?? [];
   const accTotal = accounts.reduce((a, r) => a + r.costUsd, 0);
   const tok = stats.totals;
+  const unsplitWrite = Math.max(0, tok.cacheWriteTokens - (tok.cacheWrite5mTokens ?? 0) - (tok.cacheWrite1hTokens ?? 0));
   const tokRows: Array<[string, number]> = [
     [t("admin.finance.tok.input"), tok.inputTokens],
     [t("admin.finance.tok.output"), tok.outputTokens],
     [t("admin.finance.tok.cacheRead"), tok.cacheReadTokens],
-    [t("admin.finance.tok.cacheWrite"), tok.cacheWriteTokens],
+    // cache writes by TTL tier (X-51)
+    [t("admin.finance.tok.cacheWrite5m"), tok.cacheWrite5mTokens ?? 0],
+    [t("admin.finance.tok.cacheWrite1h"), tok.cacheWrite1hTokens ?? 0],
   ];
+  // recorded before the split: one single-price bucket, shown only while the period still contains such rows
+  if (unsplitWrite > 0) tokRows.push([t("admin.finance.tok.cacheWrite"), unsplitWrite]);
   const tokSum = tokRows.reduce((a, [, v]) => a + v, 0);
 
   const accCols: Column<NonNullable<UsageStats["byAccount"]>[number]>[] = [
