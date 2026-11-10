@@ -1067,7 +1067,9 @@ async function proxyRequest(req: FastifyRequest, reply: FastifyReply, format: Cl
   const dKey = namespace && rawDeviceKey ? `${namespace}:${rawDeviceKey}` : rawDeviceKey;
   const merkleNamespace = scope && !scope.reliable ? sKey : null;
   let ordered = orderByMerklePrefix(
-    [...orderByAffinity(usable.filter((a) => !a.cooling), sKey, dKey), ...usable.filter((a) => a.cooling)],
+    // accounts kept schedulable only by usage credits (usage_credits_policy) go after every account with plan quota left,
+    // sticky or not: a request on credits is billed to the account owner at API rates (docs/usage-credits.md)
+    [...orderByAffinity(usable.filter((a) => !a.cooling && !a.onCredits), sKey, dKey), ...usable.filter((a) => !a.cooling && a.onCredits), ...usable.filter((a) => a.cooling)],
     merkleNamespace,
     scope?.originalBody ?? body,
     format,

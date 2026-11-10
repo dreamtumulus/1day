@@ -1,9 +1,12 @@
 import Fastify from "fastify";
-import { dbPath } from "@1dayapi/core";
+import { dbPath, verifyMasterKey } from "@1dayapi/core";
 import { config } from "./config.js";
 import { CORS_HEADERS, sendError } from "./http.js";
 import { affinityBindingsSummary } from "./proxy.js";
 import { registerRoutes } from "./routes.js";
+
+// Refuse to start on a missing / wrong master key (docs/code-review-2026-11-10.md §1.1). Never catch MasterKeyError here.
+verifyMasterKey();
 
 const app = Fastify({ logger: { level: process.env.LOG_LEVEL ?? "info" }, bodyLimit: 32 * 1024 * 1024 });
 
