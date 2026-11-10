@@ -22,11 +22,44 @@ now=$(date -u +%s); tgt=$(date -u -d "$TARGET" +%s) || { say "bad TARGET"; exit 
 [ "$tgt" -gt "$now" ] && sleep $((tgt - now))
 [ -e /root/monitor/canary-phase-switch.stop ] && { say "stop file present, aborting before switch"; exit 0; }
 HOURS=$(( (tgt - $(date -u -d "2026-11-02T00:33:00Z" +%s)) / 3600 + 1 )) node --no-warnings ops/bin/canary-report > "$SNAP" 2>&1
-before=$(node --no-warnings -e "import('node:sqlite').then(({DatabaseSync})=>console.log(new DatabaseSync(process.argv[1],{readOnly:true}).prepare('SELECT value FROM settings WHERE key=?').get(process.argv[2])?.value??'(default)'))" "$DB" "$SETTING")
-node --no-warnings -e "import('node:sqlite').then(({DatabaseSync})=>{const db=new DatabaseSync(process.argv[1]);db.prepare('INSERT INTO settings (key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run(process.argv[2],process.argv[3]);})" "$DB" "$SETTING" "$VALUE" || { say "FAILED to set $SETTING"; exit 3; }
+# This script writes the production database next to two live services. One write = one BEGIN IMMEDIATE transaction
+# with busy_timeout 5 s; the restore record (what the setting was, or that it was absent) is on disk, fsynced, BEFORE
+# the row changes, so an interrupted run always leaves the way back. Prints the previous value; non-zero on failure.
+RESTORE=${RESTORE:-/root/monitor/canary-phase-restore-$(date -u +%Y%m%dT%H%M%SZ)-$SETTING.json}
+set_setting() { # value restore-file-or-empty
+  node --no-warnings -e "
+    import('node:sqlite').then(({DatabaseSync})=>{
+      const fs=require('node:fs'); const [dbPath,key,value,restore]=process.argv.slice(1);
+      const db=new DatabaseSync(dbPath); db.exec('PRAGMA busy_timeout=5000'); db.exec('BEGIN IMMEDIATE');
+      try {
+        const old=db.prepare('SELECT value FROM settings WHERE key=?').get(key);
+        if (restore) {
+          const fd=fs.openSync(restore,'wx',0o600);
+          fs.writeSync(fd,JSON.stringify({db:dbPath,setting:key,existed:!!old,old_value:old?old.value:null,new_value:value,at:new Date().toISOString(),restore_sql:old?'UPDATE settings SET value=? WHERE key=? -- old_value, setting':'DELETE FROM settings WHERE key=? -- setting'},null,2)+'\n');
+          fs.fsyncSync(fd); fs.closeSync(fd);
+        }
+        db.prepare('INSERT INTO settings (key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run(key,value);
+        db.exec('COMMIT'); console.log(old?old.value:'(default)');
+      } catch (e) { try { db.exec('ROLLBACK'); } catch {} throw e; }
+    }).catch((e)=>{ console.error('set_setting failed: '+(e&&e.message||e)); process.exit(1); });" "$DB" "$SETTING" "$1" "${2:-}"
+}
+if ! before=$(set_setting "$VALUE" "$RESTORE" 2>>"$LOG"); then
+  say "FAILED to set $SETTING=$VALUE (database busy, restore record $RESTORE not writable, or it already exists); nothing was changed"
+  echo "canary-phase-switch: FAILED to set $SETTING=$VALUE, nothing was changed (details in $LOG)" >&2
+  exit 3
+fi
 switched_at=$(date -u +%FT%TZ)
-say "PHASE2 ON: $SETTING $before -> $VALUE (snapshot of the phase before: $SNAP)"
-rollback() { node --no-warnings -e "import('node:sqlite').then(({DatabaseSync})=>{const db=new DatabaseSync(process.argv[1]);db.prepare('INSERT INTO settings (key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run(process.argv[2],process.argv[3]);})" "$DB" "$SETTING" "$ROLLBACK_VALUE"; say "PHASE2 ROLLBACK: $SETTING -> $ROLLBACK_VALUE because: $*"; }
+say "PHASE2 ON: $SETTING $before -> $VALUE (snapshot of the phase before: $SNAP; restore record: $RESTORE)"
+rollback() {
+  local i
+  for i in 1 2 3; do
+    if set_setting "$ROLLBACK_VALUE" "" >/dev/null 2>>"$LOG"; then say "PHASE2 ROLLBACK: $SETTING -> $ROLLBACK_VALUE because: $*"; return 0; fi
+    sleep 5
+  done
+  say "PHASE2 ROLLBACK FAILED: $SETTING is STILL $VALUE (wanted $ROLLBACK_VALUE because: $*); set it by hand, restore record $RESTORE"
+  echo "canary-phase-switch: ROLLBACK FAILED, $SETTING is still $VALUE (see $LOG, $RESTORE)" >&2
+  return 1
+}
 end=$(( $(date -u +%s) + GUARD_HOURS * 3600 ))
 while [ "$(date -u +%s)" -lt "$end" ]; do
   sleep 300
@@ -42,10 +75,11 @@ while [ "$(date -u +%s)" -lt "$end" ]; do
       if (accts.some(a=>a.status!=='active')) out.push('account not active: '+accts.map(a=>a.id.slice(0,8)+'='+a.status).join(','));
       if ((s.rej??0)>=2) out.push('upstream_request_rejected='+s.rej);
       if (s.n>=20 && (s.s5??0)/s.n>0.2) out.push('5xx share '+s.s5+'/'+s.n);
-      let c={}; try { c=(await (await fetch(process.argv[3]+'/health',{signal:AbortSignal.timeout(8000)})).json()).counters??{}; } catch {}
+      // counters: /internal/metrics with the internal token first, /health as the fallback (ops/bin/gateway-counters)
+      let c={}; try { c=JSON.parse(require('node:child_process').execFileSync(process.execPath,['--no-warnings','ops/bin/gateway-counters'],{env:{...process.env,API_BASE:process.argv[3]},encoding:'utf8',timeout:30000,stdio:['ignore','pipe','ignore']})).counters??{}; } catch { console.error('guard: gateway counters unavailable (cc_profile_mismatch not checked this round)'); }
       const mm=Object.entries(c).filter(([k,v])=>k.startsWith('cc_profile_mismatch_total')&&v>0); if (mm.length) out.push('cc_profile_mismatch '+JSON.stringify(mm));
       console.log(out.join('; ')); console.error('guard: n='+s.n+' direct='+(s.direct??0)+' 5xx='+(s.s5??0)+' rejected='+(s.rej??0));
     });" "$DB" "$switched_at" "$API" 2>>"$LOG")
-  if [ -n "$why" ]; then rollback "$why"; exit 4; fi
+  if [ -n "$why" ]; then rollback "$why" || exit 5; exit 4; fi
 done
 say "guard over (${GUARD_HOURS}h), $SETTING stays $VALUE; watchdog continues"

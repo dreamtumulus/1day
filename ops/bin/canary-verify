@@ -27,9 +27,14 @@ import('node:sqlite').then(({DatabaseSync})=>{
 });" "$DB_PATH" || say "  (could not read settings)"
 else say "  (no DB at $DB_PATH)"; fi
 
-say "== 2. gateway /health counters (before)"
-before=$(curl -fsS -m 10 "$API_BASE/health" || echo '{}')
-printf '%s' "$before" | python3 -c 'import json,sys; c=json.load(sys.stdin).get("counters",{}); print("  "+(json.dumps(c) if c else "(empty)"))' 2>/dev/null
+# Counters: /internal/metrics with the internal token first, /health as the fallback (ops/bin/gateway-counters).
+COUNTERS="$(cd "$(dirname "$0")" && pwd)/gateway-counters"
+say "== 2. gateway counters (before)"
+if before=$(API_BASE="$API_BASE" node --no-warnings "$COUNTERS" 2>/tmp/canary-counters.err); then
+  printf '%s' "$before" | python3 -c 'import json,sys; d=json.load(sys.stdin); c=d.get("counters",{}); print("  source: "+d.get("source","?")); print("  "+(json.dumps(c) if c else "(empty)"))' 2>/dev/null
+else
+  say "  (counters unavailable: $(tail -1 /tmp/canary-counters.err))"
+fi
 
 req() { # name method path json [extra curl args]
   local name=$1 path=$2 data=$3; shift 3
@@ -51,7 +56,13 @@ scode=$(curl -s -m 60 -o /tmp/canary-strict.json -w '%{http_code}' -X POST "$API
 say "  chat n=2: HTTP $scode $(tr -d '\n' < /tmp/canary-strict.json | head -c 120)"
 
 say "== 4. counters that must stay at zero (after)"
-after=$(curl -fsS -m 10 "$API_BASE/health" || echo '{}')
+if ! after=$(API_BASE="$API_BASE" node --no-warnings "$COUNTERS" 2>/tmp/canary-counters.err); then
+  # Unreadable counters are not zero counters: the check did not happen.
+  say "  !! counters unavailable: $(tail -1 /tmp/canary-counters.err)"
+  say "  !! (/internal/metrics needs the internal token: run as a user that can read the data dir, or set INTERNAL_TOKEN / INTERNAL_TOKEN_FILE)"
+  fail=1
+  after='{"counters":{}}'
+fi
 printf '%s' "$after" | python3 -c '
 import json,sys
 c=json.load(sys.stdin).get("counters",{})
@@ -68,6 +79,13 @@ say "== 5. journald, last 24 h (must be empty)"
 if command -v journalctl >/dev/null 2>&1; then
   j=$(journalctl -u '1dayapi-gateway@*' -u 1dayapi-console --since '24 hours ago' --no-pager 2>/dev/null | grep -E '\[cc-profile\].*mismatch|\[ALERT\]\[org\]|rate_limit_error.{0,40}"message":"Error"|organization has disabled|suspended for this organization' | tail -20)
   if [ -n "$j" ]; then say "$j" | sed 's/^/  !! /'; fail=1; else say "  ok (nothing)"; fi
+  # "Nothing in 24 h" only means something when journald still holds 24 h (docs/operations.md §7.3: production
+  # was found keeping about 4 h before ops/systemd/journald-1dayapi.conf).
+  first=$(journalctl -q -u '1dayapi-gateway@*' --no-pager -o short-unix 2>/dev/null | awk '$1 ~ /^[0-9]/ {print int($1); exit}')
+  if [ -n "${first:-}" ]; then
+    span=$(( ($(date +%s) - first) / 3600 ))
+    if [ "$span" -lt 24 ]; then say "  !! journald only reaches back ${span} h for the gateway: the check above covered ${span} h, not 24 h"; fi
+  fi
 else say "  (no journalctl here)"; fi
 
 [ "$fail" = 0 ] && say "CANARY VERIFIED" || say "CANARY: FAILURES"

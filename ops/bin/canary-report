@@ -89,11 +89,15 @@ say("== 12. key-policy events for canary keys");
 if (canaryKeys.length) for (const e of q("SELECT * FROM key_policy_events WHERE api_key_id IN (" + canaryKeys.map(() => "?").join(",") + ") ORDER BY created_at DESC LIMIT 10", ...canaryKeys)) say("  " + JSON.stringify(e));
 say("== 13. gateway counters that must stay at zero");
 try {
-  const h = await (await fetch(`${API}/health`, { signal: AbortSignal.timeout(8000) })).json();
+  // /internal/metrics with the internal token first, /health as the fallback (ops/bin/gateway-counters).
+  const { execFileSync } = await import("node:child_process");
+  const { fileURLToPath } = await import("node:url");
+  const h = JSON.parse(execFileSync(process.execPath, ["--no-warnings", fileURLToPath(new URL("./gateway-counters", import.meta.url))], { env: { ...process.env, API_BASE: API }, encoding: "utf8", timeout: 30_000, stdio: ["ignore", "pipe", "ignore"] }));
+  say(`  source: ${h.source}`);
   const c = h.counters ?? {};
   const zero = ["cc_profile_mismatch_total", "team_suspended_total", "native_telemetry_unverified_total", "org_budget_exhausted_total"];
   let bad = false;
   for (const [k, v] of Object.entries(c)) { const z = zero.some((z) => k.startsWith(z)); if (z && v) bad = true; say(`  ${z ? (v ? "!! " : "ok ") : "   "}${k} = ${JSON.stringify(v)}`); }
   if (!Object.keys(c).length) say("  (empty)");
   say(bad ? "== VERDICT: FAIL (must-be-zero counter non-zero)" : "== VERDICT: counters clean");
-} catch (e) { say(`  (health unreachable: ${e.message})`); }
+} catch (e) { say(`  (counters unavailable, NOT verified: ${String(e.message).split("\n")[0]})`); }

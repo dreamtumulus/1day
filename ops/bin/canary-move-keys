@@ -5,49 +5,102 @@
 //   node canary-move-keys.mjs cycle-in         # re-move every recorded key that was reverted (watchdog window rotation)
 //   node canary-move-keys.mjs retire <key_id>  # drop a key from the rotation (stays in its old group)
 //   node canary-move-keys.mjs status
+//
+// This writes the production database next to two live services (2026-11-10 hardening): busy_timeout 5 s, every
+// command is ONE `BEGIN IMMEDIATE` transaction (all keys move or none), and the restore record (each key's old
+// group) is on disk before any row changes. A failure prints `canary-move-keys: FAILED …` and exits 1 with the
+// database and the record file as they were.
 import { DatabaseSync } from "node:sqlite";
-import { readFileSync, writeFileSync, existsSync } from "node:fs";
+import { closeSync, existsSync, fsyncSync, openSync, readFileSync, renameSync, writeSync } from "node:fs";
 const DB = process.env.DB_PATH ?? "/opt/1dayapi/data/1dayapi.db";
 const REC = process.env.MOVED_FILE ?? "/root/monitor/canary-moved-keys.json";
-const db = new DatabaseSync(DB);
+const fail = (what, err) => { console.error(`canary-move-keys: FAILED: ${what}${err ? `: ${err.message ?? err}` : ""}`); process.exit(1); };
+let db;
+try { db = new DatabaseSync(DB); db.exec("PRAGMA busy_timeout=5000"); } catch (err) { fail(`cannot open ${DB}`, err); }
 const canary = db.prepare("SELECT value FROM settings WHERE key='canary_group_id'").get()?.value?.trim();
 if (!canary) { console.error("no canary_group_id"); process.exit(2); }
-const rec = existsSync(REC) ? JSON.parse(readFileSync(REC, "utf8")) : [];
-const save = () => writeFileSync(REC, JSON.stringify(rec, null, 2), { mode: 0o600 });
+let previous = null; // the record file exactly as it was found (null = absent)
+let rec = [];
+try { if (existsSync(REC)) { previous = readFileSync(REC, "utf8"); rec = JSON.parse(previous); } } catch (err) { fail(`cannot read the restore record ${REC}`, err); }
+/** Atomic and durable: temp file, fsync, rename. */
+const writeRecord = (text) => {
+  const tmp = `${REC}.tmp-${process.pid}`;
+  const fd = openSync(tmp, "w", 0o600);
+  try { writeSync(fd, text); fsyncSync(fd); } finally { closeSync(fd); }
+  renameSync(tmp, REC);
+};
+const save = () => writeRecord(JSON.stringify(rec, null, 2));
+/**
+ * One transaction. plan() edits `rec` in memory and returns { ops: [() => void], lines: [string] }.
+ * recordFirst (move / cycle-in: rows are about to leave their group): the record is saved before the rows change and
+ * put back if the transaction fails. Otherwise (revert: the record already holds the way back) it is saved only
+ * after the commit, so it never claims a revert that did not happen.
+ */
+function apply(recordFirst, plan) {
+  try { db.exec("BEGIN IMMEDIATE"); } catch (err) { fail("database is busy (no write lock within 5 s); nothing was changed", err); }
+  let recordWritten = false;
+  let lines = [];
+  try {
+    const planned = plan();
+    lines = planned.lines;
+    if (recordFirst && planned.ops.length) { save(); recordWritten = true; }
+    for (const op of planned.ops) op();
+    db.exec("COMMIT");
+  } catch (err) {
+    try { db.exec("ROLLBACK"); } catch { /* no transaction left */ }
+    if (recordWritten) {
+      try { writeRecord(previous ?? "[]"); } catch (e) { console.error(`canary-move-keys: could not put ${REC} back (${e.message}); it lists moves that were rolled back, which revert tolerates`); }
+    }
+    fail("transaction rolled back, no key was changed", err);
+  }
+  for (const l of lines) console.log(l);
+  if (!recordFirst) {
+    try { save(); } catch (err) { fail(`the database WAS changed but ${REC} could not be updated; fix the file by hand from the lines above`, err); }
+  }
+}
 const [cmd, ...ids] = process.argv.slice(2);
 const now = new Date().toISOString();
+const allow = db.prepare("INSERT OR IGNORE INTO user_allowed_groups (user_id, group_id) VALUES (?, ?)");
+const setGroup = db.prepare("UPDATE api_keys SET group_id=? WHERE id=?");
 if (cmd === "move") {
-  for (const id of ids) {
-    const k = db.prepare("SELECT k.id, k.name, k.group_id, k.user_id, u.name user_name FROM api_keys k JOIN users u ON u.id=k.user_id WHERE k.id=?").get(id);
-    if (!k) { console.log(`skip ${id}: no such key`); continue; }
-    if (k.group_id === canary) { console.log(`skip ${id}: already canary`); continue; }
-    rec.push({ key_id: k.id, key_name: k.name, user_id: k.user_id, user_name: k.user_name, old_group: k.group_id, moved_at: now });
-    db.prepare("INSERT OR IGNORE INTO user_allowed_groups (user_id, group_id) VALUES (?, ?)").run(k.user_id, canary);
-    db.prepare("UPDATE api_keys SET group_id=? WHERE id=?").run(canary, k.id);
-    console.log(`moved ${k.id} (${k.user_name}/${k.name}) ${k.old_group ?? k.group_id} -> ${canary}`);
-  }
-  save();
+  apply(true, () => {
+    const ops = [], lines = [];
+    for (const id of ids) {
+      const k = db.prepare("SELECT k.id, k.name, k.group_id, k.user_id, u.name user_name FROM api_keys k JOIN users u ON u.id=k.user_id WHERE k.id=?").get(id);
+      if (!k) { lines.push(`skip ${id}: no such key`); continue; }
+      if (k.group_id === canary) { lines.push(`skip ${id}: already canary`); continue; }
+      rec.push({ key_id: k.id, key_name: k.name, user_id: k.user_id, user_name: k.user_name, old_group: k.group_id, moved_at: now });
+      ops.push(() => { allow.run(k.user_id, canary); setGroup.run(canary, k.id); });
+      lines.push(`moved ${k.id} (${k.user_name}/${k.name}) ${k.group_id} -> ${canary}`);
+    }
+    return { ops, lines };
+  });
 } else if (cmd === "revert") {
-  const todo = ids.length ? rec.filter((r) => ids.includes(r.key_id) && !r.reverted_at) : rec.filter((r) => !r.reverted_at);
-  for (const r of todo) {
-    db.prepare("UPDATE api_keys SET group_id=? WHERE id=? AND group_id=?").run(r.old_group, r.key_id, canary);
-    r.reverted_at = now;
-    console.log(`reverted ${r.key_id} (${r.user_name}/${r.key_name}) -> ${r.old_group}`);
-  }
-  save();
+  apply(false, () => {
+    const ops = [], lines = [];
+    const todo = ids.length ? rec.filter((r) => ids.includes(r.key_id) && !r.reverted_at) : rec.filter((r) => !r.reverted_at);
+    for (const r of todo) {
+      ops.push(() => db.prepare("UPDATE api_keys SET group_id=? WHERE id=? AND group_id=?").run(r.old_group, r.key_id, canary));
+      r.reverted_at = now;
+      lines.push(`reverted ${r.key_id} (${r.user_name}/${r.key_name}) -> ${r.old_group}`);
+    }
+    return { ops, lines };
+  });
 } else if (cmd === "cycle-in") {
-  for (const r of rec.filter((r) => r.reverted_at && !r.retired)) {
-    const k = db.prepare("SELECT group_id, status FROM api_keys WHERE id=?").get(r.key_id);
-    if (!k || k.status !== "active" || k.group_id !== r.old_group) { console.log(`skip ${r.key_id}: ${k ? `group=${k.group_id} status=${k.status}` : "gone"}`); continue; }
-    db.prepare("INSERT OR IGNORE INTO user_allowed_groups (user_id, group_id) VALUES (?, ?)").run(r.user_id, canary);
-    db.prepare("UPDATE api_keys SET group_id=? WHERE id=?").run(canary, r.key_id);
-    r.cycles = (r.cycles ?? 0) + 1; r.moved_at = now; delete r.reverted_at;
-    console.log(`cycled in ${r.key_id} (${r.user_name}/${r.key_name}) ${r.old_group} -> ${canary} (cycle ${r.cycles})`);
-  }
-  save();
+  apply(true, () => {
+    const ops = [], lines = [];
+    for (const r of rec.filter((r) => r.reverted_at && !r.retired)) {
+      const k = db.prepare("SELECT group_id, status FROM api_keys WHERE id=?").get(r.key_id);
+      if (!k || k.status !== "active" || k.group_id !== r.old_group) { lines.push(`skip ${r.key_id}: ${k ? `group=${k.group_id} status=${k.status}` : "gone"}`); continue; }
+      ops.push(() => { allow.run(r.user_id, canary); setGroup.run(canary, r.key_id); });
+      r.cycles = (r.cycles ?? 0) + 1; r.moved_at = now; delete r.reverted_at;
+      lines.push(`cycled in ${r.key_id} (${r.user_name}/${r.key_name}) ${r.old_group} -> ${canary} (cycle ${r.cycles})`);
+    }
+    return { ops, lines };
+  });
 } else if (cmd === "retire") {
   for (const r of rec.filter((r) => ids.includes(r.key_id))) { r.retired = now; console.log(`retired ${r.key_id}`); }
-  save();
+  try { save(); } catch (err) { fail(`cannot write ${REC}`, err); }
 } else {
   for (const r of rec) console.log(JSON.stringify(r));
   console.log("keys in canary group now:", JSON.stringify(db.prepare("SELECT k.id, k.name, u.name user_name FROM api_keys k JOIN users u ON u.id=k.user_id WHERE k.group_id=? AND k.status='active'").all(canary)));
