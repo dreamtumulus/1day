@@ -17,6 +17,31 @@ export function wait(ms: number, signal?: AbortSignal): Promise<void> {
   });
 }
 
+/**
+ * One periodic lease / budget renewal (review 2026-11-09 G). `renew` returns false — or throws an error `isLoss`
+ * recognises — when the lease is really gone: `onLost` runs at once. Any other throw is a failed database call
+ * (SQLITE_BUSY, I/O): it is retried, `tries` in all with a doubling backoff, and only then is the request given up.
+ */
+export function renewWithRetry(
+  renew: () => boolean | void,
+  onLost: (err: unknown) => void,
+  opts: { tries: number; backoffMs: number; label: string; isLoss?: (err: unknown) => boolean; stopped?: () => boolean },
+  attempt = 1,
+): void {
+  if (opts.stopped?.()) return;
+  try {
+    if (renew() === false) onLost(new Error(`${opts.label} lease lost`));
+  } catch (err) {
+    if (opts.isLoss?.(err) || attempt >= opts.tries) {
+      console.error(`[lease] ${opts.label} renewal ${opts.isLoss?.(err) ? "found the lease gone" : `failed ${attempt} times`}; aborting its request`, err);
+      onLost(err);
+      return;
+    }
+    console.warn(`[lease] ${opts.label} renewal failed (try ${attempt}/${opts.tries}), retrying: ${(err as Error)?.message ?? err}`);
+    setTimeout(() => renewWithRetry(renew, onLost, opts, attempt + 1), opts.backoffMs * 2 ** (attempt - 1)).unref();
+  }
+}
+
 /** A producer waits for its consumer instead of accumulating an unbounded SSE queue. */
 export class StreamDemand {
   private wake?: () => void;

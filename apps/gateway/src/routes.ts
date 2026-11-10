@@ -1,8 +1,8 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
-import { INTERNAL_HEADER, isModelAllowed, listRegistry, publicPricing, verifyInternalToken } from "@1dayapi/core";
+import { INTERNAL_HEADER, isModelAllowed, listRegistry, publicPricing, settlementJournalStats, verifyInternalToken } from "@1dayapi/core";
 import { authenticate } from "./auth.js";
 import { sendError } from "./http.js";
-import { countersSnapshot } from "./metrics.js";
+import { countersSnapshot, registerGauge } from "./metrics.js";
 import { inFlightSnapshot, proxy } from "./proxy.js";
 import { estimateRequestTokens } from "./usage.js";
 
@@ -68,7 +68,25 @@ function notImplemented(req: FastifyRequest, reply: FastifyReply): void {
 }
 
 export function registerRoutes(app: FastifyInstance): void {
-  app.get("/health", async () => ({ status: "ok", service: "1dayapi-gateway", time: new Date().toISOString(), counters: countersSnapshot() }));
+  // Settlement journal depth (review 2026-11-09 G): entries awaiting replay, dead-lettered entries, dropped log rows.
+  registerGauge("settlement", () => {
+    const s = settlementJournalStats();
+    return { settlement_journal_pending: s.pending, settlement_journal_dead_letter: s.deadLetter, settlement_zero_cost_dropped_total: s.bestEffortFailures, settlement_healthy: s.healthy ? 1 : 0 };
+  });
+
+  // Public and unauthenticated: liveness only. The counters used to ride here; their labels name organisations,
+  // accounts and client-sent values, so they moved behind the internal token (review 2026-11-09 H).
+  app.get("/health", async () => ({ status: "ok", service: "1dayapi-gateway", time: new Date().toISOString() }));
+
+  // Same JSON shape /health had (`counters` included), for release-verify / canary scripts and the health report:
+  //   curl -H "x-1dayapi-internal: $INTERNAL_TOKEN" http://127.0.0.1:<port>/internal/metrics
+  app.get("/internal/metrics", async (req, reply) => {
+    if (!verifyInternalToken(req.headers[INTERNAL_HEADER])) {
+      sendError(reply, "openai-chat", 401, "invalid_internal_token", "Internal token required.", "authentication_error");
+      return reply;
+    }
+    return { status: "ok", service: "1dayapi-gateway", time: new Date().toISOString(), counters: countersSnapshot() };
+  });
 
   // Console loopback: live per-account in-flight counts (docs/console-api.md, admin accounts list).
   app.get("/internal/inflight", async (req, reply) => {

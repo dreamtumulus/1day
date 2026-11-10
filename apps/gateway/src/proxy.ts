@@ -103,7 +103,7 @@ import {
   type Mode,
   shapingFor,
 } from "./upstream.js";
-import { wait, responseBytes } from "./lifecycle.js";
+import { wait, responseBytes, renewWithRetry } from "./lifecycle.js";
 import { bump } from "./metrics.js";
 // Canonical worker turns the legacy worker takes over (2026-11-05, probe toolround-import): a tool round no live native
 // session holds / an external history canonical may not import, or canonical needing the persistent pool. The legacy
@@ -456,8 +456,11 @@ interface ConversationScope {
 function assertRequestLeases(ctx: Ctx): void {
   ctx.abort.signal.throwIfAborted();
   let budget;
-  try { budget = one("SELECT 1 FROM gateway_request_budgets WHERE request_id = ? AND expires_at > ?", ctx.requestId, Date.now()); }
-  catch (err) { ctx.abort.abort(err); throw err; }
+  // A failed read is retried in place before the request is fenced (G); a missing row is a real loss.
+  for (let attempt = 1; ; attempt++) {
+    try { budget = one("SELECT 1 FROM gateway_request_budgets WHERE request_id = ? AND expires_at > ?", ctx.requestId, Date.now()); break; }
+    catch (err) { if (attempt >= config.leaseRenewTries) { ctx.abort.abort(err); throw err; } }
+  }
   if (!budget || (ctx.accountLease && !ctx.accountLease.isValid())) {
     ctx.abort.abort(new Error("request scheduling lease lost"));
     throw new Error("request scheduling lease lost");
@@ -515,12 +518,19 @@ export async function proxy(req: FastifyRequest, reply: FastifyReply, format: Cl
   lifecycles.set(req, { requestId, abort });
   const onClose = () => { if (!reply.raw.writableFinished) abort.abort(); };
   reply.raw.once("close", onClose);
-  const renew = setInterval(() => { try { renewRequestBudget(requestId); } catch (err) { console.error("[budget] renewal failed", err); abort.abort(err); } }, 30_000);
+  // A failed renewal write is retried before the request is aborted; a reservation that is really gone aborts at once (G).
+  let budgetDone = false;
+  const renew = setInterval(() => renewWithRetry(
+    () => renewRequestBudget(requestId),
+    (err) => abort.abort(err),
+    { tries: config.leaseRenewTries, backoffMs: config.leaseRenewBackoffMs, label: "request budget", isLoss: (err) => /lease lost/.test((err as Error)?.message ?? ""), stopped: () => budgetDone },
+  ), 30_000);
   renew.unref();
   try { await proxyAuthorized(req, reply, format, endpoint, caller); }
   catch (err) { if (!abort.signal.aborted) throw err; }
   finally {
     clearInterval(renew);
+    budgetDone = true;
     try { releaseRequestBudget(requestId); } catch (err) { console.error("[budget] release failed", err); }
     if (abort.signal.aborted && !reply.raw.destroyed && !reply.raw.writableEnded) {
       if (reply.raw.headersSent) reply.raw.end(format === "anthropic" ? `event: error\ndata: ${JSON.stringify({type:"error",error:{type:"api_error",message:"Request scheduling lease expired. Retry shortly."}})}\n\n` : `data: ${JSON.stringify({error:{code:"scheduling_lease_lost",message:"Request scheduling lease expired. Retry shortly."}})}\n\n`);
@@ -586,11 +596,15 @@ async function proxyAuthorized(req: FastifyRequest, reply: FastifyReply, format:
   }
   if (!row) { sendError(reply, format, 503, "conversation_busy", "Another request for this conversation is still running. Retry shortly.", "upstream_error"); return; }
   const scope: ConversationScope = { row, token, reliable: identity.reliable, originalBody, triedTeams: new Set(), lost: false, branch: conversationBranchKey(originalBody, format) };
+  let conversationDone = false;
   const renewal = setInterval(() => {
     if (scope.released) return;
-    try { if (renewConversationLease(scope.row.id, token)) return; } catch { /* fence on DB failure */ }
-    scope.lost = true;
-    scope.abort?.abort();
+    // false = another request owns the conversation now (fence at once); a failed database call is retried first (G).
+    renewWithRetry(
+      () => scope.released || renewConversationLease(scope.row.id, token),
+      () => { if (scope.released) return; scope.lost = true; scope.abort?.abort(); },
+      { tries: config.leaseRenewTries, backoffMs: config.leaseRenewBackoffMs, label: "conversation", stopped: () => conversationDone },
+    );
   }, 20_000);
   renewal.unref();
   try { await proxyRequest(req, reply, format, endpoint, caller, scope); }
@@ -599,7 +613,7 @@ async function proxyAuthorized(req: FastifyRequest, reply: FastifyReply, format:
     if (scope.responseCtx) { stopEarlyKeepalive(scope.responseCtx); stopNonStreamHeartbeat(scope.responseCtx); }
     if (!reply.raw.writableEnded) sendResetNotice(reply, format, originalBody);
   }
-  finally { clearInterval(renewal); releaseConversationLease(scope.row.id, token); }
+  finally { clearInterval(renewal); conversationDone = true; releaseConversationLease(scope.row.id, token); }
 }
 
 async function lockScope(scope: ConversationScope): Promise<void> {

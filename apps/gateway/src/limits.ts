@@ -56,6 +56,7 @@ export class AccountGates {
 /** Cross-process leases and RPM history shared by both blue/green instances. */
 import { all, one, run, tx } from "@1dayapi/core";
 import { randomUUID } from "node:crypto";
+import { config } from "./config.js";
 export interface AccountLease { id: string; isValid(): boolean; release(): void }
 export class SharedAccountGates {
   private readonly owner = randomUUID();
@@ -71,13 +72,27 @@ export class SharedAccountGates {
     item.lost = true;
     try { item.onLost?.(); } catch (err) { console.error("[gates] cancellation callback failed", err); }
   }
-  renewLeases(): void {
+  /**
+   * A failed renewal WRITE (SQLITE_BUSY, I/O) is retried — `tries` in all, backoff doubling — before the lease is
+   * declared lost and its request aborted (review 2026-11-09 G: one busy database tick used to abort every in-flight
+   * request of the instance). A renewal that ran and matched no row means the lease really is gone: lost at once.
+   */
+  renewLeases(tries = config.leaseRenewTries, backoffMs = config.leaseRenewBackoffMs): void {
     for (const [id, item] of this.held) {
       if (item.lost) continue;
-      try {
-        const changed = run("UPDATE gateway_account_leases SET expires_at = ? WHERE id = ? AND owner = ? AND expires_at > ?", this.now() + 90_000, id, this.owner, this.now()).changes;
-        if (!changed) this.lose(id);
-      } catch (err) { console.error("[gates] lease renewal failed", err); this.lose(id); }
+      this.renewOne(id, 1, tries, backoffMs);
+    }
+  }
+  private renewOne(id: string, attempt: number, tries: number, backoffMs: number): void {
+    const item = this.held.get(id);
+    if (!item || item.lost) return;
+    try {
+      const changed = run("UPDATE gateway_account_leases SET expires_at = ? WHERE id = ? AND owner = ? AND expires_at > ?", this.now() + 90_000, id, this.owner, this.now()).changes;
+      if (!changed) this.lose(id);
+    } catch (err) {
+      if (attempt >= tries) { console.error(`[gates] lease renewal failed ${attempt} times; aborting its request`, err); this.lose(id); return; }
+      console.warn(`[gates] lease renewal failed (try ${attempt}/${tries}), retrying: ${(err as Error).message}`);
+      setTimeout(() => this.renewOne(id, attempt + 1, tries, backoffMs), backoffMs * 2 ** (attempt - 1)).unref();
     }
   }
   inFlightCount(accountId: string): number {
@@ -107,8 +122,14 @@ export class SharedAccountGates {
       isValid: () => {
         const item = this.held.get(id);
         if (!item || item.lost) return false;
-        try { if (one("SELECT 1 FROM gateway_account_leases WHERE id = ? AND owner = ? AND expires_at > ?", id, this.owner, this.now())) return true; }
-        catch { /* database failure fences this request */ }
+        // A failed READ is retried in place (the database's busy timeout already waited); only a row that is really
+        // missing, or a database that keeps failing, fences the request.
+        for (let attempt = 1; attempt <= config.leaseRenewTries; attempt++) {
+          try {
+            if (one("SELECT 1 FROM gateway_account_leases WHERE id = ? AND owner = ? AND expires_at > ?", id, this.owner, this.now())) return true;
+            break;
+          } catch (err) { if (attempt >= config.leaseRenewTries) console.error("[gates] lease check keeps failing; fencing its request", err); }
+        }
         this.lose(id); return false;
       },
       release: () => {
