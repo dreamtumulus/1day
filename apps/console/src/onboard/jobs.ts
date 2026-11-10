@@ -25,7 +25,8 @@ import { pushProxies } from "../node/registry.js";
 import { HttpError } from "../http.js";
 import { assertNodeCapacity } from "../node/capacity.js";
 import { requireTrustedExecutionNode } from "../node/trust.js";
-import { endReservation, expireJobReservations, reservationDeadline } from "./reservations.js";
+import { CONSOLE_RESTART_CODE, endReservation, expireJobReservations, reservationDeadline } from "./reservations.js";
+import { oncePer } from "../log-limit.js";
 export { PENDING_CALLBACK_TTL_MS, WORKING_JOB_TTL_MS } from "./reservations.js";
 
 // Onboarding job engine (docs/onboarding.md §2/§5). Jobs are async: the POST
@@ -317,6 +318,28 @@ export function sweepStaleJobs(now = Date.now()): number {
   return before-one<{n:number}>("SELECT COUNT(*) n FROM onboarding_jobs WHERE isolation_version=1 AND status IN ('working','pending_callback')")!.n;
 }
 
+/**
+ * Boot only (review fix 2026-11-10): a `working` job is a promise running inside the console process, so after a
+ * restart nobody is running it. Before, such a job kept its reservation until the 3-minute deadline and then failed as
+ * `job_expired`, which quarantined an exit that had gone out with no organization known. Now every `working` job
+ * fails at once with `console_restarted`: the slot is released and the exit is NOT quarantined (the failure says
+ * nothing about the exit). `pending_callback` jobs wait for the operator's paste and survive a restart. Call before
+ * any job can start in this process. Returns the number of jobs failed.
+ */
+export function failInterruptedJobs(): number {
+  const rows = all<{ id: string; isolation_version: number }>("SELECT id, isolation_version FROM onboarding_jobs WHERE status='working'");
+  let n = 0;
+  for (const j of rows) {
+    if (jobControllers.has(j.id)) continue; // started by this process: not interrupted
+    const ended = j.isolation_version === 1
+      ? endReservation(j.id, CONSOLE_RESTART_CODE, "The console restarted while this authorization was running; start it again")
+      : run("UPDATE onboarding_jobs SET status='failed', error=?, payload_enc=NULL, updated_at=? WHERE id=? AND status='working'",
+          `${CONSOLE_RESTART_CODE}: The console restarted while this authorization was running; start it again`, nowIso(), j.id).changes > 0;
+    if (ended) n++;
+  }
+  return n;
+}
+
 /** Runs separately from slow token refresh/probe work and also when probing is disabled. */
 export function startOnboardingMaintenance(): () => void {
   sweepStaleJobs();
@@ -446,8 +469,11 @@ function findByAccountUuid(uuid: string): AccountRow | undefined {
         if (r.status === "active") return r;
         fallback ??= r;
       }
-    } catch {
-      /* unreadable credential — skip */
+    } catch (err) {
+      // Unreadable credential: the row cannot be matched, so a duplicate of this very account could be onboarded
+      // unnoticed. Said once per account per hour (id only, never the ciphertext).
+      if (oncePer(`cred-unreadable:${r.id}`, 3_600_000))
+        console.error(`[onboard] account ${r.id} has an unreadable credential and is skipped by the duplicate-account lookup: ${(err as Error)?.name ?? "Error"}`);
     }
   }
   return fallback;
