@@ -1256,6 +1256,8 @@ export function registerAdminRoutes(app: FastifyInstance): void {
       overridden: m.overridden,
       prices: m.prices,
       catalogPrices: m.catalogPrices,
+      // false: the override row has no 5-minute price of its own, prices.cacheWrite5mPerM is cacheWritePerM x 0.625
+      cacheWrite5mExplicit: m.cacheWrite5mExplicit,
     })),
   }));
 
@@ -1267,14 +1269,18 @@ export function registerAdminRoutes(app: FastifyInstance): void {
     const platform = str(b, "platform") ?? existing?.platform;
     if (!platform || !getPlatform(platform)) bad("invalid_request", "platform is required and must be a known platform");
     const price = (k: string, fallback: number) => num(b, k, { min: 0, max: 100000 }) ?? fallback;
+    // 5-minute cache write price: a number sets it, null clears it (= cacheWritePerM x 0.625), absent keeps what the
+    // row has. A model that had no override row yet starts from the catalog's 5-minute price.
+    const prior5m = existing ? (existing.overridden && !existing.cacheWrite5mExplicit ? null : existing.prices.cacheWrite5mPerM) : null;
+    const cacheWrite5m = b.cacheWrite5mPerM === null || b.cacheWrite5mPerM === "" ? null : (num(b, "cacheWrite5mPerM", { min: 0, max: 100000 }) ?? prior5m);
     run(
       `INSERT INTO model_prices (model_id, display_name, platform, input_per_m, output_per_m, cache_read_per_m,
-                                 cache_write_per_m, enabled, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                 cache_write_per_m, cache_write_5m_per_m, enabled, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(model_id) DO UPDATE SET display_name=excluded.display_name, platform=excluded.platform,
          input_per_m=excluded.input_per_m, output_per_m=excluded.output_per_m,
          cache_read_per_m=excluded.cache_read_per_m, cache_write_per_m=excluded.cache_write_per_m,
-         enabled=excluded.enabled, updated_at=excluded.updated_at`,
+         cache_write_5m_per_m=excluded.cache_write_5m_per_m, enabled=excluded.enabled, updated_at=excluded.updated_at`,
       modelId,
       str(b, "displayName", { max: 120 }) ?? existing?.displayName ?? modelId,
       platform,
@@ -1282,6 +1288,7 @@ export function registerAdminRoutes(app: FastifyInstance): void {
       price("outputPerM", existing?.prices.outputPerM ?? 0),
       price("cacheReadPerM", existing?.prices.cacheReadPerM ?? 0),
       price("cacheWritePerM", existing?.prices.cacheWritePerM ?? 0),
+      cacheWrite5m,
       typeof b.enabled === "boolean" ? (b.enabled ? 1 : 0) : existing ? (existing.enabled ? 1 : 0) : 1,
       nowIso(),
     );
