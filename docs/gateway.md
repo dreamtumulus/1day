@@ -372,9 +372,18 @@ Anthropic 订阅账户的每个上游响应（2xx 与 429）都读取 `anthropic
 - `passthrough-openai` 流式**强制注入** `stream_options.include_usage=true`；若客户端自己没要求，则剔除仅含 usage 的末块（`choices: []`），客户端看到的流与上游原生一致。
 - `chat-via-anthropic` 只在客户端要求 `include_usage` 时追加 usage 块，最后输出 `data: [DONE]`。
 - 用量抽取（统一成"input 不含缓存读"的口径）：
-  - Anthropic：`message_start.message.usage` + `message_delta.usage`（`input_tokens / output_tokens / cache_read_input_tokens / cache_creation_input_tokens`）；
+  - Anthropic：`message_start.message.usage` + `message_delta.usage`（`input_tokens / output_tokens / cache_read_input_tokens / cache_creation_input_tokens`，
+    以及嵌套的 `cache_creation: {ephemeral_5m_input_tokens, ephemeral_1h_input_tokens}`）。**缓存写入按 TTL 拆分（X-51）**：`UsageAccumulator` 记下总数和两档，
+    `finalize()` 保证 `5m + 1h = 总数`——上游只给总数（或拆分之和小于总数）时差额记入 5 分钟档（官方默认 TTL，也是便宜的一档）；拆分之和大于总数时先保 1 小时档再截断；
+    `message_delta` 只重复总数时沿用 `message_start` 的拆分。结算用量为 `cache_write_tokens`（总数）+ `cache_write_5m_tokens` + `cache_write_1h_tokens`；
   - OpenAI Chat：`prompt_tokens − cached_tokens` 为输入，`cached_tokens` 为缓存读；
   - Responses：`response.completed`（或 `response.done`）事件里的 `response.usage`（`input_tokens_details.cached_tokens`）。
+- **客户端可见的缓存字段（X-51）**：Anthropic 协议（非流式 body、SSE `message_start` 与 `message_delta`）两条通道都按官方形状报
+  `cache_creation_input_tokens`（总数）、`cache_read_input_tokens` 和 `cache_creation: {ephemeral_5m_input_tokens, ephemeral_1h_input_tokens}`；直连是上游原样透传，
+  worker / 云端会话由翻译层生成（最终拆分随 `result` 才知道，所以 `message_delta` 里也带嵌套对象，比官方多这一处、字段含义相同）。`count_tokens` 不涉及。
+  **OpenAI 风格协议不加非标准字段**：`prompt_tokens`（Chat）/ `input_tokens`（Responses）= input + 缓存读 + 缓存写（所有计费的提示词 token，不论单价），
+  `prompt_tokens_details.cached_tokens` / `input_tokens_details.cached_tokens` = 仅缓存读；缓存写包含在 `prompt_tokens` 里、不在 `cached_tokens` 里，
+  其 5m / 1h 拆分只在 Anthropic 协议与控制台用量明细里可见。
 - 上游一个 usage 都没报时，按"请求文本字符数 / 4"和"生成文本字符数 / 4"估算，`usage_estimated=1`。这是 `usage_estimated` 的唯一含义
   （2026-10-16 起 CCR 行不再借用该标记）。**媒体块不按字节算**（2026-10-17）：`estimateRequestTokens` 对 Anthropic `image/document`
   （`source.data`）与 OpenAI `image_url: data:…` 每块固定计 1600 token，JSON 键名不计；此前两条客户端 120s 超时放弃、带约 8MB 图片的请求
@@ -382,9 +391,12 @@ Anthropic 订阅账户的每个上游响应（2xx 与 429）都读取 `anthropic
 - **粘性会话被迫换账号 → 本轮 input 按缓存读价计**（2026-10-17，照搬 sub2api `ForceCacheBilling`）：请求命中了仍有效的 sticky 绑定，
   却因冷却 / 故障转移 / 代理不可用落到了另一个账号，提示词缓存被迫重建不是客户的责任，结算时把该请求的 `input_tokens` 并入
   `cache_read_tokens`（0.1×）。只影响账单，不改客户可见 usage；日志 `[proxy] <id> sticky session moved off its account to …`。
-  **同时把该行 `usage_logs.account_switched` 置 1**（迁移 15，2026-10-21）：缓存写入（1.25×）部分 ForceCacheBilling 管不到，由 console 的
+  **同时把该行 `usage_logs.account_switched` 置 1**（迁移 15，2026-10-21）：缓存写入（5 分钟档 1.25× / 1 小时档 2×）部分 ForceCacheBilling 管不到——X-51 起 worker 通道的
+  缓存写入不再并入 input，所以被迫换号的 worker 请求其写入部分也先按写入价计、再走返还——由 console 的
   缓存重建返还定时任务按差额的 `cache_refund_percent`（默认 80%）返还给用户，先冲减授信、再加余额（data-model.md cache_refunds）。
-- **CCR 路径缓存写按输入价**：settings `ccr_cache_write_as_input`（默认 1），见 ccr-supply.md §7.1。
+- **CCR 路径缓存写入按官方口径呈现和计费（X-51，2026-11-10）**：settings `ccr_cache_write_as_input` 默认 `0`——超出身份基线的缓存写入报为
+  `cache_creation_input_tokens`（含 5m / 1h 拆分）并按写入价计；`1` 是逃生开关（并入 input 按输入价，2026-10-17～11-10 的做法）。见 ccr-supply.md §7.1。
+- **部分流结算**（`usage_estimated`，stream-settlement.ts）：只抬高 output 计数，缓存读写及其拆分沿用已收到的 `message_start` 用量；上游一个 usage 都没报的估算行缓存三项全为 0。
 - CCR 路径（executor=ccr / ccr_worker）的 usage 由翻译层产出：input/output 为上游口径，缓存 = 上游缓存 − 身份上下文基线
   （settings `ccr_cache_baseline_worker` / `ccr_cache_baseline_cloud`，ccr-supply.md §7.1），之后与直连走同一条结算管道。
 - 客户端中途断开：停止读取上游，用已收到的数据结算。

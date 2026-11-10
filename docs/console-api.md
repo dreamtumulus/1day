@@ -44,7 +44,7 @@
 | `GET /usage` | `page,pageSize,from,to,keyId,model,status(ok\|error)` | 分页 `UsageRow` |
 | `GET /usage`（补充过滤） | `code`（error_code）、`mode`、`nodeId`、`statusCode`、`q`（error_message / error_code 模糊、request_id 精确） | 错误日志页用 |
 | `GET /errors/summary` | 同 `/usage` 的过滤参数 | `{totalErrors, totalRequests, byCode[{code,statusCode,count}], byStatus, byMode, byAccount[{accountId,name,count}], hourly[{hour,count}]}`，只统计 `status_code >= 400` |
-| `GET /usage/stats` | `from,to,keyId,model,status` | `{totals:{requests, costUsd, inputTokens, outputTokens, cacheTokens}, daily:[{day, requests, costUsd, tokens}], byModel:[{model, requests, costUsd, inputTokens, outputTokens}]}` |
+| `GET /usage/stats` | `from,to,keyId,model,status` | `{totals:{requests, costUsd, inputTokens, outputTokens, cacheTokens, cacheReadTokens, cacheWriteTokens, cacheWrite5mTokens, cacheWrite1hTokens}, daily:[{day, requests, costUsd, tokens, …同样的缓存读 / 写 / 5m / 1h 字段}], byModel:[{model, requests, costUsd, inputTokens, outputTokens}]}` |
 | `GET /usage/breakdown` | `bucket(hour\|day，缺省 day)` + 同 `/usage` 的过滤 | 按小时 / 按天 × 密钥的消耗：`{bucket, by:"key", cells:[{t, key, requests, errors, costUsd, tokens, lastAt}], series:[{key, name, requests, errors, costUsd, tokens, lastAt}]}`。`t` 为桶起点 ISO（小时 `…T05:00:00Z`、天 `…T00:00:00Z`，均 UTC）；`requests` 只计成功（<300），`errors` 为失败数，`costUsd` 含失败请求的计费；`series` 按费用倒序，`lastAt` 为该序列最近一次请求时间。小时视图服务端固定只看最近 31 天；结果最多 50000 个 cell（2026-10-23） |
 | `GET /ledger` | `page,pageSize` | 分页 `{id, kind, amountUsd, balanceAfter, ref, note, createdAt}`；`kind` 含 `cache_refund` |
 | `GET /cache-refund` | — | 缓存重建返还概览（data-model.md cache_refunds）：`{enabled, percent, intervalSec, pending:{rows, excessUsd, refundUsd, percent, from, to}, lastScheduledRunAt, nextScheduledRunAt, totals:{runs, refundUsd, toCreditUsd, toBalanceUsd, lastRefundAt}}` |
@@ -54,7 +54,7 @@
 管理员用这些端点管理"自己的" Key，且建 Key 时不受可用分组限制。
 
 - `ApiKey = {id, userId, userName, name, keyPreview, groupId, groupName, status, effectiveStatus(active|disabled|expired|exhausted), quotaUsd, usedUsd, expiresAt, lastUsedAt, createdAt, revealable}`
-- `UsageRow = {id, requestId, createdAt, keyName, model, upstreamModel, endpoint, stream, statusCode, errorCode, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, usageEstimated, rateMultiplier, actualCost, durationMs, firstTokenMs, ccShape(genuine|suspect|null), errorMessage, mode, upstreamStatus, nodeId}`
+- `UsageRow = {id, requestId, createdAt, keyName, model, upstreamModel, endpoint, stream, statusCode, errorCode, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens（缓存写总数）, cacheWrite5mTokens, cacheWrite1hTokens（X-51：总数按 TTL 的拆分，拆分前的旧行为 0 / 0）, costBreakdown（X-51：`{priceSource: settlement|current, lines: [{meter: input|output|cache_read|cache_write_5m|cache_write_1h|cache_write, tokens, pricePerM, costUsd}]}`，单价为结算快照里的标准价、金额含分组倍率；`cache_write` = 拆分前余量按旧单一价；未计费行为 null；无快照的老行用现价并标 `current`）, usageEstimated, rateMultiplier, actualCost, durationMs, firstTokenMs, ccShape(genuine|suspect|null), errorMessage, mode, upstreamStatus, nodeId}`
 
 ## 3. 号商 `/api/provider/*`（provider）
 
@@ -72,7 +72,7 @@
 | `GET /accounts/onboard/:jobId` | — | `{jobId, status: pending_callback\|working\|done\|failed, accountId?, error?, authorizeUrl?}`（只能看自己的 job） |
 | `POST /accounts/:id/reauth`（admin / ops） | 同上号 body（`session_key` 或 `auth_url` 两步） | 原地重授权（docs/onboarding.md §11）：限 Anthropic oauth 且非 active（400 `account_active`）；钉账号自己的节点与绑定代理；身份不符作业 `account_mismatch`；完成 `reused: true` |
 | `GET /nodes/:id/proxies` | `free=1` | 代理选择器视图 `[{id, label, host, port, status, bound}]`（无用户名密码）；`free=1` 只返回未绑定且探活 `live` 的，按 `lastCheckAt` 最久优先；仅限自己的节点（他方 404） |
-| `GET /earnings` | `page,pageSize,from,to,accountId` | 分页 `{id, createdAt, accountId, accountName, model, inputTokens, outputTokens, cacheTokens, totalCost, providerEarning, statusCode}` + `sumEarningUsd`（只含成功请求） |
+| `GET /earnings` | `page,pageSize,from,to,accountId` | 分页 `{id, createdAt, accountId, accountName, model, inputTokens, outputTokens, cacheTokens, cacheReadTokens, cacheWriteTokens, cacheWrite5mTokens, cacheWrite1hTokens（X-51）, totalCost, providerEarning, statusCode}` + `sumEarningUsd`（只含成功请求） |
 | `GET /ledger` | `page,pageSize` | 分页 ledger（结算出账、调账） |
 
 - `ProviderAccount = {id, name, platform, type, executor(direct|ccr|ccr_worker), protocol, baseUrl, models, route, nodeId, reviewStatus, reviewNote, status, errorMessage, payoutRate, accountEmail, subscriptionType, coolingUntil, lastUsedAt, createdAt, requests30d, earning30d, modelCooldowns(admin only: {fable:{until,reason,used,resetAt}})}`
@@ -159,7 +159,7 @@ PATCH 把账户改成其他类型 / 平台时执行器自动退回 `direct`；`o
 | 方法 路径 | 请求 | 说明 |
 |---|---|---|
 | `GET /models` | — | `[{modelId, displayName, platform, source: catalog\|custom, enabled, overridden, prices, catalogPrices}]`，价格单位 USD/1M |
-| `PUT /models/:modelId` | `{displayName?, platform, inputPerM, outputPerM, cacheReadPerM, cacheWritePerM, enabled}` | 覆盖或新增；缺省字段沿用现值 |
+| `PUT /models/:modelId` | `{displayName?, platform, inputPerM, outputPerM, cacheReadPerM, cacheWritePerM, cacheWrite5mPerM?, enabled}` | 覆盖或新增；缺省字段沿用现值。`cacheWritePerM` = 缓存写 1 小时档单价；`cacheWrite5mPerM` = 5 分钟档单价，`null` / 空串 = 不单设（按 1 小时价 × 0.625），缺省 = 保持原值（首次覆盖目录模型时取目录 5 分钟价）。`GET /models` 的 `prices` / `catalogPrices` 多 `cacheWrite5mPerM`（生效值），另有 `cacheWrite5mExplicit`（X-51） |
 | `DELETE /models/:modelId` | — | 删除覆盖行（目录模型恢复目录价；自定义模型消失）；无覆盖 404 |
 | `POST /redeem-codes` | `{valueUsd(0.01–1e7), count(1–500), expiresAt?, batch?}` | 201 `{codes[], valueUsd, count, batch, expiresAt}` |
 | `GET /redeem-codes` | `page,pageSize,status,batch,q` | 分页 `{code, valueUsd, status, batch, usedBy, usedByName, usedAt, expiresAt, createdAt}` + `batches[]` |

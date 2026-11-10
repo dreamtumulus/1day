@@ -116,7 +116,9 @@ credential_enc='mock' 的 direct 账户保证调度链路闭环。
 
 ## 5. 计费闭环（gateway settle，全部在单个 SQLite 事务内）
 
-1. total_cost = catalog.estimateCost(model, usage)
+1. total_cost = catalog.estimateCost(model, usage)（有 `model_prices` 覆盖行时按行内单价）。缓存按官方口径分项（X-51，2026-11-10）：
+   缓存读 `cache_read_tokens` × 读价；缓存写按 TTL 两档——5 分钟档 × 输入价 1.25 倍、1 小时档 × 输入价 2 倍；拆分前的旧记录余量按旧的单一写入价。
+   分组倍率、号商分成（`provider_earning = total × payout_rate`）都乘在这个分档后的 total 上，无需单独处理。
 2. rate = group.rate_multiplier（快照）；actual = total × rate；
    **金额量化到 8 位小数（half-away-from-zero）再进 SQL**
 3. 幂等：`INSERT OR IGNORE INTO usage_billing_dedup(request_id, key_id, fingerprint)`，

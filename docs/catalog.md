@@ -62,9 +62,14 @@ interface PricingSku {
 | `input_tokens` | 14 | ✅ |
 | `output_tokens` | 14 | ✅ |
 | `cache_read_tokens` | 14 | ✅（Anthropic `cache_read_input_tokens`；OpenAI 的 cached_tokens 不识别） |
-| `cache_write_tokens` | 14 | ✅（Anthropic `cache_creation_input_tokens`） |
-| `cache_write_5m_tokens` | 14 | ❌ 网关从不产生 |
-| `cache_write_1h_tokens` | 14 | ❌ 网关从不产生 |
+| `cache_write_tokens` | 14 | 旧口径单一写入价（= 1 小时价）。只给**拆分前**的记录计价：`usage_logs` 里 `cache_write_tokens − 5m − 1h` 的余量、旧版本写下的结算日志 |
+| `cache_write_5m_tokens` | 14 | ✅（Anthropic `cache_creation.ephemeral_5m_input_tokens`；上游只给总数时整笔归此档） |
+| `cache_write_1h_tokens` | 14 | ✅（Anthropic `cache_creation.ephemeral_1h_input_tokens`） |
+
+**缓存写入按 TTL 分档计费（X-51，2026-11-10，与官方 API 一致）**：5 分钟档 = 输入价 × 1.25，1 小时档 = 输入价 × 2，缓存读取单列。
+`cache_write_tokens` 在用量里是**总数**（= 5m + 1h + 拆分前余量），不是第三档；`cacheWriteBuckets()` 是这三个数关系的唯一定义。
+`packages/catalog/test/catalog.test.mjs` 断言每个模型两档俱全、比例为 1.25× / 2×、且单一 SKU 等于 1 小时价；确有例外的模型写进该测试的
+`CACHE_WRITE_RATIO_EXCEPTIONS` 并注明原因（2026-11-10：14 个模型无例外）。缓存读取价与输入价的比例各模型不同（0.025×～0.1×），不做断言。
 
 ## 4. 厂商与模型（14 个，全部 anthropic / `active`；2026-11-01 核对 `data/`）
 
@@ -84,12 +89,13 @@ interface PricingSku {
 | `listPricing()` | `PricingEntry[]` |
 | `getModel(id)` | 按 `modelId` 查找 |
 | `getPricing(id)` | 按 `id` 查找 |
-| `estimateCost(modelId, usage)` | USD：Σ `usage[sku.meter] / sku.quantity × Number(sku.price_usd)`；未知模型返回 0；用量缺失或 ≤0 的 meter 跳过 |
+| `estimateCost(modelId, usage)` | USD：输入 / 输出 / 缓存读各按自己的 SKU（`用量 / sku.quantity × price_usd`）；缓存写 5m 档按 `cache_write_5m_tokens` SKU、1h 档按 `cache_write_1h_tokens` SKU、拆分前余量按 `cache_write_tokens` SKU（条目缺某档 SKU 时回退到单一 SKU）；未知模型返回 0 |
+| `cacheWriteBuckets(usage)` | `{total, m5, h1, unsplit}`：`total = max(cache_write_tokens, 5m + 1h)`，`unsplit = total − 5m − 1h` |
 
-`TokenUsage = {input_tokens, output_tokens, cache_read_tokens?, cache_write_tokens?, cache_write_5m_tokens?, cache_write_1h_tokens?}`。
+`TokenUsage = {input_tokens, output_tokens, cache_read_tokens?, cache_write_tokens?（缓存写总数）, cache_write_5m_tokens?, cache_write_1h_tokens?（总数按 TTL 的拆分）}`。
 
 ## 6. 维护注意
 
-- `models.json` 与 `pricing.json` 的 id 必须一一对应，没有校验脚本。
+- `models.json` 与 `pricing.json` 的 id 必须一一对应，由 `pnpm --filter @1dayapi/catalog test` 校验（含缓存写两档的比例）。
 - v3：目录 `status` 不为 `active` 的模型在注册表中默认下架（可在控制台覆盖）；`available` 字段不参与判断。`/api/model-availability` 已删除。
 - 价格是原站某一时刻的快照（`pricing_mode: dynamic_discount` 原意是动态折扣），本项目里是静态的。
