@@ -192,7 +192,13 @@ scope 包括 `fable`（模型族）和 `model:<id>`（单模型限流/组织停�
 `listCandidates(groupId, model)` 按请求模型的 scope 过滤。usage 体里的 `seven_day_sonnet` / `seven_day_opus` 等模型族窗口**不再**并入账号级绑定窗口
 （此前会因某一族 7d 用尽而暂停整个账号）。
 
-排序：未冷却优先（冷却者按 `rate_limited_until` ASC）→ `account_groups.priority` ASC → `accounts.priority` ASC → `last_used_at` ASC → 同档随机。
+**充值额度**（2026-11-10，`usage-credits.md`）：设置 `usage_credits_policy`（`off` 默认 / `fable_only` / `all`）。非 `off` 时，Fable 周份额
+（`fable_only`、`all`）或 5h / 周窗口（`all`）用尽、但账号主开通了可用充值额度（`creditsLive`：上次用量巡检显示可用，且此后没被上游在套餐
+上限处拒绝过）的账号仍留在候选里，标 `onCredits`、排在所有还有套餐额度的账号之后。暂停状态（`window_exhausted_until`、
+`model_cooldowns.fable`）照常写入，原因末尾加 ` · on usage credits`；429 被拒 / `credits_required` 照旧冷却并写 `model_cooldowns.credits.rejectedAt`，
+到下一次成功巡检再次显示可用前不再走额度。走额度的请求按 API 价计到账号主的付款方式。
+
+排序：未冷却优先（冷却者按 `rate_limited_until` ASC）→ 套餐额度优先于充值额度（`onCredits` 靠后）→ `account_groups.priority` ASC → `accounts.priority` ASC → `last_used_at` ASC → 同档随机。
 
 再按端点筛掉协议不兼容的账户（见 §4）：有候选但都不兼容 → 400 `unsupported_endpoint`；完全没有候选 → 503 `no_available_account`。
 
