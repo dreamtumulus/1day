@@ -4,6 +4,7 @@ import { PlugIcon, RocketIcon } from "../../../components/Icon";
 import { PLATFORMS, api, platformLabel, type ProviderAccount } from "../../api";
 import { useCT } from "../../i18n";
 import { useProxyHosts } from "../shared/proxyHosts";
+import { UsageCreditsIndicator } from "../shared/UsageCredits";
 import {
   Async,
   Badge,
@@ -223,6 +224,11 @@ export function ProviderAccounts() {
                   </div>
                 </>
               )}
+            </div>
+          )}
+          {hasWindow(a) && (
+            <div className="mt-1.5 w-[160px]">
+              <UsageCreditsIndicator a={a} />
             </div>
           )}
         </div>
