@@ -152,8 +152,16 @@ await test("DELETE node (admin) with a bound account: 200, account unbound+disab
     core.encryptJson({ accessToken: "t" }), provider.id, pid("http://u:p@10.9.2.1:8000"), now, now);
   run("UPDATE node_proxies SET bound_account_id='acc-del' WHERE node_id='lc-del'");
   run("INSERT INTO onboarding_jobs (id, requester_id, scope, method, node_id, proxy_id, status, created_at, updated_at) VALUES ('job-del', ?, 'admin', 'auth_url', 'lc-del', ?, 'pending_callback', ?, ?)", adminUser.id, pid("http://u:p@10.9.2.1:8000"), now, now);
-  const r = await admin("DELETE", "/api/admin/nodes/lc-del");
+  // 2026-11-10: a node that still carries accounts is refused until the removal is forced.
+  const refused = await admin("DELETE", "/api/admin/nodes/lc-del");
+  assert.equal(refused.status, 409, JSON.stringify(refused));
+  assert.equal(refused.error.code, "node_has_dependents");
+  assert.deepEqual(refused.error.details.accounts.map((a) => a.id), ["acc-del"]);
+  assert.equal(one("SELECT status FROM accounts WHERE id='acc-del'").status, "active", "a refused removal changes nothing");
+  const r = await admin("DELETE", "/api/admin/nodes/lc-del?force=1");
   assert.equal(r.status, 200, JSON.stringify(r));
+  assert.deepEqual(r.data.disabledAccounts, ["acc-del"]);
+  assert.equal(one("SELECT COUNT(*) n FROM proxy_team_events WHERE event='account_unbound_node_removed' AND account_id='acc-del'").n, 1);
   assert.equal(one("SELECT 1 FROM nodes WHERE node_id='lc-del'"), undefined);
   assert.equal(all("SELECT 1 FROM node_proxies WHERE node_id='lc-del'").length, 0);
   const a = one("SELECT status, node_id, bound_proxy_id, error_message FROM accounts WHERE id='acc-del'");

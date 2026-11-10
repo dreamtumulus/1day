@@ -31,6 +31,13 @@ export function failureTaintsExit(code: string): boolean {
   return EXIT_TAINTING_CODES.has(code);
 }
 
+/**
+ * Jobs interrupted by a console restart (review fix 2026-11-10). The failure is the platform's own and carries no
+ * verdict at all, not even "unknown egress": the reservation is released and the exit is never quarantined.
+ */
+export const CONSOLE_RESTART_CODE = "console_restarted";
+const NEVER_QUARANTINE_CODES = new Set([CONSOLE_RESTART_CODE]);
+
 /** Idempotent terminal transition; a late runner cannot overwrite cancel/done. */
 export function endReservation(jobId: string, code: string, message: string): boolean {
   const j = one<{ id:string; isolation_version:number; status:string; team_id:string|null; proxy_resource_key:string|null; proxy_id:string|null; node_id:string; requester_id:string|null; egress_started_at:string|null }>("SELECT * FROM onboarding_jobs WHERE id=?", jobId);
@@ -45,7 +52,7 @@ export function endReservation(jobId: string, code: string, message: string): bo
   //  - platform-side failure with no organization known → quarantine (unknown egress).
   let outcome: "quarantined" | "kept_for_team" | "released" = "released";
   // settings proxy_quarantine_on_failure=0 (2026-11-06): a failed authorization never taints the exit; the slot is released.
-  const quarantineOn = getSetting("proxy_quarantine_on_failure").trim() !== "0";
+  const quarantineOn = getSetting("proxy_quarantine_on_failure").trim() !== "0" && !NEVER_QUARANTINE_CODES.has(code);
   if (quarantineOn && wentOut && unclaimedOrForeign) {
     const foreign = !!claimed && claimed.team_id !== j.team_id;
     if (failureTaintsExit(code) || foreign || !j.team_id) outcome = "quarantined";
@@ -69,7 +76,7 @@ export function endReservation(jobId: string, code: string, message: string): bo
   }
   const changed = run("UPDATE onboarding_jobs SET status='failed', error=?, payload_enc=NULL, authorize_url=NULL, updated_at=? WHERE id=? AND isolation_version=1 AND status IN ('working','pending_callback')", `${code}: ${message}`.slice(0,500), nowIso(), jobId).changes;
   if (changed && j.proxy_resource_key) recordProxyTeamEvent({resourceKey:j.proxy_resource_key,proxyId:j.proxy_id,nodeId:j.node_id,teamId:j.team_id,jobId,actorId:j.requester_id,event:"slot_released",
-    reason:`${code}; ${outcome === "quarantined" ? "exit quarantined" : outcome === "kept_for_team" ? "exit kept for the specified organization (platform-side failure, not tainted)" : wentOut ? "released (quarantine on failure disabled)" : "released before egress"}`});
+    reason:`${code}; ${outcome === "quarantined" ? "exit quarantined" : outcome === "kept_for_team" ? "exit kept for the specified organization (platform-side failure, not tainted)" : wentOut ? (NEVER_QUARANTINE_CODES.has(code) ? "released (interrupted by a console restart; exit not quarantined)" : "released (quarantine on failure disabled)") : "released before egress"}`});
   return changed > 0;
 }
 

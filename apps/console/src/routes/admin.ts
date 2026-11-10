@@ -52,6 +52,7 @@ import {
   type SettingKey,
   hasSubscriptionWindow,
   releaseProxyFreeze,
+  boundProxyDown,
   proxyDownSummary,
   ProxyFreezeError,
   recordProxyTeamEvent,
@@ -75,9 +76,12 @@ import {
   strArray,
 } from "../http.js";
 import { deployNodeLocal, deployNodeViaSsh } from "../node/deploy.js";
-import { ProxyInputError, addNodeProxies, rebindAccountProxy, removeNodeProxies, listNodeProxies, listNodeProxyGroups, listProxiesForPicker, nodeExists, nodeProxyUrls, normalizeProxyGroup, releaseAccountProxies, releaseNodeResources, replaceNodeProxies, setNodeProxyGroup, unquarantineProxy, validateProxies, type AddProxiesResult, type ProxyInput, type ReplaceProxiesResult, NODE_POOL_COUNT_SQL, PROXY_IN_POOL_SQL } from "../node/proxies.js";
+import { ProxyInputError, addNodeProxies, rebindAccountProxy, removeNodeProxies, listNodeProxies, listNodeProxyGroups, listProxiesForPicker, nodeExists, nodeProxyUrls, normalizeProxyGroup, releaseAccountProxies, replaceNodeProxies, setNodeProxyGroup, unquarantineProxy, validateProxies, type AddProxiesResult, type ProxyInput, type ReplaceProxiesResult, NODE_POOL_COUNT_SQL, PROXY_IN_POOL_SQL } from "../node/proxies.js";
 import { requestViaNode } from "../node/egress-request.js";
-import { disconnectNode, pushProxies, retireTeamOnNodes } from "../node/registry.js";
+import { disconnectNode, identityHealth, pushProxies, retireTeamOnNodes } from "../node/registry.js";
+import { forceRequested, releaseNodeOrConflict, removeNode } from "../node/removal.js";
+import { ADMIN_DISABLED_MARK, PROVIDER_DISABLED_MARK } from "./provider.js";
+import { clearSshHostPin, listSshHostPins } from "../node/deploy.js";
 import { claimReleaseMinDays, releaseTeamClaims, teamClaims, teamOverview } from "../node/teams.js";
 import { createUser, dropSessions, requireAdmin, requireOps, resetLoginKey } from "../session.js";
 import {
@@ -722,16 +726,24 @@ export function registerAdminRoutes(app: FastifyInstance): void {
       bad("user_has_usage", "This user has usage history; disable instead of deleting");
     }
     const nodeIds = all<{ node_id: string }>("SELECT node_id FROM nodes WHERE provider_id = ?", id).map((n) => n.node_id);
+    const repush = new Set<string>();
     tx(() => {
       // Release what the cascade cannot: proxies bound to this user's accounts
       // and the ledgers of nodes this user registered.
       for (const acc of all<{ id: string; status: string; error_message: string | null }>("SELECT id, status, error_message FROM accounts WHERE owner_id = ?", id)) {
         releaseAccountProxies(acc.id, acc);
       }
-      for (const nodeId of nodeIds) releaseNodeResources(nodeId, "node owner deleted");
+      // Same confirmation as removing a node (review fix 2026-11-10): 409 unless ?force=1 / {force:true} when the
+      // user's nodes carry accounts of someone else or share proxies with nodes that stay. The user's own accounts
+      // and nodes go with the user and need no extra confirmation.
+      for (const nodeId of nodeIds) {
+        const impact = releaseNodeOrConflict(nodeId, "node owner deleted", { force: forceRequested(req) ? "all" : "none", actorId: req.user!.id, cascade: { ownerId: id, nodeIds } });
+        for (const n of [...impact.sharedOut.map((s) => s.nodeId), ...impact.foreignAccounts.map((a) => a.nodeId)]) repush.add(n);
+      }
       run("DELETE FROM users WHERE id = ?", id);
     });
     for (const nodeId of nodeIds) disconnectNode(nodeId, "owner_deleted");
+    for (const n of repush) if (!nodeIds.includes(n)) pushProxies(n, nodeProxyUrls(n));
     return { data: { ok: true } };
   });
 
@@ -1032,12 +1044,18 @@ export function registerAdminRoutes(app: FastifyInstance): void {
     const status = oneOf(b, "status", ["active", "disabled"] as const);
     // Operator rule 2026-11-01: a proxy-frozen account is not re-enabled by the generic status switch; the
     // dedicated release (checks the proxy is live again) or rebind routes are the only ways back.
-    if (status === "active" && a.status === "proxy_down") bad("proxy_down_use_release", "This account is frozen because its proxy failed; use proxy-release (after the proxy is live again) or proxy-rebind instead of enabling it");
+    // 2026-11-10: also when the frozen account was switched to `disabled` meanwhile (proxy_down_since is only cleared by
+    // release / rebind) — disable → enable was a way around the freeze.
+    if (status === "active" && (a.status === "proxy_down" || a.proxy_down_since)) bad("proxy_down_use_release", "This account is frozen because its proxy failed; use proxy-release (after the proxy is live again) or proxy-rebind instead of enabling it");
     tx(() => {
       if(nextRoute==="node" && nextNodeId && (a.route!=="node" || a.node_id!==nextNodeId))assertNodeCapacity(nextNodeId,id);
       run(`UPDATE accounts SET ${sets.join(", ")} WHERE id = ?`, ...params, id);
       if (status === "active") clearAccountState(id);
-      else if (status === "disabled") run("UPDATE accounts SET status = 'disabled' WHERE id = ?", id);
+      // An administrator's (or ops') switch-off is not the provider's to undo (routes/provider.ts disabledByProvider):
+      // the provider's own mark is replaced; a real error message is kept.
+      else if (status === "disabled") run(
+        "UPDATE accounts SET status = 'disabled', error_message = CASE WHEN error_message IS NULL OR error_message = ? THEN ? ELSE error_message END WHERE id = ?",
+        PROVIDER_DISABLED_MARK, ADMIN_DISABLED_MARK, id);
       const groupIds = strArray(b, "groupIds");
       if (groupIds) setAccountGroups(id, groupIds, priority ?? a.priority);
     });
@@ -1068,8 +1086,25 @@ export function registerAdminRoutes(app: FastifyInstance): void {
 
   app.post("/api/admin/accounts/:id/proxy-release", pre, async (req) => {
     const { id } = req.params as { id: string };
-    loadAccount(id);
+    const frozen = loadAccount(id);
     const b = body(req);
+    // 2026-11-10: a frozen account whose proxy is gone (its home node was removed) has nothing to be released onto;
+    // releasing it would let an organization account run without its exit. Rebind is the only way back.
+    if (frozen.status === "proxy_down" && !frozen.bound_proxy_id && frozen.proxy_down_proxy_id) {
+      bad("proxy_missing", "The proxy this account was bound to no longer exists; rebind the account to another proxy");
+    }
+    // A frozen account that was switched to another status meanwhile (typically `disabled`) keeps its freeze marker,
+    // and the generic enable switch refuses it. Releasing it here checks the same thing as for a proxy_down account —
+    // the bound proxy is live and schedulable again — and clears the marker; the status stays what the operator set.
+    if (frozen.status !== "proxy_down" && frozen.proxy_down_since) {
+      const p = frozen.bound_proxy_id ? one<{ status: string; resource_key: string | null; node_id: string }>("SELECT status, resource_key, node_id FROM node_proxies WHERE id = ?", frozen.bound_proxy_id) : undefined;
+      if (!p) bad("proxy_missing", "The proxy this account was bound to no longer exists; rebind the account to another proxy");
+      if (p.status !== "live" || boundProxyDown(frozen)) bad("proxy_not_live", `The bound proxy is ${p.status} or not schedulable for this account; wait for a live heartbeat or rebind`);
+      run("UPDATE accounts SET proxy_down_since = NULL, proxy_down_reason = NULL, proxy_down_proxy_id = NULL, updated_at = ? WHERE id = ?", nowIso(), id);
+      recordProxyTeamEvent({ resourceKey: p.resource_key ?? `proxy:${frozen.bound_proxy_id}`, proxyId: frozen.bound_proxy_id, nodeId: p.node_id, teamId: frozen.team_id, accountId: id, actorId: req.user!.id,
+        event: "account_proxy_released", reason: `operator cleared the proxy freeze marker of a ${frozen.status} account (frozen since ${frozen.proxy_down_since}: ${frozen.proxy_down_reason ?? "?"})` });
+      return { data: accountOut(id, true) };
+    }
     try {
       releaseProxyFreeze(id, req.user!.id, typeof b.note === "string" ? b.note : null);
     } catch (err) {
@@ -1092,6 +1127,10 @@ export function registerAdminRoutes(app: FastifyInstance): void {
                  temp_unschedulable_until = NULL, updated_at = ? WHERE id = ? AND status = 'proxy_down'`, nowIso(), id);
           recordProxyTeamEvent({ resourceKey: `proxy:${r.newProxyId}`, proxyId: r.newProxyId, nodeId: a.node_id, teamId: a.team_id, accountId: id, actorId: req.user!.id,
             event: "account_proxy_released", reason: `operator rebound the frozen account from ${r.oldProxyId ?? "-"} to ${r.newProxyId} (frozen since ${a.proxy_down_since ?? "?"}: ${a.proxy_down_reason ?? "?"})` });
+        } else if (a.proxy_down_since) {
+          // Frozen earlier and switched to another status since (e.g. disabled): the rebind settles the proxy
+          // question, the status stays what the operator set; the generic enable switch works again.
+          run("UPDATE accounts SET proxy_down_since = NULL, proxy_down_reason = NULL, proxy_down_proxy_id = NULL, updated_at = ? WHERE id = ?", nowIso(), id);
         }
         return r;
       });
@@ -1110,6 +1149,11 @@ export function registerAdminRoutes(app: FastifyInstance): void {
     const b = body(req);
     const action = oneOf(b, "action", ["approve", "reject"] as const, true);
     const note = str(b, "note", { max: 500 }) ?? null;
+    // Review fix 2026-11-10: approving is the answer to a pending submission only. It used to set status='active' on
+    // any account, which re-enabled accounts an administrator had disabled and thawed proxy-frozen ones.
+    if (action === "approve" && a.review_status !== "pending") {
+      bad("review_not_pending", `This account is not waiting for review (review status: ${a.review_status})`, 409);
+    }
     tx(() => {
       if (action === "reject") {
         run("UPDATE accounts SET review_status = 'rejected', review_note = ?, updated_at = ? WHERE id = ?", note, nowIso(), id);
@@ -1120,8 +1164,12 @@ export function registerAdminRoutes(app: FastifyInstance): void {
         num(b, "payoutRate", { min: 0, max: 1 }) ??
         (a.payout_rate > 0 ? a.payout_rate : Number(getSetting("provider_default_payout_rate")));
       run(
+        // proxy_down (frozen) and disabled are not review outcomes: they stay, with their message, until the proxy
+        // release / rebind or an explicit enable. Everything else (active, error after a re-submission) becomes active.
         `UPDATE accounts SET review_status = 'approved', review_note = ?, priority = ?, payout_rate = ?,
-           status = 'active', error_message = NULL, updated_at = ? WHERE id = ?`,
+           status = CASE WHEN status IN ('proxy_down', 'disabled') OR proxy_down_since IS NOT NULL THEN status ELSE 'active' END,
+           error_message = CASE WHEN status IN ('proxy_down', 'disabled') OR proxy_down_since IS NOT NULL THEN error_message ELSE NULL END,
+           updated_at = ? WHERE id = ? AND review_status = 'pending'`,
         note,
         priority,
         payout,
@@ -1443,6 +1491,16 @@ export function registerAdminRoutes(app: FastifyInstance): void {
     ).map(nodeShape),
   }));
 
+  // Device identity mismatch counters (review fix 2026-11-10): what nodes reported in heartbeat `ccIdentities` that
+  // contradicts the registered deviceId / organization / account uuid. Counters since process start, the accounts
+  // concerned, and the last 50 alerts (identities truncated to 8 characters); the persistent trail is
+  // proxy_team_events.event = 'device_identity_mismatch'.
+  app.get("/api/admin/health/identity", pre, async () => {
+    const persisted = all<{ created_at: string; node_id: string | null; account_id: string | null; team_id: string | null; reason: string | null }>(
+      "SELECT created_at, node_id, account_id, team_id, reason FROM proxy_team_events WHERE event = 'device_identity_mismatch' ORDER BY created_at DESC, rowid DESC LIMIT 50");
+    return { data: { ...identityHealth(), events: persisted.map((e) => ({ at: e.created_at, nodeId: e.node_id, accountId: e.account_id, teamId: e.team_id, reason: e.reason })) } };
+  });
+
   // Node monitor (docs/operations.md §7.2): one row per node with the latest heartbeat
   // snapshot (host / pool / proxies), account state and recent traffic through it.
   app.get("/api/admin/nodes/monitor", pre, async () => {
@@ -1721,6 +1779,18 @@ export function registerAdminRoutes(app: FastifyInstance): void {
     }
   });
 
+  // SSH host key pins of the deploy (review fix 2026-11-10, node/deploy.ts): the first deploy to a host pins its key;
+  // a later deploy that meets another key fails. List them, or forget one after the host was really reinstalled.
+  app.get("/api/admin/nodes/ssh-host-pins", pre, async () => ({ data: listSshHostPins() }));
+  app.delete("/api/admin/nodes/ssh-host-pins", pre, async (req) => {
+    const q = query(req);
+    const host = (q.host ?? "").trim();
+    if (!host || host.length > 253) bad("invalid_request", "host is required");
+    const port = q.port ? Number(q.port) : 22;
+    if (!Number.isInteger(port) || port < 1 || port > 65535) bad("invalid_request", "port must be 1..65535");
+    return { data: { removed: clearSshHostPin(host, port) } };
+  });
+
   // Deploy a node on this very server (no SSH; local bun + config).
   app.post("/api/admin/nodes/local", pre, async (req) => {
     try {
@@ -1734,14 +1804,13 @@ export function registerAdminRoutes(app: FastifyInstance): void {
   app.delete("/api/admin/nodes/:id", pre, async (req) => {
     const { id } = req.params as { id: string };
     if (!nodeExists(id)) notFound("node");
-    tx(() => {
-      // Bound accounts lose their proxy for good: unbind + disable; proxies,
-      // assignments and in-flight onboarding jobs go with the node (one transaction).
-      releaseNodeResources(id, "node removed by admin");
-      run("DELETE FROM nodes WHERE node_id = ?", id);
-    });
+    // Review fix 2026-11-10: 409 (node_has_dependents / node_shared_with_other_nodes, with error.details listing the
+    // accounts and sharing nodes) unless ?force=1 / {force:true}. With force: the node's accounts are unbound +
+    // disabled, accounts of other nodes on a shared proxy are frozen (proxy_down) — one proxy_team_events row each.
+    const impact = removeNode(id, "node removed by admin", { force: forceRequested(req) ? "all" : "none", actorId: req.user!.id });
     disconnectNode(id, "removed_by_admin");
-    return { data: { ok: true } };
+    for (const n of new Set([...impact.sharedOut.map((s) => s.nodeId), ...impact.foreignAccounts.map((a) => a.nodeId)])) pushProxies(n, nodeProxyUrls(n));
+    return { data: { ok: true, disabledAccounts: impact.accounts.map((a) => a.id), frozenAccounts: impact.foreignAccounts.map((a) => a.id), sharesRemoved: impact.sharedOut.length } };
   });
 
   // ---------- settings ----------

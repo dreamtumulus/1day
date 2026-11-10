@@ -1,10 +1,10 @@
 import { spawn, spawnSync } from "node:child_process";
-import { randomUUID } from "node:crypto";
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, openSync, rmSync, writeFileSync } from "node:fs";
+import { createHash, randomUUID } from "node:crypto";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { homedir, tmpdir } from "node:os";
-import { join } from "node:path";
-import { isoIn, nowIso, one, randomHex, repoRoot, run, sha256Hex } from "@1dayapi/core";
+import { dirname, join } from "node:path";
+import { dataDir, isoIn, nowIso, one, randomHex, repoRoot, run, sha256Hex } from "@1dayapi/core";
 import { ensureBundle, findBun } from "./bundle.js";
 import { generateNodeSecret, isNodeOnline, pushProxies } from "./registry.js";
 import { replaceNodeProxies, type ProxyInput } from "./proxies.js";
@@ -29,6 +29,10 @@ export interface DeployOutcome {
   ok: boolean;
   log: string;
   error?: string;
+  /** SSH deploys: the host key this console pinned for the target ("<type> SHA256:…"), null when the connection never got that far. */
+  hostKeyFingerprint?: string | null;
+  /** true when this deploy saw the host for the first time and pinned its key (compare it with the host's own console). */
+  hostKeyFirstSeen?: boolean;
 }
 
 interface DeployCommon {
@@ -101,8 +105,22 @@ function updateDeployMeta(nodeId: string, patch: Record<string, unknown>): void 
   run("UPDATE nodes SET deploy_meta = ? WHERE node_id = ?", JSON.stringify({ ...cur, ...patch }), nodeId);
 }
 
-function createBundleBindCode(providerId: string): string {
-  const code = `bind_${randomHex(16)}`;
+/**
+ * What a `node_bind_codes` row may be used for, read from the code's prefix (review fix 2026-11-10; no schema change:
+ * the code is the primary key, so the purpose cannot be altered after issue). `bind_…` registers a node
+ * (POST /api/provider/bind-codes); `dl_bundle_…` / `dl_shim_…` only download that one file during a deploy and are
+ * refused by /internal/provider/bind — before, a download code was a full bind code.
+ */
+export type CodePurpose = "bind" | "bundle" | "shim";
+export function codePurpose(code: string): CodePurpose | null {
+  if (code.startsWith("bind_")) return "bind";
+  if (code.startsWith("dl_bundle_")) return "bundle";
+  if (code.startsWith("dl_shim_")) return "shim";
+  return null;
+}
+
+function createDownloadCode(providerId: string, purpose: "bundle" | "shim"): string {
+  const code = `dl_${purpose}_${randomHex(16)}`;
   run(
     "INSERT INTO node_bind_codes (code, provider_id, expires_at, created_at) VALUES (?, ?, ?, ?)",
     code,
@@ -325,6 +343,95 @@ interface SshRunResult {
   timedOut: boolean;
 }
 
+// ---------- SSH host key pinning (review fix 2026-11-10) ----------
+// The deploy used `StrictHostKeyChecking=no` + `UserKnownHostsFile=/dev/null`: every connection accepted whatever key
+// answered, so a machine in the path could take the root password (sshpass) and the node secret (script prelude).
+// Now the console keeps its own known_hosts under the data dir and connects with `accept-new`: the first deploy to a
+// host pins its key (trust on first use; the fingerprint is returned so the admin can compare it with the host's
+// console), every later deploy must see the same key, and a changed key fails before any secret is sent.
+// Clearing a pin (host reinstalled): DELETE /api/admin/nodes/ssh-host-pins?host=…&port=…, or remove the line from the file.
+
+/** The console's own known_hosts (env SSH_KNOWN_HOSTS_FILE overrides; default <DATA_DIR>/ssh/known_hosts). */
+export function sshKnownHostsPath(): string {
+  const path = process.env.SSH_KNOWN_HOSTS_FILE ?? join(dataDir, "ssh", "known_hosts");
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+  if (!existsSync(path)) writeFileSync(path, "", { mode: 0o600 });
+  return path;
+}
+
+/** How ssh names a host in known_hosts: `host` on port 22, `[host]:port` otherwise. */
+function knownHostName(host: string, port: number): string {
+  const h = host.replace(/^\[|\]$/g, "").toLowerCase();
+  return port === 22 ? h : `[${h}]:${port}`;
+}
+
+export interface SshHostPin { host: string; keyType: string; fingerprint: string }
+
+/** Parse the pin file (plain entries; the deploy writes with HashKnownHosts=no). */
+export function listSshHostPins(): SshHostPin[] {
+  const out: SshHostPin[] = [];
+  for (const line of readFileSync(sshKnownHostsPath(), "utf8").split("\n")) {
+    const parts = line.trim().split(/\s+/);
+    if (parts.length < 3 || parts[0].startsWith("#") || parts[0].startsWith("@")) continue;
+    let fingerprint: string;
+    try { fingerprint = `SHA256:${createHash("sha256").update(Buffer.from(parts[2], "base64")).digest("base64").replace(/=+$/, "")}`; } catch { continue; }
+    for (const host of parts[0].split(",")) out.push({ host: host.toLowerCase(), keyType: parts[1], fingerprint });
+  }
+  return out;
+}
+
+export function sshHostPins(host: string, port: number): SshHostPin[] {
+  const name = knownHostName(host, port);
+  return listSshHostPins().filter((p) => p.host === name);
+}
+
+/** Forget a host's pinned key(s) so the next deploy pins the key it sees. Returns the number of entries removed. */
+export function clearSshHostPin(host: string, port: number): number {
+  const path = sshKnownHostsPath();
+  const name = knownHostName(host, port);
+  let removed = 0;
+  const kept: string[] = [];
+  for (const line of readFileSync(path, "utf8").split("\n")) {
+    const first = line.trim().split(/\s+/)[0] ?? "";
+    const hosts = first.split(",").map((h) => h.toLowerCase());
+    if (line.trim() && !first.startsWith("#") && hosts.includes(name)) {
+      const rest = hosts.filter((h) => h !== name);
+      removed++;
+      if (rest.length) kept.push([rest.join(","), ...line.trim().split(/\s+/).slice(1)].join(" "));
+      continue;
+    }
+    kept.push(line);
+  }
+  if (removed) writeFileSync(path, kept.join("\n"), { mode: 0o600 });
+  return removed;
+}
+
+/** ssh options of a deploy connection (exported for the test: never `StrictHostKeyChecking=no` again). */
+export function sshConnectionOptions(port: number): string[] {
+  return [
+    "-o", "StrictHostKeyChecking=accept-new",
+    "-o", `UserKnownHostsFile=${sshKnownHostsPath()}`,
+    "-o", "GlobalKnownHostsFile=/dev/null",
+    "-o", "HashKnownHosts=no",
+    "-o", "UpdateHostKeys=no",
+    "-o", "CheckHostIP=no",
+    "-o", "ConnectTimeout=15",
+    "-p", String(port),
+  ];
+}
+
+/** ssh refused the host key: its output names the mismatch. */
+export function hostKeyRejected(sshOutput: string): boolean {
+  return /REMOTE HOST IDENTIFICATION HAS CHANGED|Host key verification failed|host key for .* has changed/i.test(sshOutput);
+}
+
+export function hostKeyChangedMessage(host: string, port: number): string {
+  const pins = sshHostPins(host, port).map((p) => `${p.keyType} ${p.fingerprint}`).join(", ") || "unknown";
+  return `SSH host key of ${host}:${port} differs from the key pinned on the first deploy (${pins}); nothing was sent. ` +
+    `If the host was reinstalled, clear the pin (DELETE /api/admin/nodes/ssh-host-pins?host=${host}&port=${port}, ` +
+    `or remove the '${knownHostName(host, port)}' line from ${sshKnownHostsPath()}) and deploy again; otherwise the connection is being intercepted.`;
+}
+
 function runRemoteScript(target: DeployTarget, script: string): Promise<SshRunResult> {
   requireCmd("ssh", "ssh client not found on this server; apt-get install -y openssh-client");
   if (target.password) {
@@ -342,10 +449,7 @@ function runRemoteScript(target: DeployTarget, script: string): Promise<SshRunRe
     sshArgs.push("-i", keyFile, "-o", "IdentitiesOnly=yes");
   }
   sshArgs.push(
-    "-o", "StrictHostKeyChecking=no",
-    "-o", "UserKnownHostsFile=/dev/null",
-    "-o", "ConnectTimeout=15",
-    "-p", String(target.port),
+    ...sshConnectionOptions(target.port),
     `${target.username}@${target.host}`,
     "bash -s",
   );
@@ -425,9 +529,9 @@ export async function deployNodeViaSsh(target: DeployTarget, common: DeployCommo
     claudeVersion: common.claudeVersion ?? DEFAULT_CLAUDE_VERSION,
   });
   const base = common.platformHttpBase.replace(/\/+$/, "");
-  const code = createBundleBindCode(common.providerId);
+  const code = createDownloadCode(common.providerId, "bundle");
   // the shim download consumes a one-time code of its own (the bundle's is spent by the bundle)
-  const shimCode = common.tui ? createBundleBindCode(common.providerId) : null;
+  const shimCode = common.tui ? createDownloadCode(common.providerId, "shim") : null;
   const script = buildRemoteScript({
     bundleUrl: `${base}/internal/provider/bundle?code=${code}`,
     nodeId,
@@ -439,27 +543,43 @@ export async function deployNodeViaSsh(target: DeployTarget, common: DeployCommo
     ...(common.tui ? { tui: true, shimUrl: `${base}/internal/provider/cc-tui-shim?code=${shimCode}` } : {}),
     ...(common.claudeVersion ? { claudeVersion: common.claudeVersion } : {}),
   });
+  const pinnedBefore = sshHostPins(target.host, target.port);
   let res: SshRunResult;
   try {
     res = await runRemoteScript(target, script);
   } catch (err) {
     return finishDeploy(nodeId, common, false, "", (err as Error).message);
   }
+  // Host key pin (review fix 2026-11-10): report what this deploy trusted; a changed key is its own clear failure.
+  const pins = sshHostPins(target.host, target.port);
+  const hostKey = {
+    hostKeyFingerprint: pins.length ? pins.map((p) => `${p.keyType} ${p.fingerprint}`).join(", ") : null,
+    hostKeyFirstSeen: pinnedBefore.length === 0 && pins.length > 0,
+  };
+  const pinLine = hostKey.hostKeyFingerprint
+    ? `[deploy] ssh host key ${hostKey.hostKeyFirstSeen ? "pinned on this first deploy" : "matches the pinned key"}: ${hostKey.hostKeyFingerprint}\n`
+    : "";
+  if (hostKey.hostKeyFingerprint) updateDeployMeta(nodeId, { sshHostKey: hostKey.hostKeyFingerprint });
   const ok = res.code === 0 && !res.timedOut && res.out.includes("[deploy] DONE");
   if (!ok) {
-    const why = res.timedOut
-      ? `ssh timed out after ${SSH_TIMEOUT_MS / 1000}s`
-      : `remote script failed (exit ${res.code})`;
-    return finishDeploy(nodeId, common, false, res.out, why);
+    const why = hostKeyRejected(res.out)
+      ? hostKeyChangedMessage(target.host, target.port)
+      : res.timedOut
+        ? `ssh timed out after ${SSH_TIMEOUT_MS / 1000}s`
+        : `remote script failed (exit ${res.code})`;
+    return { ...finishDeploy(nodeId, common, false, pinLine + res.out, why), ...hostKey };
   }
   const online = await waitForNodeOnline(nodeId, ONLINE_WAIT_MS);
-  return finishDeploy(
-    nodeId,
-    common,
-    online,
-    res.out,
-    online ? undefined : "node did not come online within 30s",
-  );
+  return {
+    ...finishDeploy(
+      nodeId,
+      common,
+      online,
+      pinLine + res.out,
+      online ? undefined : "node did not come online within 30s",
+    ),
+    ...hostKey,
+  };
 }
 
 /** Local node console port: 16889 for the first local node, then upwards. */

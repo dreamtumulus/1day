@@ -37,6 +37,7 @@ const en = {
   "provider.nodes.unbindTitle": "Unbind node {id}?",
   "provider.nodes.unbindMsg": "The node is disconnected and must be bound again with a new code. Accounts routed through it fall back to your other nodes.",
   "provider.nodes.unbound": "Node unbound",
+  "provider.nodes.unbindForce": "Unbind anyway? The accounts listed above will be unbound from their proxy and disabled.",
   "provider.nodes.emptyTitle": "No nodes yet",
   "provider.nodes.emptyDesc": "Generate a bind code and follow the three steps to connect a node.",
 
@@ -161,6 +162,7 @@ const zh: typeof en = {
   "provider.nodes.unbindTitle": "解绑节点 {id}？",
   "provider.nodes.unbindMsg": "节点会被断开，需要用新的绑定码重新绑定。经该节点出网的账户会改走你的其他节点。",
   "provider.nodes.unbound": "节点已解绑",
+  "provider.nodes.unbindForce": "仍要解绑吗？上面列出的账号会被解除代理绑定并停用。",
   "provider.nodes.emptyTitle": "还没有节点",
   "provider.nodes.emptyDesc": "生成绑定码，按三个步骤接入节点。",
 

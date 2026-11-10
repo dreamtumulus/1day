@@ -157,7 +157,16 @@ export function AdminNodes() {
                           variant="danger"
                           message={t("admin.nodes.removeMsg")}
                           onConfirm={async () => {
-                            await api.del(`/api/admin/nodes/${encodeURIComponent(n.nodeId)}`);
+                            // 409 (2026-11-10): the node still carries accounts or shares proxies with other nodes.
+                            // The server's message lists them; removing anyway needs an explicit second confirmation.
+                            try {
+                              await api.del(`/api/admin/nodes/${encodeURIComponent(n.nodeId)}`);
+                            } catch (err) {
+                              const e = err as { status?: number; code?: string; message?: string };
+                              if (e.status !== 409 || (e.code !== "node_has_dependents" && e.code !== "node_shared_with_other_nodes")) throw err;
+                              if (!window.confirm(`${e.message}\n\n${t("admin.nodes.removeForce")}`)) return;
+                              await api.del(`/api/admin/nodes/${encodeURIComponent(n.nodeId)}?force=1`);
+                            }
                             toast.success(t("admin.nodes.removed"));
                             list.reload();
                           }}

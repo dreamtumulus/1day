@@ -5,6 +5,8 @@ export class HttpError extends Error {
     public status: number,
     public code: string,
     message: string,
+    /** Optional machine-readable context, rendered as `error.details` (e.g. what blocks a node removal). */
+    public details?: unknown,
   ) {
     super(message);
   }

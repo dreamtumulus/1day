@@ -14,7 +14,8 @@ import {
 import { parseAccountFields, touchesConnection } from "../account-input.js";
 import { importOAuthCredential } from "../onboard/jobs.js";
 import { bad, body, notFound, oneOf, page, paged, query, Where, dateRange, str } from "../http.js";
-import { releaseAccountProxies, releaseNodeResources, NODE_POOL_COUNT_SQL } from "../node/proxies.js";
+import { releaseAccountProxies, NODE_POOL_COUNT_SQL } from "../node/proxies.js";
+import { forceRequested, removeNode } from "../node/removal.js";
 import { disconnectNode } from "../node/registry.js";
 import { requireProvider } from "../session.js";
 import {
@@ -33,6 +34,34 @@ function ownAccount(req: FastifyRequest, id: string): AccountRow {
   const a = one<AccountRow>("SELECT * FROM accounts WHERE id = ? AND owner_id = ?", id, req.user!.id);
   if (!a) notFound("account");
   return a;
+}
+
+/**
+ * Who disabled an account (review fix 2026-11-10). There is no column for it, so the provider's own switch-off leaves
+ * this exact text in `error_message`; an administrator's switch-off (routes/admin.ts) overwrites it and the platform's
+ * own (node removed, …) writes its reason there. Only an account carrying the mark is the provider's to switch on again.
+ */
+export const PROVIDER_DISABLED_MARK = "disabled by the provider";
+export const ADMIN_DISABLED_MARK = "disabled by an administrator";
+
+/**
+ * Was this `disabled` account switched off by this provider? The mark decides. Accounts disabled before the mark
+ * existed have no message: for those the audit trail (admin_audit, 180 days) is asked — the most recent successful
+ * status change on the account must be this provider's own `{status:"disabled"}`. No evidence = not the provider's.
+ */
+function disabledByProvider(a: AccountRow, providerId: string): boolean {
+  if (a.error_message === PROVIDER_DISABLED_MARK) return true;
+  if (a.error_message) return false;
+  const rows = all<{ user_id: string | null; path: string; summary: string | null }>(
+    `SELECT user_id, path, summary FROM admin_audit WHERE method = 'PATCH' AND status < 300 AND path IN (?, ?)
+      ORDER BY at DESC, rowid DESC LIMIT 50`, `/api/provider/accounts/${a.id}`, `/api/admin/accounts/${a.id}`);
+  for (const r of rows) {
+    let status: unknown;
+    try { status = (JSON.parse(r.summary ?? "{}") as { body?: { status?: unknown } }).body?.status; } catch { continue; }
+    if (status === undefined) continue; // that request did not touch the status
+    return r.path.startsWith("/api/provider/") && r.user_id === providerId && status === "disabled";
+  }
+  return false;
 }
 
 export function nodeShape(n: Record<string, unknown>) {
@@ -138,11 +167,10 @@ export function registerProviderRoutes(app: FastifyInstance): void {
   app.delete("/api/provider/nodes/:id", pre, async (req) => {
     const { id } = req.params as { id: string };
     if (!one("SELECT 1 FROM nodes WHERE node_id = ? AND provider_id = ?", id, req.user!.id)) notFound("node");
-    tx(() => {
-      // Accounts bound to this node's proxies lose their proxy for good: unbind + disable (docs/onboarding.md §1).
-      releaseNodeResources(id, "node removed by its provider");
-      run("DELETE FROM nodes WHERE node_id = ?", id);
-    });
+    // Review fix 2026-11-10: 409 node_has_dependents while the node carries accounts, unless ?force=1 / {force:true}
+    // (unbinds + disables the node's own accounts, one event each). A provider can never take a proxy away from
+    // another node: node_shared_with_other_nodes stays a 409 whatever is sent (administrator only).
+    removeNode(id, "node removed by its provider", { force: forceRequested(req) ? "own" : "none", actorId: req.user!.id });
     disconnectNode(id, "unbound_by_provider");
     return { data: { ok: true } };
   });
@@ -217,14 +245,31 @@ export function registerProviderRoutes(app: FastifyInstance): void {
     if (status && a.status === "error" && status === "active" && !touchesConnection(f)) {
       bad("invalid_request", "This account is in error state; update its credential to re-submit it");
     }
+    // Review fix 2026-11-10: the provider's switch is active ↔ disabled for an account the provider disabled itself.
+    //  - proxy_down (frozen: its proxy failed) only ends through an operator's proxy-release / proxy-rebind;
+    //  - `disabled` set by an administrator or by the platform (node removed, …) is not the provider's to undo.
+    // Before, only `error` was refused, so both came back to `active` with one PATCH.
+    const frozen = a.status === "proxy_down" || !!a.proxy_down_since;
+    if (status && frozen) bad("proxy_down_use_release", "This account is frozen because its proxy failed; only a platform operator can release or rebind it", 409);
+    const ownDisable = a.status === "disabled" && disabledByProvider(a, req.user!.id);
+    if (status === "active" && a.status === "disabled" && !ownDisable) {
+      bad("disabled_by_platform", "This account was disabled by the platform; ask an administrator to enable it", 403);
+    }
     if (touchesConnection(f)) {
-      // Re-submitted for review; an explicit status in the same request still wins.
-      sets.push("review_status = 'pending'", "error_message = NULL");
-      sets.push("status = ?");
-      params.push(status ?? "active");
-    } else if (status) {
-      sets.push("status = ?");
-      params.push(status);
+      // Re-submitted for review; an explicit status in the same request still wins. A status the provider may not
+      // leave (frozen, disabled by the platform) is kept: the re-submitted credential waits for review as it is.
+      sets.push("review_status = 'pending'");
+      if (!frozen && (a.status !== "disabled" || ownDisable)) {
+        sets.push("error_message = ?", "status = ?");
+        params.push(status === "disabled" ? PROVIDER_DISABLED_MARK : null, status ?? "active");
+      }
+    } else if (status === "disabled" && a.status !== "disabled") {
+      // Only an account that is running is the provider's to switch off; `error` keeps its state and message.
+      if (a.status !== "active") bad("invalid_request", `This account is in ${a.status} state and cannot be disabled here`);
+      sets.push("status = 'disabled'", "error_message = ?");
+      params.push(PROVIDER_DISABLED_MARK);
+    } else if (status === "active" && a.status === "disabled") {
+      sets.push("status = 'active'", "error_message = NULL");
     }
     run(`UPDATE accounts SET ${sets.join(", ")} WHERE id = ?`, ...params, id);
     return { data: providerAccountShape(ownAccount(req, id)) };

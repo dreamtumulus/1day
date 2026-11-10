@@ -104,9 +104,14 @@ function pickNode(token: OnboardToken, requested: string | undefined): NodeRowLi
   return dflt;
 }
 
+/**
+ * The token's organization restriction: null = unrestricted (column NULL), otherwise the allowed profile ids.
+ * Review fix 2026-11-10: a restriction that cannot be read (damaged JSON, not an array) is a restriction to NOTHING,
+ * never "unrestricted" — the same goes for a list whose organizations were all disabled or deleted (see onboardAsToken).
+ */
 function tokenOrgIds(t: OnboardToken): string[] | null {
-  if (!t.org_ids_json) return null;
-  try { const v = JSON.parse(t.org_ids_json); return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : null; } catch { return null; }
+  if (t.org_ids_json === null || t.org_ids_json === undefined || t.org_ids_json === "") return null;
+  try { const v = JSON.parse(t.org_ids_json); return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : []; } catch { return []; }
 }
 /** Organizations this operator may onboard into (active profiles; routes limited to the token's node when it is bound to one). */
 function visibleOrgs(t: OnboardToken): OrgRow[] {
@@ -213,10 +218,16 @@ async function onboardAsToken(req: FastifyRequest) {
   const groupReq = str(b, "proxyGroup", { max: 60 }) || null;
   if (groupReq && !listNodeProxyGroups(node.nodeId).some((g) => g.group === groupReq)) bad("group_invalid", `Node has no IP group '${groupReq}'`);
   const proxyGroup: string | undefined = groupReq ?? undefined;
+  // Review fix 2026-11-10 (fail closed): a token limited to organizations must name one that is in its list AND
+  // enabled right now. When every organization of the list was disabled or deleted, `orgs` is empty — that used to
+  // skip the "pick an organization" check and accept any orgUuid from the body; now the token is simply unusable.
+  const restricted = tokenOrgIds(token) !== null;
+  if (restricted && orgs.length === 0) bad("org_not_allowed", "Every organization this token is limited to is disabled or deleted; ask an administrator to update the token", 403);
+  if (restricted && !orgId) bad("org_required", "Pick an organization first", 403);
   if (orgs.length > 0 && !orgId) bad("org_required", "Pick an organization first");
   if (orgId) {
     const org = orgs.find((o) => o.id === orgId);
-    if (!org) bad("org_not_allowed", "This token cannot onboard into that organization");
+    if (!org) bad("org_not_allowed", "This token cannot onboard into that organization", 403);
     const domains = orgDomains(org);
     const domain = str(b, "domain", { max: 253 })?.toLowerCase().replace(/^@/, "");
     if (domains.length > 0 && (!domain || !domains.includes(domain))) bad("domain_invalid", `Pick one of the organization's domains (${domains.join(", ")})`);
