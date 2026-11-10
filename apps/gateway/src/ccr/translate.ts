@@ -9,6 +9,7 @@
 
 import crypto from "node:crypto";
 import type { AnthropicBlock, AnthropicUsage, EventPayload, SessionEvent } from "./types.js";
+import { applyOverhead, type OverheadApplied, type OverheadPlan, type PromptBuckets } from "./overhead.js";
 
 type Json = Record<string, any>;
 
@@ -513,6 +514,13 @@ export interface TranslatorOptions {
    */
   cacheBaseline?: number;
   /**
+   * X-54: the turn's platform-overhead plan (ccr/overhead.ts) — overhead per upstream API call for this lane / tools /
+   * model / Claude Code version, the customer's own prompt estimate and the legacy baseline as lower bound. Replaces
+   * the single `cacheBaseline` subtraction; may also be set after construction (`setOverhead`: the lane is only known
+   * once the node accepted the open). Absent = `cacheBaseline` once, the pre-X-54 logic.
+   */
+  overhead?: OverheadPlan | null;
+  /**
    * Escape hatch (settings `ccr_cache_write_as_input` = "1"; default "0" since X-51): report cache
    * writes beyond the baseline as plain input (1.0×) with cache_creation 0, the pre-X-51 behaviour.
    * Off (default): official presentation — cache_creation_input_tokens plus the 5m / 1h split,
@@ -696,6 +704,9 @@ export class SessionTranslator {
   private resultInfo: { subtype: string; isError: boolean; text: string | null } | null = null;
 
   private readonly cacheBaseline: number;
+  private overheadPlan: OverheadPlan | null = null;
+  /** Upstream API calls whose usage this response counted (message_start events + whole assistant rows): each carried the platform prefix. */
+  private upstreamCalls = 0;
   private readonly stopSequences: string[];
   /** Chars held back from streaming so a stop sequence split across deltas is never partially emitted. */
   private readonly holdLen: number;
@@ -710,6 +721,7 @@ export class SessionTranslator {
     this.simulateTools = o.simulateTools;
     this.cacheBaseline = Math.max(0, Math.floor(o.cacheBaseline ?? 0));
     this.cacheWriteAsInput = o.cacheWriteAsInput ?? false;
+    this.overheadPlan = o.overhead ?? null;
     this.usageBaseline = o.usageBaseline ?? null;
     this.nativeTools = o.nativeTools ?? false;
     this.internalTools = o.internalTools ?? false;
@@ -744,6 +756,27 @@ export class SessionTranslator {
   /** Native tools: tool_use blocks in the message vs. MCP calls the node has parked for them so far. */
   get parkProgress(): { toolUses: number; parked: number } {
     return { toolUses: this.blocks.filter((b) => b.type === "tool_use").length, parked: this.toolCalls.length };
+  }
+
+  /** X-54: set the overhead plan once the execution lane is known (before the first event is pushed). */
+  setOverhead(plan: OverheadPlan | null): void {
+    this.overheadPlan = plan;
+  }
+
+  /** Upstream API calls counted in this response's usage (0 = none seen yet). */
+  get upstreamCallCount(): number {
+    return this.upstreamCalls;
+  }
+
+  /** Raw upstream prompt buckets of the turn (platform ledger). */
+  get rawPrompt(): PromptBuckets {
+    const split = cacheCreationSplit(this.usage);
+    return { input: this.usage.input_tokens, read: this.usage.cache_read_input_tokens, creation5m: split.ephemeral_5m_input_tokens, creation1h: split.ephemeral_1h_input_tokens };
+  }
+
+  /** What the overhead rule took off the raw prompt and why (log line, tests). */
+  get overheadApplied(): OverheadApplied {
+    return applyOverhead(this.rawPrompt, this.upstreamCalls, this.overheadPlan, this.cacheBaseline);
   }
 
   /** Raw upstream usage accumulated so far (before baseline subtraction); for cross-request turn accounting. */
@@ -1166,7 +1199,10 @@ export class SessionTranslator {
           // message_start reports a placeholder output_tokens (1); the turn's
           // real output count arrives with message_delta, so only take input/cache here.
           const u = ev.message?.usage as AnthropicUsage | undefined;
-          if (u) this.addUsage({ ...u, output_tokens: 0 }, false);
+          if (u) {
+            this.addUsage({ ...u, output_tokens: 0 }, false);
+            this.upstreamCalls++;
+          }
         } else if (ev.type === "content_block_start" && (ev.content_block?.type === "thinking" || ev.content_block?.type === "redacted_thinking") && this.thinking) {
           // Extended thinking requested by the client: forward the block as-is (text in `thinking`, then `signature`).
           out += this.closeBlock() + this.open();
@@ -1256,6 +1292,7 @@ export class SessionTranslator {
         // One row per content block, all with the same usage: count a message once (a row without an id counts).
         if (!streamed && !(mid && this.wholeUsageIds.has(mid))) {
           this.addUsage(msg.usage, false);
+          if (msg.usage && typeof msg.usage === "object") this.upstreamCalls++;
           if (mid) this.wholeUsageIds.add(mid);
         }
         if (!streamed && Array.isArray(msg.content)) {
@@ -1406,20 +1443,11 @@ export class SessionTranslator {
    * escape hatch `cacheWriteAsInput` it is folded into input_tokens instead.
    */
   usageOut(): TranslatedUsage & { cache_creation: CacheCreationSplit } {
-    const read = this.usage.cache_read_input_tokens;
-    const split = cacheCreationSplit(this.usage);
-    const readOut = Math.max(0, read - this.cacheBaseline);
-    let leftover = Math.max(0, this.cacheBaseline - read);
-    const from1h = Math.min(split.ephemeral_1h_input_tokens, leftover);
-    leftover -= from1h;
-    const from5m = Math.min(split.ephemeral_5m_input_tokens, leftover);
-    leftover -= from5m;
-    const out1h = split.ephemeral_1h_input_tokens - from1h;
-    const out5m = split.ephemeral_5m_input_tokens - from5m;
-    // Below the model's cache minimum (Haiku: 2048 tokens) Claude Code's prefix is not cached at all
-    // and the upstream meter reports it as plain input: whatever part of the baseline no cache field
-    // absorbed comes off the input count (2026-10-17: a 15-token prompt billed 606 on Haiku).
-    const inputOut = Math.max(0, this.usage.input_tokens - leftover);
+    // X-54: the deduction is the platform overhead of every upstream call this usage holds (ccr/overhead.ts), bounded
+    // below by the legacy baseline (no bill rises) and so that the customer's own prompt stays visible. Whatever no
+    // cache field absorbed comes off plain input (below a model's cache minimum the prefix is metered as input).
+    const a = this.overheadApplied;
+    const readOut = a.read, out1h = a.creation1h, out5m = a.creation5m, inputOut = a.input;
     if (this.cacheWriteAsInput) {
       return {
         input_tokens: inputOut + out5m + out1h,

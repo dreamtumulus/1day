@@ -328,6 +328,7 @@ const MIGRATIONS: Array<{ version: number; up: (d: DatabaseSync, log: Log) => vo
   { version: 40, up: migration40 },
   { version: 41, up: migration41 },
   { version: 42, up: migration42 },
+  { version: 43, up: migration43 },
 ];
 
 // 上号员令牌（独立鉴权的上号站点 /onboard）：admin 签发，绑定目标节点；
@@ -1105,4 +1106,19 @@ function migration41(d: DatabaseSync, log: Log): void {
 function migration42(d: DatabaseSync, log: Log): void {
   addColumns(d, log, "model_prices", [["cache_write_5m_per_m", "REAL"]]);
   log("migration 42: model_prices.cache_write_5m_per_m");
+}
+
+// X-54 (2026-11-10): learned platform prompt overhead of the CCR lanes (core/overhead-calibration.ts), shared by every
+// gateway instance. key = lane|tools|model|claude-version; samples = JSON [[ms, tokens], …] (last 64); n = samples
+// accepted so far; value = p10 of the window once it holds 8 (NULL before). Additive; nothing is backfilled.
+function migration43(d: DatabaseSync, log: Log): void {
+  d.exec(`
+CREATE TABLE IF NOT EXISTS ccr_overhead_calibration (
+  key TEXT PRIMARY KEY,
+  samples TEXT NOT NULL DEFAULT '[]',
+  n INTEGER NOT NULL DEFAULT 0,
+  value INTEGER,
+  updated_at TEXT NOT NULL
+);`);
+  log("migration 43: ccr_overhead_calibration (learned platform prompt overhead per lane / tools / model / version)");
 }

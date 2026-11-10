@@ -20,6 +20,31 @@ import { randomUUID } from "node:crypto";
 import { buildNativeTranscript, countStrippedThinking } from "./native-session.js";
 import type { EventPayload, TurnFacts } from "./types.js";
 import { TurnCapture, captureWanted } from "./capture.js";
+import { overheadLogLine, planOverhead, recordOverheadSample, type OverheadPlan } from "./overhead.js";
+import type { OverheadLane, OverheadTools } from "@1dayapi/core";
+
+/** Blocks the interactive (TUI) mode cannot be given: the node runs such a turn as a plain `-p` process (X-53, provider-node needsPlainProcess). */
+function hasMediaBlock(content: unknown): boolean {
+  return Array.isArray(content) && content.some((b) => !!b && typeof b === "object" && ((b as Json).type === "image" || (b as Json).type === "document"));
+}
+
+/**
+ * The execution lane of a worker turn as far as Claude Code's own prompt goes (X-54 calibration key): `legacy` = the
+ * platform's replacement system prompt on `-p`; `p` = canonical `-p --restricted` (native prompt); `tui` = canonical on
+ * an interactive node, unless the turn carries media (then the node runs a plain process, and the conversation stays
+ * on it — `remembered`).
+ */
+export function workerOverheadLane(canonical: boolean, nodeTui: boolean, sendContent: unknown, remembered?: string | null): OverheadLane {
+  if (!canonical) return "legacy";
+  if (!nodeTui || hasMediaBlock(sendContent) || remembered === "p") return "p";
+  return "tui";
+}
+
+/** Tools dimension of the key: none | caller (beside Claude Code's built-in tools) | caller-only (built-in tools dropped). */
+export function workerOverheadTools(nativeTools: boolean, canonical: boolean, builtInToolProfile: string | null): OverheadTools {
+  if (!nativeTools) return "none"; // fence simulation: the tool text is part of the customer's own prompt
+  return canonical && builtInToolProfile === "tools-disabled-canonical" ? "caller-only" : "caller";
+}
 
 type Json = Record<string, any>;
 
@@ -393,6 +418,8 @@ export async function runCcrWorker(input: CcrWorkerInput): Promise<Response | nu
   const sendContent = turnContent ? (toolChoice ? [...turnContent, { type: "text", text: toolChoice }] : turnContent) : null;
   const sendPrompt = canonical ? " " : !sendContent && toolChoice ? `${prompt}\n\n${toolChoice}` : prompt;
   const prevUsage = plan.mode === "fresh" ? null : (mem?.usage ?? null);
+  /** X-54: set once the node accepted the open (the lane depends on the node). */
+  let overheadPlan: OverheadPlan | null = null;
   const rememberTurn = (translator: SessionTranslator): void => {
     if (!reuseKey) return;
     if (plan.mode !== "fresh" && translator.freshProcess) {
@@ -417,6 +444,7 @@ export async function runCcrWorker(input: CcrWorkerInput): Promise<Response | nu
     const fold = `[assistant]\n${contentText(translator.message().content, nativeTools ? "plain" : "fence")}`;
     // Delivered message ids follow the conversation (the TUI shim tells a tool_use message's whole row on the next tunnel).
     const messageIds = [...new Set([...(plan.mode === "fresh" ? [] : (mem?.messageIds ?? [])), ...translator.deliveredMessageIds])].slice(-16);
+    const lane = overheadPlan?.key ? { overheadLane: overheadPlan.key.lane } : {};
     if (awaiting) {
       // Turn parked on the node: same turn counter; what this response already billed is added to the
       // process total so the resumed turn's increment covers only the continuation.
@@ -428,11 +456,12 @@ export async function runCcrWorker(input: CcrWorkerInput): Promise<Response | nu
         pendingCalls: awaiting,
         messageIds,
         tails: blockTails(persistentBlocks),
+        ...lane,
         ...(native ? { native } : {}),
       });
       return;
     }
-    sessionMemory.remember(reuseKey, { hashes: plan.hashes, assistantFold: fold, turn: plan.mode === "fresh" ? 1 : (plan.expectedTurn ?? 0) + 1, usage: translator.cumulativeUsage, tails: blockTails(persistentBlocks), messageIds, ...(native ? { native } : {}) });
+    sessionMemory.remember(reuseKey, { hashes: plan.hashes, assistantFold: fold, turn: plan.mode === "fresh" ? 1 : (plan.expectedTurn ?? 0) + 1, usage: translator.cumulativeUsage, tails: blockTails(persistentBlocks), messageIds, ...lane, ...(native ? { native } : {}) });
   };
   // Sampled turn capture (docs/worker-sessions.md 2026-11-03): request half now, response half at every exit below.
   const capture = captureWanted(input.apiKeyId, input.requestId)
@@ -492,6 +521,26 @@ export async function runCcrWorker(input: CcrWorkerInput): Promise<Response | nu
   // the same account serves the turn (proxy.ts CANONICAL_FALLBACK_CODES, 2026-11-05 canonical-by-default rollout).
   if (!opened && canonical) throw new TunnelRequestError("canonical_node_unavailable", `No canonical-capable node is available for ${account.name}`);
   if (!opened) return null;
+
+  // X-54: what Claude Code prepends on this lane is the platform's cost, not the customer's (ccr/overhead.ts).
+  const builtInProfile = canonical ? canonicalBuiltInToolProfile(ccClientCompat, !!toolDefs && toolDefs.length > 0) : null;
+  overheadPlan = planOverhead({
+    key: {
+      lane: workerOverheadLane(canonical, opened.node?.tui === true, sendContent, plan.mode === "fresh" ? null : mem?.overheadLane),
+      tools: workerOverheadTools(nativeTools, canonical, builtInProfile),
+      model: input.upstreamModel,
+      version: opened.node?.claudeVersion ?? null,
+    },
+    body,
+    fresh: plan.mode === "fresh" && !canon?.rendered && !historyImport,
+    baselineSetting: "ccr_cache_baseline_worker",
+  });
+  translator.setOverhead(overheadPlan);
+  /** Turn end: the platform ledger line (raw upstream prompt, what came off, what the customer sees) and the calibration sample. */
+  const ledger = (failed: boolean): void => {
+    recordOverheadSample(overheadPlan, { raw: translator.rawPrompt, calls: translator.upstreamCallCount, failed, hasUsage: translator.hasUsage });
+    if (translator.hasUsage) console.log(`[ccr-worker] ${input.requestId} usage ledger: ${overheadLogLine(overheadPlan, translator.rawPrompt, translator.upstreamCallCount, translator.overheadApplied)}`);
+  };
 
   console.log(`[ccr-worker] ${input.requestId} on ${account.name} (${canonical ? "canonical, " : ""}session ${opened.sessionId}${reuseKey ? `, ${plan.mode} ${reuseKey.slice(0, 8)}${plan.mode === "continue" ? ` turn ${(plan.expectedTurn ?? 0) + 1}` : plan.reason ? ` (${plan.reason}, ${fullBlocks.length} blocks${ephemeral ? `, ${ephemeral} system` : ""})` : ""}` : oneShot ? ", one-shot suggestion" : ""})`);
   const deadline = Date.now() + config.ccrSessionTimeoutMs;
@@ -629,6 +678,7 @@ export async function runCcrWorker(input: CcrWorkerInput): Promise<Response | nu
     if (translator.awaitingTools) console.log(`[ccr-worker] ${input.requestId} parked on ${translator.awaitingTools.length} native tool call(s)`);
     if (translator.cutShort) console.log(`[ccr-worker] ${input.requestId} cut short: ${translator.stopReasonOut} (session cancelled)`);
     if (translator.upstreamUsage) console.log(`[ccr-worker] ${input.requestId} upstream modelUsage: ${JSON.stringify(translator.upstreamUsage).slice(0, 400)}`);
+    ledger(false);
     capture?.finish(translator, { status: 200, stalled });
     return new Response(JSON.stringify(translator.message()), { status: 200, headers: { "content-type": "application/json" } });
   }
@@ -672,6 +722,7 @@ export async function runCcrWorker(input: CcrWorkerInput): Promise<Response | nu
           await write(`event: error\ndata: ${JSON.stringify({ type: "error", error: { type: "api_error", message: `ccr_worker: ${translator.error}` } })}\n\n`);
         } else if (translator.awaitingTools || stalled) {
           if (translator.awaitingTools) console.log(`[ccr-worker] ${input.requestId} parked on ${translator.awaitingTools.length} native tool call(s)`);
+          ledger(false);
           await write(translator.end());
         } else if (!translator.finished) {
           noteFailureSource(input, "process");
@@ -679,6 +730,7 @@ export async function runCcrWorker(input: CcrWorkerInput): Promise<Response | nu
         } else {
           if (translator.cutShort) console.log(`[ccr-worker] ${input.requestId} cut short: ${translator.stopReasonOut} (session cancelled)`);
           if (translator.upstreamUsage) console.log(`[ccr-worker] ${input.requestId} upstream modelUsage: ${JSON.stringify(translator.upstreamUsage).slice(0, 400)}`);
+          ledger(false);
           await write(translator.end());
         }
       } catch (err) {

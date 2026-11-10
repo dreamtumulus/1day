@@ -500,11 +500,18 @@ export interface CcWorkerOpenRequest {
  * accepted (offline / no_proxy_available / worker_overloaded → try the next
  * account). Cancelling the returned stream kills the remote process.
  */
+/** The node that took the open, as the console knows it (X-54); null from a console older than this field. */
+export interface CcWorkerNodeInfo {
+  /** Interactive (TUI) node: capability tui_v1. */
+  tui: boolean;
+  claudeVersion: string | null;
+}
+
 export async function openCcWorker(
   accountId: string,
   req: CcWorkerOpenRequest,
   signal?: AbortSignal,
-): Promise<{ stream: ReadableStream<Uint8Array>; sessionId: string } | null> {
+): Promise<{ stream: ReadableStream<Uint8Array>; sessionId: string; node: CcWorkerNodeInfo | null } | null> {
   let res: Response;
   try {
     res = await fetch(`${config.consoleBase}/internal/tunnel/open`, {
@@ -558,9 +565,12 @@ export async function openCcWorker(
     await rejectRequestLevel(res);
     return null;
   }
-  const json = (await res.json()) as { sessionId?: string };
+  const json = (await res.json()) as { sessionId?: string; worker?: { tui?: unknown; claudeVersion?: unknown } };
   if (!json.sessionId) return null;
   const duplex = new TunnelDuplex(json.sessionId, signal);
+  const node: CcWorkerNodeInfo | null = json.worker && typeof json.worker === "object"
+    ? { tui: json.worker.tui === true, claudeVersion: typeof json.worker.claudeVersion === "string" && /^\d+\.\d+\.\d+$/.test(json.worker.claudeVersion) ? json.worker.claudeVersion : null }
+    : null;
   // No head line in cc_worker: every byte is worker stdout.
-  return { stream: new EgressReader(duplex).toWebStream(Buffer.alloc(0)), sessionId: json.sessionId };
+  return { stream: new EgressReader(duplex).toWebStream(Buffer.alloc(0)), sessionId: json.sessionId, node };
 }
