@@ -110,7 +110,16 @@ export function ProviderNodes() {
                         message={t("provider.nodes.unbindMsg")}
                         confirmLabel={t("provider.nodes.unbind")}
                         onConfirm={async () => {
-                          await api.del(`/api/provider/nodes/${encodeURIComponent(n.nodeId)}`);
+                          // 409 node_has_dependents (2026-11-10): the node still carries accounts; removing it disables
+                          // them, so it needs a second confirmation. node_shared_with_other_nodes cannot be forced here.
+                          try {
+                            await api.del(`/api/provider/nodes/${encodeURIComponent(n.nodeId)}`);
+                          } catch (err) {
+                            const e = err as { status?: number; code?: string; message?: string };
+                            if (e.status !== 409 || e.code !== "node_has_dependents") throw err;
+                            if (!window.confirm(`${e.message}\n\n${t("provider.nodes.unbindForce")}`)) return;
+                            await api.del(`/api/provider/nodes/${encodeURIComponent(n.nodeId)}?force=1`);
+                          }
                           toast.success(t("provider.nodes.unbound"));
                           nodes.reload();
                         }}
