@@ -23,6 +23,7 @@ import {
 } from "../../api";
 import { useCT } from "../../i18n";
 import { useProxyHosts } from "../shared/proxyHosts";
+import { OnCreditsBadge, UsageCreditsIndicator, creditsState } from "../shared/UsageCredits";
 import {
   Async,
   Badge,
@@ -624,6 +625,8 @@ export function AdminAccounts() {
     }
     return (
       <div className="min-w-[120px] max-w-[150px] space-y-1.5">
+        {/* the cooldowns below are still recorded, but credits keep the account schedulable (usage_credits_policy) */}
+        <OnCreditsBadge a={a} />
         {items.map((it, i) => (
           <div key={i} className="leading-[15px]" title={`${it.label} · ${t("admin.accounts.coolUntil", { at: fmtDateTime(it.until) })}${it.sub ? `\n${it.sub}` : ""}`}>
             <div className="flex items-center gap-1.5">
@@ -673,7 +676,18 @@ export function AdminAccounts() {
             ring={<ResetRing value={a.window7dUsed} resetAt={a.window7dResetAt} title={a.window7dResetAt ? rel(a.window7dResetAt) : undefined} />}
             title={probed}
           />
+          {a.usageCredits?.fableShare && (
+            <MeterRow
+              label="Fable"
+              value={a.usageCredits.fableShare.usedPercent == null ? null : a.usageCredits.fableShare.usedPercent / 100}
+              text={a.usageCredits.fableShare.usedPercent == null ? "—" : `${Math.round(a.usageCredits.fableShare.usedPercent)}%`}
+              title={t("credits.fableShareHint", { allowance: a.usageCredits.fableShare.allowancePercentOfWeekly ?? "—", reset: a.usageCredits.fableShare.resetsAt ? rel(a.usageCredits.fableShare.resetsAt) : "—" })}
+            />
+          )}
           {concRow}
+          <div className="w-[112px]">
+            <UsageCreditsIndicator a={a} showFableBar={false} />
+          </div>
         </div>
       );
     }
@@ -1489,6 +1503,31 @@ function ReviewModal({
                         {account.windowModel?.source ? <span className="ml-1 text-[11.5px] text-on-surface-faint">({account.windowModel.source}{account.windowModel.observed_at ? `, ${rel(account.windowModel.observed_at)}` : ""})</span> : null}
                       </span>,
                     ],
+                    [
+                      t("credits.label"),
+                      (() => {
+                        const st = creditsState(account.usageCredits, t);
+                        return (
+                          <span className="inline-flex flex-wrap items-center gap-1.5">
+                            <span>{st ? st.text : t("credits.unknown")}</span>
+                            {st?.hint ? <span className="text-[11.5px] text-on-surface-faint">{st.hint}</span> : null}
+                            <OnCreditsBadge a={account} />
+                            {account.creditsRejectedAt && account.usageCredits?.enabled ? <span className="text-[11.5px] text-warning">{t("credits.rejectedHint", { at: rel(account.creditsRejectedAt) })}</span> : null}
+                          </span>
+                        );
+                      })(),
+                    ],
+                    ...(account.usageCredits?.fableShare
+                      ? ([[
+                          t("credits.fableShare"),
+                          <span>
+                            {account.usageCredits.fableShare.usedPercent == null ? "—" : `${Math.round(account.usageCredits.fableShare.usedPercent)}%`}
+                            <span className="ml-1 text-[11.5px] text-on-surface-faint">
+                              {t("credits.fableShareHint", { allowance: account.usageCredits.fableShare.allowancePercentOfWeekly ?? "—", reset: account.usageCredits.fableShare.resetsAt ? rel(account.usageCredits.fableShare.resetsAt) : "—" })}
+                            </span>
+                          </span>,
+                        ]] as Array<[string, JSX.Element]>)
+                      : []),
                     [t("admin.accounts.profileChecked"), <span>{account.lastProfileAt ? rel(account.lastProfileAt) : "—"} / {account.usageCheckedAt ? rel(account.usageCheckedAt) : "—"}</span>],
                   ] as Array<[string, JSX.Element]>)
                 : []),

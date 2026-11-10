@@ -239,6 +239,22 @@ function SettingsForm({ initial, groups, onSaved }: { initial: Settings; groups:
                 ]}
               />
             </Field>
+            <Field label={t("admin.settings.usageCreditsPolicy")} hint={t("admin.settings.usageCreditsPolicyHint")}>
+              <Select
+                value={s.usage_credits_policy ?? "off"}
+                onChange={(e) => set("usage_credits_policy", e.target.value)}
+                options={[
+                  { value: "off", label: t("admin.settings.usageCreditsOff") },
+                  { value: "fable_only", label: t("admin.settings.usageCreditsFableOnly") },
+                  { value: "all", label: t("admin.settings.usageCreditsAll") },
+                ]}
+              />
+              {(s.usage_credits_policy ?? "off") !== "off" && (
+                <div className="mt-1.5 rounded-md px-2.5 py-1.5 text-[12px] leading-[17px]" style={{ background: "var(--warning-container, var(--surface-variant))", color: "var(--warning)" }}>
+                  {t("admin.settings.usageCreditsWarning")}
+                </div>
+              )}
+            </Field>
             <Field label={t("admin.settings.directCcVersionPin")} hint={t("admin.settings.directCcVersionPinHint")} error={pinValid ? undefined : "x.y.z"}>
               <Input value={s.direct_cc_version_pin ?? ""} placeholder="2.1.303" onChange={(e) => set("direct_cc_version_pin", e.target.value.trim())} />
             </Field>

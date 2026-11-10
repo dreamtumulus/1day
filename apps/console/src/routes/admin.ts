@@ -1903,6 +1903,9 @@ function validateSetting(key: SettingKey, v: string): void {
     case "onboard_default_executor":
       if (v !== "ccr" && v !== "ccr_worker") bad("invalid_request", "onboard_default_executor must be ccr or ccr_worker");
       return;
+    case "usage_credits_policy":
+      if (v !== "off" && v !== "fable_only" && v !== "all") bad("invalid_request", "usage_credits_policy must be off, fable_only or all");
+      return;
     case "direct_cc_entrypoint_normalize":
       if (v !== "0" && v !== "1") bad("invalid_request", "direct_cc_entrypoint_normalize must be 0 or 1");
       return;

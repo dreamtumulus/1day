@@ -7,6 +7,7 @@ import { effectiveBaseUrl, type Executor, type Protocol } from "./platforms.js";
 import { getSetting } from "./settings.js";
 import { isoIn, nowIso } from "./time.js";
 import { modelScope, parseRateLimitEvent, parseThresholdPercent, windowAllows, windowExhausted, windowReason, type WindowSnapshot } from "./window.js";
+import { creditsUsable, parseUsageCredits, parseUsageCreditsPolicy, type UsageCreditsPolicy } from "./usage-credits.js";
 import { normalizeTeamId, quarantineActive, recordProxyTeamEvent } from "./teams.js";
 
 export interface ModelCooldown {
@@ -14,6 +15,8 @@ export interface ModelCooldown {
   reason?: string | null;
   used?: number | null;
   resetAt?: string | null;
+  /** Only on the `credits` entry: when the upstream last refused this account at a plan limit (usage credits, see creditsLive). */
+  rejectedAt?: string | null;
 }
 
 export function parseModelCooldowns(raw: string | null | undefined): Record<string, ModelCooldown> {
@@ -28,14 +31,19 @@ export function parseModelCooldowns(raw: string | null | undefined): Record<stri
 
 /** True when the account's cooldown for the model's family scope is still running. */
 export function modelScopeCooling(a: Pick<AccountRow, "model_cooldowns">, model: string, now: string): boolean {
+  return modelCoolingKind(a, model, now) !== null;
+}
+
+/** Which cooldown keeps the model off this account: the exact-model one (`model:<id>`), the family scope one, or none. */
+function modelCoolingKind(a: Pick<AccountRow, "model_cooldowns">, model: string, now: string): "model" | "scope" | null {
   const all = parseModelCooldowns(a.model_cooldowns);
   // Exact-model suspension (403 "is suspended for this organization until …", key `model:<id>`).
   const exact = all[`model:${model}`]?.until;
-  if (exact && exact > now) return true;
+  if (exact && exact > now) return "model";
   const scope = modelScope(model);
-  if (!scope) return false;
+  if (!scope) return null;
   const until = all[scope]?.until;
-  return !!until && until > now;
+  return !!until && until > now ? "scope" : null;
 }
 
 /**
@@ -67,6 +75,140 @@ function writeModelCooldown(id: string, scope: string, patch: ModelCooldown, now
   const all = parseModelCooldowns(row?.model_cooldowns);
   all[scope] = { ...(all[scope] ?? {}), ...patch };
   run("UPDATE accounts SET model_cooldowns = ?, updated_at = ? WHERE id = ?", JSON.stringify(all), now, id);
+}
+
+// ---------- usage credits (docs/usage-credits.md) ----------
+//
+// An account whose owner enabled usage credits keeps working past its plan limits — Anthropic bills the overage at API
+// rates. Setting `usage_credits_policy` decides whether the scheduler may rely on that:
+//   off        — never (default): an exhausted account / Fable share is skipped until the reset, exactly as before;
+//   fable_only — an account whose Fable weekly share is used up stays schedulable for Fable models;
+//   all        — additionally an account whose 5-hour / weekly window is used up stays schedulable.
+// The pause state itself (window_exhausted_until, model_cooldowns.fable) is written exactly as without the policy; the
+// policy only decides, at selection time, whether a quota pause still excludes the account. Turning the policy off is
+// therefore effective immediately.
+
+/** `model_cooldowns` key of the rejection marker (no `until`: it never cools anything by itself). */
+export const CREDITS_REJECTION_KEY = "credits";
+/** Appended to window_reason / the fable cooldown reason while the account is kept schedulable on credits. */
+export const ON_CREDITS_SUFFIX = " · on usage credits";
+
+export function usageCreditsPolicy(): UsageCreditsPolicy {
+  return parseUsageCreditsPolicy(getSetting("usage_credits_policy"));
+}
+
+type CreditFields = Pick<AccountRow, "usage_json" | "usage_checked_at" | "model_cooldowns">;
+type CreditWindowFields = CreditFields & Pick<AccountRow, "executor" | "window_used" | "window_reset_at" | "window_exhausted_until">;
+
+/**
+ * May the scheduler count on this account's usage credits right now? True only when the last usage poll shows usable
+ * credits (`creditsUsable`) AND the upstream has not refused the account at a plan limit since that poll. A refusal
+ * (429 with a rejected window, `credits_required`, Claude Code's "hit your … limit") proves the poll is out of date —
+ * balance spent, cap reached, or the owner switched credits off — so the account goes back to the plain cooldown rules
+ * until a later successful usage poll shows usable credits again. Independent of the policy.
+ */
+export function creditsLive(a: CreditFields): boolean {
+  if (!a.usage_json || !creditsUsable(parseUsageCredits(a.usage_json))) return false;
+  const rejectedAt = parseModelCooldowns(a.model_cooldowns)[CREDITS_REJECTION_KEY]?.rejectedAt;
+  // same-second tie counts as "rejected after the poll"
+  return !(rejectedAt && (!a.usage_checked_at || rejectedAt >= a.usage_checked_at));
+}
+
+/** The binding window's plan quota is spent (paused or over the threshold) and has not rolled over yet. */
+function windowQuotaSpent(a: CreditWindowFields, now: string, thresholdPercent: number): boolean {
+  // Past the reset, what is left of a pause is the post-reset rest: plan quota is back, credits have nothing to do with it.
+  if (a.window_reset_at && a.window_reset_at <= now) return false;
+  if (a.window_exhausted_until && a.window_exhausted_until > now) return true;
+  return !windowAllows(a, now, thresholdPercent);
+}
+
+export interface CreditsServing {
+  /** The 5-hour / weekly window is used up and the account is kept schedulable on credits (policy `all`). */
+  window: boolean;
+  /** The Fable weekly share is used up and the account is kept schedulable for Fable on credits (`fable_only` / `all`). */
+  fable: boolean;
+}
+
+/** Which exhausted quotas of this account the scheduler currently bridges with usage credits. */
+export function creditsServing(
+  a: CreditWindowFields,
+  now = nowIso(),
+  policy = usageCreditsPolicy(),
+  thresholdPercent = parseThresholdPercent(getSetting("anthropic_window_threshold_percent")),
+): CreditsServing {
+  if (policy === "off" || !creditsLive(a)) return { window: false, fable: false };
+  const fableUntil = parseModelCooldowns(a.model_cooldowns).fable?.until;
+  return {
+    window: policy === "all" && windowQuotaSpent(a, now, thresholdPercent),
+    fable: !!fableUntil && fableUntil > now,
+  };
+}
+
+/**
+ * Would a request for `model` on this account be paid from usage credits right now (plan quota for it is used up and
+ * the policy keeps the account schedulable)? `model = null` asks about the account as a whole (any scope).
+ */
+export function onCredits(a: CreditWindowFields, model: string | null, now = nowIso()): boolean {
+  const s = creditsServing(a, now);
+  return s.window || (s.fable && (model === null || modelScope(model) === "fable"));
+}
+
+/** Process-local: how often listCandidates kept an exhausted account schedulable because of usage credits. */
+const creditsKept = new Map<string, { window: number; fable: number; lastAt: string }>();
+
+export function usageCreditsCounters(): { window: number; fable: number; accounts: Record<string, { window: number; fable: number; lastAt: string }> } {
+  let window = 0;
+  let fable = 0;
+  for (const v of creditsKept.values()) {
+    window += v.window;
+    fable += v.fable;
+  }
+  return { window, fable, accounts: Object.fromEntries(creditsKept) };
+}
+
+/** Count the decision and make sure the stored pause reason says the account is being served on credits. */
+function noteCreditsKept(a: Pick<AccountRow, "id" | "name" | "window_reason" | "model_cooldowns">, s: CreditsServing, now: string): void {
+  let c = creditsKept.get(a.id);
+  if (!c) {
+    c = { window: 0, fable: 0, lastAt: now };
+    creditsKept.set(a.id, c);
+    console.info(`[credits] account ${a.name} (${a.id}) kept schedulable on usage credits (${[s.window ? "window" : "", s.fable ? "fable" : ""].filter(Boolean).join("+")})`);
+  }
+  c.lastAt = now;
+  if (s.window) {
+    c.window++;
+    if (a.window_reason && !a.window_reason.endsWith(ON_CREDITS_SUFFIX) && !a.window_reason.includes("rejected (429)")) {
+      a.window_reason += ON_CREDITS_SUFFIX;
+      run("UPDATE accounts SET window_reason = ? WHERE id = ?", a.window_reason, a.id);
+    }
+  }
+  if (s.fable) {
+    c.fable++;
+    const reason = parseModelCooldowns(a.model_cooldowns).fable?.reason;
+    if (reason && !reason.endsWith(ON_CREDITS_SUFFIX)) writeModelCooldown(a.id, "fable", { reason: reason + ON_CREDITS_SUFFIX }, now);
+  }
+}
+
+/** Reason suffix for a quota pause being written now: the account is (still) bridged by credits under the policy. */
+function creditsReasonSuffix(id: string, scope: "window" | "fable"): string {
+  const policy = usageCreditsPolicy();
+  if (policy === "off" || (scope === "window" && policy !== "all")) return "";
+  const row = one<CreditFields>("SELECT usage_json, usage_checked_at, model_cooldowns FROM accounts WHERE id = ?", id);
+  return row && creditsLive(row) ? ON_CREDITS_SUFFIX : "";
+}
+
+/** The upstream refused the account at a plan limit: its credits are not to be relied on until the next usage poll. */
+function markCreditsRejected(id: string, reason: string, now: string): void {
+  writeModelCooldown(id, CREDITS_REJECTION_KEY, { rejectedAt: now, reason }, now);
+}
+
+/** A plain 429 while the account was being served on credits is read as "credits gone" too (no window named). */
+function markCreditsRejectedIfServing(id: string, reason: string, now: string): void {
+  if (usageCreditsPolicy() === "off") return;
+  const row = one<CreditWindowFields>("SELECT usage_json, usage_checked_at, model_cooldowns, executor, window_used, window_reset_at, window_exhausted_until FROM accounts WHERE id = ?", id);
+  if (!row) return;
+  const s = creditsServing(row, now);
+  if (s.window || s.fable) markCreditsRejected(id, reason, now);
 }
 
 // Upstream accounts (docs/v3-design.md §5, §7.2, §7.3).
@@ -268,6 +410,11 @@ export interface Candidate extends AccountRow {
    * 503s for every other caller of a single-account group (docs/gateway.md §3).
    */
   cooling: boolean;
+  /**
+   * Plan quota for this model is used up on the account and it is listed only because usage credits will pay
+   * (`usage_credits_policy`, docs/usage-credits.md). Ordered after every account that still has plan quota.
+   */
+  onCredits?: boolean;
 }
 
 /**
@@ -288,16 +435,19 @@ function windowRejectedUntil(a: Pick<AccountRow, "rate_limited_until" | "window_
  */
 export function listCandidates(groupId: string, model: string, teamId?: string): Candidate[] {
   const now = nowIso();
+  const policy = usageCreditsPolicy();
   const rows = all<Candidate>(
     `SELECT a.*, ag.priority AS group_priority
      FROM account_groups ag JOIN accounts a ON a.id = ag.account_id
      WHERE ag.group_id = ? AND a.status = 'active' AND a.review_status = 'approved'
        AND (a.overload_until IS NULL OR a.overload_until <= ?)
        AND (a.temp_unschedulable_until IS NULL OR a.temp_unschedulable_until <= ?)
-       AND (a.window_exhausted_until IS NULL OR a.window_exhausted_until <= ?)`,
+       AND (? = 1 OR a.window_exhausted_until IS NULL OR a.window_exhausted_until <= ?)`,
     groupId,
     now,
     now,
+    // Policy `all` may keep a window-paused account schedulable on credits: those rows are decided in the filter below.
+    policy === "all" ? 1 : 0,
     now,
   );
   for (const a of rows) a.cooling = !!a.rate_limited_until && a.rate_limited_until > now;
@@ -311,21 +461,43 @@ export function listCandidates(groupId: string, model: string, teamId?: string):
     }
     if (!supportsModel(a, model)) return false;
     if (a.cooling && windowRejectedUntil(a)) return false;
+    // Usage credits (policy fable_only / all): a quota pause does not exclude an account whose credits will pay.
+    // Never consulted with policy off, nor for an account without usable credits — those take the paths below as before.
+    const live = policy !== "off" && creditsLive(a);
+    const kept: CreditsServing = { window: false, fable: false };
     // Model-family cooldown (Fable 7d window / credits): hard, but only for that family.
-    if (modelScopeCooling(a, model, now)) return false;
-    if (windowAllows(a, now, threshold)) return true;
-    // Over the threshold but not yet paused (threshold lowered since the last sample):
-    // record the pause once so the console shows why the account is being skipped
-    // (sub2api ApplyAccountSchedulingThreshold at selection time).
-    if (!a.window_exhausted_until || a.window_exhausted_until <= now) pauseForWindow(a, threshold, now);
-    return false;
+    const coolingKind = modelCoolingKind(a, model, now);
+    if (coolingKind === "model") return false; // organization suspension / per-model 429: credits do not lift those
+    if (coolingKind === "scope") {
+      if (!live) return false;
+      kept.fable = true;
+    }
+    const paused = !!a.window_exhausted_until && a.window_exhausted_until > now;
+    if (paused || !windowAllows(a, now, threshold)) {
+      const bridge = live && policy === "all" && windowQuotaSpent(a, now, threshold);
+      // Over the threshold but not yet paused (threshold lowered since the last sample):
+      // record the pause once so the console shows why the account is being skipped
+      // (sub2api ApplyAccountSchedulingThreshold at selection time).
+      if (!paused) {
+        pauseForWindow(a, threshold, now, bridge);
+        if (bridge) a.window_reason = one<{ r: string | null }>("SELECT window_reason r FROM accounts WHERE id = ?", a.id)?.r ?? a.window_reason;
+      }
+      if (!bridge) return false;
+      kept.window = true;
+    }
+    if (kept.window || kept.fable) {
+      a.onCredits = true;
+      noteCreditsKept(a, kept, now);
+    }
+    return true;
   });
-  // not cooling first (cooling: soonest free first) -> priority ASC -> account priority ASC
-  // -> least recently used -> random within tier
+  // not cooling first (cooling: soonest free first) -> plan quota before usage credits -> priority ASC
+  // -> account priority ASC -> least recently used -> random within tier
   const shuffled = filtered.map((a) => ({ a, r: Math.random() }));
   shuffled.sort(
     (x, y) =>
       Number(x.a.cooling) - Number(y.a.cooling) ||
+      Number(!!x.a.onCredits) - Number(!!y.a.onCredits) ||
       (x.a.cooling ? (x.a.rate_limited_until ?? "").localeCompare(y.a.rate_limited_until ?? "") : 0) ||
       x.a.group_priority - y.a.group_priority ||
       x.a.priority - y.a.priority ||
@@ -399,6 +571,7 @@ export function markFailure(id: string, f: FailureKind): void {
     // longer cooldown with a shorter one, re-admitting the account early. ISO timestamps compare as strings.
     case "rate_limited": {
       const sec = Math.min(Math.max(f.retryAfterSec ?? 60, 1), 7200);
+      markCreditsRejectedIfServing(id, "429 while on usage credits", now);
       run("UPDATE accounts SET rate_limited_until = MAX(COALESCE(rate_limited_until, ''), ?), updated_at = ? WHERE id = ?", isoIn(sec * 1000), now, id);
       return;
     }
@@ -454,6 +627,7 @@ export function markFailure(id: string, f: FailureKind): void {
         now,
         id,
       );
+      markCreditsRejected(id, `${f.window ?? "window"} limit reported by the upstream`, now);
       return;
     }
     case "window_rejected": {
@@ -466,14 +640,17 @@ export function markFailure(id: string, f: FailureKind): void {
         now,
         id,
       );
+      markCreditsRejected(id, `${f.window} rejected (429)`, now);
       return;
     }
     case "model_window_rejected":
       writeModelCooldown(id, f.scope, { until: f.resetAt, reason: `${f.reason} until ${f.resetAt}` }, now);
+      markCreditsRejected(id, f.reason, now);
       return;
     case "model_rate_limited": {
       const sec = Math.min(Math.max(f.retryAfterSec ?? 60, 1), 7200);
       const until = isoIn(sec * 1000);
+      markCreditsRejectedIfServing(id, `${f.reason} while on usage credits`, now);
       writeModelCooldown(id, `model:${f.model}`, { until, reason: `${f.reason} until ${until}` }, now);
       return;
     }
@@ -667,7 +844,7 @@ export function recordWindowUsage(
       const fab = snap.fable;
       const fabExhausted = windowExhausted(fab.used, thresholdPercent) || fab.status === "rejected";
       const until = fabExhausted ? (fab.resetAt && fab.resetAt > now ? fab.resetAt : isoIn(WINDOW_FALLBACK_COOLDOWN_MS)) : null;
-      writeModelCooldown(id, "fable", { used: fab.used, resetAt: fab.resetAt, until, reason: until ? `7d_oi ${Math.round(fab.used * 100)}% ≥ ${thresholdPercent}% until ${until}` : null }, now);
+      writeModelCooldown(id, "fable", { used: fab.used, resetAt: fab.resetAt, until, reason: until ? `7d_oi ${Math.round(fab.used * 100)}% ≥ ${thresholdPercent}% until ${until}${creditsReasonSuffix(id, "fable")}` : null }, now);
     }
     return;
   }
@@ -682,7 +859,7 @@ export function recordWindowUsage(
     snap.resetAt,
     now,
     until,
-    until ? windowReason(snap, thresholdPercent, until) : null,
+    until ? windowReason(snap, thresholdPercent, until) + creditsReasonSuffix(id, "window") : null,
     snap.fiveHour?.used ?? null,
     snap.fiveHour?.resetAt ?? null,
     snap.sevenDay?.used ?? null,
@@ -695,17 +872,17 @@ export function recordWindowUsage(
     const fab = snap.fable;
     const fabExhausted = windowExhausted(fab.used, thresholdPercent) || fab.status === "rejected";
     const until = fabExhausted ? (fab.resetAt && fab.resetAt > now ? fab.resetAt : isoIn(WINDOW_FALLBACK_COOLDOWN_MS)) : null;
-    writeModelCooldown(id, "fable", { used: fab.used, resetAt: fab.resetAt, until, reason: until ? `7d_oi ${Math.round(fab.used * 100)}% ≥ ${thresholdPercent}% until ${until}` : null }, now);
+    writeModelCooldown(id, "fable", { used: fab.used, resetAt: fab.resetAt, until, reason: until ? `7d_oi ${Math.round(fab.used * 100)}% ≥ ${thresholdPercent}% until ${until}${creditsReasonSuffix(id, "fable")}` : null }, now);
   }
 }
 
-function pauseForWindow(a: Pick<AccountRow, "id" | "window_used" | "window_reset_at">, thresholdPercent: number, now: string): void {
+function pauseForWindow(a: Pick<AccountRow, "id" | "window_used" | "window_reset_at">, thresholdPercent: number, now: string, onCredits = false): void {
   const until = restAfterReset(a.window_reset_at && a.window_reset_at > now ? a.window_reset_at : isoIn(WINDOW_FALLBACK_COOLDOWN_MS));
   const snap: WindowSnapshot = { used: a.window_used ?? 1, resetAt: a.window_reset_at, window: "window" };
   run(
     "UPDATE accounts SET window_exhausted_until = ?, window_reason = ?, updated_at = ? WHERE id = ?",
     until,
-    windowReason(snap, thresholdPercent, until),
+    windowReason(snap, thresholdPercent, until) + (onCredits ? ON_CREDITS_SUFFIX : ""),
     now,
     a.id,
   );

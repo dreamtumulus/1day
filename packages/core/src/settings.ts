@@ -67,6 +67,10 @@ export const SETTING_DEFAULTS = {
   // Key 没显式配置 workerMode 时的默认值（legacy | canonical）。2026-11-05 用户定：全部 Key 默认 canonical（真 CC 直连不受影响）；
   // 账号所在节点没有 canonical_v1 能力时，网关把该轮交给同账号的 legacy worker（canonical_node_unavailable 回落）。
   worker_mode_default: "legacy",
+  // 充值额度（usage credits，docs/usage-credits.md）：账号主开通后，5h / 周 / Fable 周额度用尽的请求按 API 价从其充值额度扣费继续可用。
+  // off = 不利用（默认，用尽即停调到重置，与此前完全一致）；fable_only = 仅 Fable 周额度用尽的账号继续调度 Fable；all = 5h / 周窗口用尽也继续调度。
+  // 注意：走充值额度的请求按 API 价（Fable 约 $10 / $50 每百万 token 入 / 出）计到账号主的付款方式。
+  usage_credits_policy: "off",
   // 代理(出口 IP) ↔ 组织 绑定校验：1 = 一个出口只许一个组织（other_organization / needs_virgin_exit，运行时 registry 与节点
   // getPinned 同样强制）；0 = 取消该绑定校验（2026-11-06 用户定），只按账号 ↔ 代理 的绑定放行，容量上限(exitCap)与死/隔离/冷却仍生效。
   proxy_org_binding_enforce: "1",

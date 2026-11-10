@@ -480,6 +480,15 @@ export interface ProviderAccount {
   /** Which usage windows apply (verified Ultra: five_hour=false); null = not observed yet. */
   windowModel?: { five_hour: boolean | null; seven_day: boolean | null; fable: boolean | null; source: string | null; observed_at: string | null; streak: number } | null;
   usageCheckedAt?: string | null;
+  /** Usage credits as of the last usage poll (docs/usage-credits.md); the enabled shape is inferred, see the doc. */
+  usageCredits?: UsageCreditsInfo | null;
+  /** Requests beyond the plan quota are currently scheduled onto this account and paid from its credits. */
+  onCredits?: boolean;
+  /** "window" (5h / weekly, all models) and / or "fable" (Fable weekly share). */
+  onCreditsScopes?: string[];
+  creditsLive?: boolean;
+  /** The upstream refused the account at a plan limit after the last usage poll: credits distrusted until the next poll. */
+  creditsRejectedAt?: string | null;
   /** Secret-free raw profile / usage bodies (admin only). */
   profile?: unknown;
   usageSnapshot?: unknown;
@@ -495,6 +504,29 @@ export interface ProviderAccount {
   windowUsed?: number | null;
   windowResetAt?: string | null;
   windowExhaustedUntil?: string | null;
+}
+
+export interface CreditAmount {
+  amountMinor: number;
+  currency: string;
+  exponent: number;
+}
+
+export interface UsageCreditsInfo {
+  known: boolean;
+  enabled: boolean;
+  everEnabled: boolean;
+  canToggle: boolean;
+  canPurchase: boolean;
+  balance: CreditAmount | null;
+  monthlyCap: CreditAmount | null;
+  used: CreditAmount | null;
+  spendLimitReached: boolean;
+  autoReload: boolean | null;
+  disabledReason: string | null;
+  promo: CreditAmount | null;
+  /** Fable weekly share: used percent of the allowance itself, and the allowance as a percent of the weekly limit. */
+  fableShare: { usedPercent: number | null; allowancePercentOfWeekly: number | null; resetsAt: string | null; active: boolean } | null;
 }
 
 export interface AdminAccount extends ProviderAccount {
@@ -840,6 +872,8 @@ export interface Settings {
   telemetry_health_days?: string;
   history_policy_default?: string;
   history_policy_canary?: string;
+  /** off | fable_only | all — may the scheduler rely on the owners' usage credits (docs/usage-credits.md). */
+  usage_credits_policy?: string;
   default_group_id: string;
   provider_default_payout_rate: string;
   announcement: string;
