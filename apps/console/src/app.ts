@@ -14,6 +14,7 @@ import { registerProviderRoutes } from "./routes/provider.js";
 import { registerPublicRoutes } from "./routes/public.js";
 import { registerUserRoutes } from "./routes/user.js";
 import { cleanupSessions, ensureInitialAdmin } from "./session.js";
+import { verifyMasterKey } from "@1dayapi/core";
 import { cleanupAudit, registerAuditHook, registerAuditRoutes } from "./audit.js";
 import { startArchiveCleanup } from "./node/archive-cleanup.js";
 
@@ -47,6 +48,8 @@ export async function buildApp(): Promise<FastifyInstance> {
   });
   app.setNotFoundHandler((_req, reply) => sendError(reply, 404, "not_found", "Route not found"));
 
+  // Refuse to start on a missing / wrong master key (code-review-2026-11-10 §1.1). Never catch MasterKeyError here.
+  verifyMasterKey();
   ensureInitialAdmin((msg) => app.log.info(msg));
   cleanupSessions();
   cleanupAudit();

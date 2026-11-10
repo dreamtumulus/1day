@@ -163,10 +163,23 @@ export function UserKeys() {
     }
   }
 
+  // Revealing a key needs a fresh login (10 min) or the login key again (403 reauth_required / reauth_failed).
+  async function revealKey(id: string): Promise<string> {
+    try {
+      return (await api.post<{ key: string }>(`/api/user/keys/${id}/reveal`)).key;
+    } catch (err) {
+      const code = (err as { code?: string } | null)?.code;
+      if (code !== "reauth_required" && code !== "reauth_failed") throw err;
+      const loginKey = window.prompt(t("user.keys.reauthPrompt"))?.trim();
+      if (!loginKey) throw err;
+      return (await api.post<{ key: string }>(`/api/user/keys/${id}/reveal`, { loginKey })).key;
+    }
+  }
+
   async function reveal(k: ApiKey) {
     try {
-      const res = await api.post<{ key: string }>(`/api/user/keys/${k.id}/reveal`);
-      setRevealed({ name: k.name, key: res.key, groupId: k.groupId });
+      const key = await revealKey(k.id);
+      setRevealed({ name: k.name, key, groupId: k.groupId });
     } catch (err) {
       toast.error(err);
     }
@@ -176,7 +189,7 @@ export function UserKeys() {
     let key: string | null = null;
     if (k.revealable) {
       try {
-        key = (await api.post<{ key: string }>(`/api/user/keys/${k.id}/reveal`)).key;
+        key = await revealKey(k.id);
       } catch (err) {
         toast.error(err);
       }

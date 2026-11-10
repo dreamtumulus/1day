@@ -447,6 +447,8 @@ function handleNodeMessage(conn: NodeConn, msg: Record<string, unknown>): void {
           active: typeof cw.active === "number" ? cw.active : 0,
           queued: typeof cw.queued === "number" ? cw.queued : 0,
           selfTestError: typeof cw.selfTestError === "string" && cw.selfTestError ? cw.selfTestError : null,
+          // device-identity guard on the node (X-49): healed / failed / detected counters since the node started
+          identityDrift: cw.identityDrift && typeof cw.identityDrift === "object" && !Array.isArray(cw.identityDrift) ? cw.identityDrift : null,
           reportedAt: nowIso(),
         };
         if (meta.ccWorker && (meta.ccWorker as { selfTestError: string | null }).selfTestError) {

@@ -173,7 +173,8 @@ export function buildApp(deps: ServerDeps): FastifyInstance {
       try {
         res = await fetch(base + "/internal/provider/bind", {
           method: "POST",
-          headers: { "content-type": "application/json" },
+          // A node id the platform already knows is only re-bound with proof of its current secret (409 node_already_bound otherwise).
+          headers: { "content-type": "application/json", ...(store.data.providerNodeSecret ? { "x-provider-node-secret": store.data.providerNodeSecret } : {}) },
           body: JSON.stringify({
             bindingCode,
             nodeId: store.data.nodeId,
@@ -241,6 +242,12 @@ export function buildApp(deps: ServerDeps): FastifyInstance {
       const res = await platformFetch("/internal/provider/unbind", { method: "POST" });
       platformOk = res.ok;
       if (!res.ok) platformError = `HTTP ${res.status}`;
+      if (res.status === 409) {
+        // The platform refuses to drop a node that still carries accounts or shares its proxies: keep the local binding,
+        // or the node goes offline while the platform still schedules onto it. Remove it in the console (which can force).
+        const detail = await res.text().catch(() => "");
+        return sendError(reply, 409, "platform_refused_unbind", `The platform refused to unbind this node: ${detail.slice(0, 400) || "HTTP 409"}`);
+      }
     } catch (err) {
       platformError = (err as Error).message;
     }
