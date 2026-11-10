@@ -1,0 +1,22 @@
+# Known test failures tolerated by ops/bin/test-gate (`pnpm gate`). There is no CI: this file is the baseline.
+#
+# One id per line, exactly as the gate prints it:
+#   unit/<package>: <top-level test name of `node --test`>      package = catalog | core | gateway | console
+#   e2e/<suite file>: <check name>                               the text after PASS / FAIL, without the details
+# An entry matches a failing id that equals it, or starts with it followed by a space.
+#
+# Rules:
+#   - a failure that is NOT listed fails the gate (new regression);
+#   - a listed entry that passes again, or no longer exists, ALSO fails the gate: remove the line in the same
+#     change that fixed it, so the list never hides a later regression of the same test;
+#   - every entry carries a comment line above it: since when, why, who decides.
+#
+# Baseline 2026-11-09 (commit 39cbc48, Node 22.22.3, e2e in a loopback-only network namespace):
+#   e2e      8 suites, 178 checks, 0 failures  (the "34 failing, gpt-5.5 not in catalog" state belongs to the stale
+#            ~/1dayAPI.com checkout, not to this repository: tests/e2e/seed-models.mjs seeds gpt-5.5 here)
+#   unit     catalog 6/6, core 135/135, gateway 210/210, console 1 failure (below)
+
+# 2026-11-09 baseline, pre-existing: the test "archive snapshot survives account deletion and node outage, then
+# retries on the same team exit" leaves a timer running that touches the closed database after the file ends
+# ("database is not open" → uncaughtException → the file is reported failed; its 6 tests pass). Console owners.
+unit/console: test/audit-fixes.test.mjs

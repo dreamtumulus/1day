@@ -1,0 +1,159 @@
+#!/usr/bin/env bash
+# Test gate (there is no CI): build + unit tests (catalog, core, gateway, console) + the e2e suites, compared with
+# tests/e2e/known-failures.txt. A release may only be built from a tree where this exits 0 (docs/operations.md §4).
+#
+#   ops/bin/test-gate                 # everything; `pnpm gate` runs the same
+#   ops/bin/test-gate --no-build      # dist/ is already fresh
+#   ops/bin/test-gate --no-e2e        # unit tests only
+#   ops/bin/test-gate --no-unit       # e2e only
+#
+# Exit 0  only when every failing test is listed in known-failures.txt AND every listed test still fails.
+# Exit 1  on a NEW failure, on a listed failure that now passes or no longer exists (update the list in the same
+#         change), on a build failure, or when a test command dies without naming a test.
+# Exit 2  usage / environment problem.
+#
+# The e2e stack is local only (temp DATA_DIR, mock upstream on 127.0.0.1). When the kernel allows it the e2e run is
+# additionally put in an empty network namespace (loopback only), so no test can reach a real upstream whatever its
+# configuration says; E2E_NETNS=0 turns that off, E2E_NETNS=1 makes it mandatory. Logs: $GATE_LOG_DIR (default: a
+# temp directory, path printed at the end).
+set -uo pipefail
+ROOT=$(cd "$(dirname "$0")/../.." && pwd)
+KNOWN=${KNOWN_FAILURES_FILE:-$ROOT/tests/e2e/known-failures.txt}
+UNIT_PACKAGES=(catalog core gateway console)
+do_build=1; do_unit=1; do_e2e=1
+for a in "$@"; do
+  case "$a" in
+    --no-build) do_build=0 ;;
+    --no-unit) do_unit=0 ;;
+    --no-e2e) do_e2e=0 ;;
+    -h|--help) sed -n 2,19p "$0"; exit 0 ;;
+    *) echo "unknown option: $a" >&2; sed -n 5,8p "$0" >&2; exit 2 ;;
+  esac
+done
+[ -r "$KNOWN" ] || { echo "known-failures list not found: $KNOWN" >&2; exit 2; }
+command -v pnpm >/dev/null 2>&1 || { echo "pnpm not found in PATH" >&2; exit 2; }
+# The gateway unit tests bundle the node with bun; pick up the usual install locations.
+if ! command -v bun >/dev/null 2>&1; then
+  for d in "${BUN_PATH:+$(dirname "$BUN_PATH")}" "$HOME/.bun/bin" /root/.bun/bin /usr/local/bin; do
+    [ -n "$d" ] && [ -x "$d/bun" ] && { PATH="$d:$PATH"; break; }
+  done
+fi
+# Never let a test talk through the host proxy (AGENTS.md) and never inherit a production database.
+unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY all_proxy ALL_PROXY DB_PATH DATA_DIR
+LOGS=${GATE_LOG_DIR:-$(mktemp -d -t 1dayapi-gate.XXXXXX)}
+mkdir -p "$LOGS"
+RESULTS="$LOGS/results.tsv"   # status<TAB>id   (status: pass | fail)
+: > "$RESULTS"
+cd "$ROOT" || exit 2
+say() { printf '%s\n' "$*"; }
+started=$(date +%s)
+
+if [ "$do_build" = 1 ]; then
+  say "== build (pnpm build)"
+  if ! pnpm build > "$LOGS/build.log" 2>&1; then
+    tail -30 "$LOGS/build.log"
+    say "GATE: FAIL (build failed; log $LOGS/build.log)"
+    exit 1
+  fi
+fi
+
+if [ "$do_unit" = 1 ]; then
+  for pkg in "${UNIT_PACKAGES[@]}"; do
+    say "== unit tests: $pkg"
+    pnpm --filter "@1dayapi/$pkg" test > "$LOGS/unit-$pkg.log" 2>&1
+    rc=$?
+    # node --test TAP: top-level `ok N - name` / `not ok N - name` lines are the tests (subtests are indented).
+    awk -v pkg="$pkg" '
+      /^ok [0-9]+ - /     { sub(/^ok [0-9]+ - /, "");     sub(/ # (SKIP|TODO).*$/, ""); print "pass\tunit/" pkg ": " $0 }
+      /^not ok [0-9]+ - / { sub(/^not ok [0-9]+ - /, ""); sub(/ # (SKIP|TODO).*$/, ""); print "fail\tunit/" pkg ": " $0 }
+    ' "$LOGS/unit-$pkg.log" > "$LOGS/unit-$pkg.tsv"
+    cat "$LOGS/unit-$pkg.tsv" >> "$RESULTS"
+    nfail=$(grep -c '^fail' "$LOGS/unit-$pkg.tsv" || true)
+    npass=$(grep -c '^pass' "$LOGS/unit-$pkg.tsv" || true)
+    say "   $npass passed, $nfail failed (exit $rc)"
+    if [ "$rc" != 0 ] && [ "$nfail" = 0 ]; then
+      printf 'fail\tunit/%s: (test command failed without naming a test)\n' "$pkg" >> "$RESULTS"
+      tail -15 "$LOGS/unit-$pkg.log" | sed 's/^/   | /'
+    fi
+    if [ "$rc" = 0 ] && [ "$npass" = 0 ]; then
+      printf 'fail\tunit/%s: (no tests ran)\n' "$pkg" >> "$RESULTS"
+    fi
+  done
+fi
+
+if [ "$do_e2e" = 1 ]; then
+  # Empty network namespace with loopback: root uses `unshare -n`, others a user namespace (`-r`).
+  netns=()
+  if [ "${E2E_NETNS:-auto}" != 0 ] && command -v unshare >/dev/null 2>&1 && command -v ip >/dev/null 2>&1; then
+    if [ "$(id -u)" = 0 ]; then flags=-n; else flags=-rn; fi
+    if unshare "$flags" bash -c 'ip link set lo up' >/dev/null 2>&1; then netns=(unshare "$flags"); fi
+  fi
+  if [ ${#netns[@]} = 0 ] && [ "${E2E_NETNS:-auto}" = 1 ]; then
+    say "GATE: FAIL (E2E_NETNS=1 but an isolated network namespace is not available here)"; exit 2
+  fi
+  if [ ${#netns[@]} -gt 0 ]; then
+    say "== e2e (tests/e2e/run.sh, network namespace: loopback only)"
+    PROBE_INTERCEPT=0 "${netns[@]}" bash -c 'ip link set lo up && exec bash "$0/tests/e2e/run.sh"' "$ROOT" > "$LOGS/e2e.log" 2>&1
+  else
+    say "== e2e (tests/e2e/run.sh, host network: no isolated namespace available)"
+    PROBE_INTERCEPT=0 bash "$ROOT/tests/e2e/run.sh" > "$LOGS/e2e.log" 2>&1
+  fi
+  rc=$?
+  # Suites print `PASS <name> ` / `FAIL <name> <details>`; run.sh adds `== <suite>` and `SUITE-RESULT <suite> <state>`.
+  awk '
+    /^== /             { suite = $2; fails[suite] = 0; next }
+    /^PASS /           { line = $0; sub(/^PASS /, "", line); sub(/ +$/, "", line); print "pass\te2e/" suite ": " line; next }
+    /^FAIL /           { line = $0; sub(/^FAIL /, "", line); sub(/ +$/, "", line); fails[suite]++; print "fail\te2e/" suite ": " substr(line, 1, 300); next }
+    /^SUITE-RESULT /   { seen[$2] = 1
+                         if ($3 == "stack-failed") print "fail\te2e/" $2 ": (stack did not start)"
+                         else if ($3 == "failed" && fails[$2] == 0) print "fail\te2e/" $2 ": (suite failed without a FAIL line)" }
+    END                { for (s in fails) if (!(s in seen)) print "fail\te2e/" s ": (suite did not finish)" }
+  ' "$LOGS/e2e.log" > "$LOGS/e2e.tsv"
+  cat "$LOGS/e2e.tsv" >> "$RESULTS"
+  nfail=$(grep -c '^fail' "$LOGS/e2e.tsv" || true)
+  npass=$(grep -c '^pass' "$LOGS/e2e.tsv" || true)
+  say "   $npass checks passed, $nfail failed (exit $rc)"
+  if [ "$rc" != 0 ] && [ "$nfail" = 0 ]; then printf 'fail\te2e: (runner failed without naming a suite)\n' >> "$RESULTS"; tail -15 "$LOGS/e2e.log" | sed 's/^/   | /'; fi
+  if [ "$rc" = 0 ] && [ "$npass" = 0 ]; then printf 'fail\te2e: (no checks ran)\n' >> "$RESULTS"; fi
+fi
+
+# ---- compare with the known-failures list ----
+# An entry matches a failing id that equals it or starts with it followed by a space (e2e FAIL lines carry details
+# after the check name). Entries of a part that was skipped (--no-unit / --no-e2e) are not judged.
+DO_UNIT=$do_unit DO_E2E=$do_e2e node --no-warnings - "$RESULTS" "$KNOWN" <<'JS'
+const { readFileSync } = require("node:fs");
+const [resultsFile, knownFile] = process.argv.slice(2);
+const rows = readFileSync(resultsFile, "utf8").split("\n").filter(Boolean).map((l) => { const i = l.indexOf("\t"); return { status: l.slice(0, i), id: l.slice(i + 1) }; });
+const failing = rows.filter((r) => r.status === "fail").map((r) => r.id);
+const passing = rows.filter((r) => r.status === "pass").length;
+const judged = (id) => (id.startsWith("unit/") ? process.env.DO_UNIT === "1" : id.startsWith("e2e") ? process.env.DO_E2E === "1" : true);
+const known = readFileSync(knownFile, "utf8").split("\n").map((l) => l.trim()).filter((l) => l && !l.startsWith("#"));
+const matches = (entry, id) => id === entry || id.startsWith(entry + " ");
+const fresh = failing.filter((id) => !known.some((e) => matches(e, id)));
+const stillFailing = known.filter((e) => failing.some((id) => matches(e, id)));
+const stale = known.filter((e) => judged(e) && !failing.some((id) => matches(e, id)));
+const malformed = known.filter((e) => !/^(unit\/[a-z-]+|e2e(\/[\w.-]+)?): ./.test(e));
+console.log("");
+console.log(`== gate summary: ${passing} passed, ${failing.length} failed (${stillFailing.length} known, ${fresh.length} new), ${stale.length} listed failure(s) no longer failing`);
+if (fresh.length) {
+  console.log("NEW failures (fix them, or add the id up to the end of the test name to tests/e2e/known-failures.txt with a reason):");
+  for (const id of fresh) console.log(`  + ${id}`);
+}
+if (stale.length) {
+  console.log("Listed as known failures but passing / gone now (remove them from tests/e2e/known-failures.txt in the same change):");
+  for (const e of stale) console.log(`  - ${e}`);
+}
+if (malformed.length) {
+  console.log("Malformed entries in known-failures.txt (expected `unit/<package>: <test>` or `e2e/<suite>: <check>`):");
+  for (const e of malformed) console.log(`  ? ${e}`);
+}
+if (stillFailing.length) {
+  console.log("Known failures (tolerated):");
+  for (const e of stillFailing) console.log(`  = ${e}`);
+}
+process.exit(fresh.length || stale.length || malformed.length ? 1 : 0);
+JS
+verdict=$?
+elapsed=$(( $(date +%s) - started ))
+if [ "$verdict" = 0 ]; then say "GATE: PASS (${elapsed}s; logs $LOGS)"; else say "GATE: FAIL (${elapsed}s; logs $LOGS)"; fi
+exit "$verdict"

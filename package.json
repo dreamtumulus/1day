@@ -13,6 +13,7 @@
     "dev:console": "pnpm --filter @1dayapi/console dev",
     "dev:web": "pnpm --filter @1dayapi/web dev",
     "test": "pnpm -r test",
-    "test:e2e": "bash tests/e2e/run.sh"
+    "test:e2e": "bash tests/e2e/run.sh",
+    "gate": "bash ops/bin/test-gate"
   }
 }
