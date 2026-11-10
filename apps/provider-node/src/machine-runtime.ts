@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { accountMachine, machineKernelRelease, machineOsRelease, machineProcVersion, machineUnameArch } from "./machine.js";
 import type { RunAs } from "./cc-worker.js";
+import { writeFileAtomic } from "./account-files.js";
 
 const CC_MACHINE_SOURCE = String.raw`
 #include <dlfcn.h>
@@ -45,13 +46,9 @@ export interface MachineRuntime {
   launcher: string;
 }
 
+/** Root-only runtime files (launcher, C source): replaced atomically — the launcher may be exec'd while this runs. */
 function writeIfChanged(file: string, content: string, mode: number): void {
-  if (fs.existsSync(file) && fs.readFileSync(file, "utf8") === content) {
-    fs.chmodSync(file, mode);
-    return;
-  }
-  fs.writeFileSync(file, content, { mode });
-  fs.chmodSync(file, mode);
+  writeFileAtomic(file, content, { mode });
 }
 
 export function prepareMachineRuntime(directory: string): MachineRuntime {
@@ -94,16 +91,18 @@ export function prepareMachineRuntime(directory: string): MachineRuntime {
   return { directory, library, launcher };
 }
 
-export function machineEnvironment(accountId: string, configDir: string, runtime: MachineRuntime, identity: RunAs | null): NodeJS.ProcessEnv {
+/**
+ * Per-account machine files + environment for the launcher. The two files are bind-mount sources read after the
+ * launcher dropped to `identity`: written atomically with that owner, never through a symlink (the dir belongs to the
+ * worker uid). `writeDir` is the same directory as `configDir` when the caller has it pinned (`anchorDir`); the
+ * environment always carries the real `configDir` paths.
+ */
+export function machineEnvironment(accountId: string, configDir: string, runtime: MachineRuntime, identity: RunAs | null, writeDir = configDir): NodeJS.ProcessEnv {
   const machine = accountMachine(accountId);
   const osRelease = path.join(configDir, "machine-os-release");
   const procVersion = path.join(configDir, "machine-proc-version");
-  fs.writeFileSync(osRelease, machineOsRelease(machine), { mode: 0o600 });
-  fs.writeFileSync(procVersion, machineProcVersion(machine), { mode: 0o600 });
-  if (identity) {
-    fs.chownSync(osRelease, identity.uid, identity.gid);
-    fs.chownSync(procVersion, identity.uid, identity.gid);
-  }
+  writeFileAtomic(path.join(writeDir, "machine-os-release"), machineOsRelease(machine), { mode: 0o600, owner: identity });
+  writeFileAtomic(path.join(writeDir, "machine-proc-version"), machineProcVersion(machine), { mode: 0o600, owner: identity });
   const env: NodeJS.ProcessEnv = {
     CC_MACHINE_OS_RELEASE: osRelease,
     CC_MACHINE_PROC_VERSION: procVersion,

@@ -28,7 +28,7 @@ function setup(extra = {}) {
   });
   const frames = [];
   const options = { send: (m) => (frames.push(m), true), identity: () => ({ nodeId: "n", providerId: "p" }), isDraining: () => false,
-    isolationGuard: new IsolationGuard(), pool, dataDir: dir, workerRoot: dir, runAsUser: null, maxConcurrency: 4,
+    isolationGuard: new IsolationGuard(), pool, dataDir: dir, workerRoot: dir, runAsUser: null, allowRoot: true, maxConcurrency: 4,
     claudeBin: process.execPath, claudeArgsPrefix: [new URL("./fake-claude.mjs", import.meta.url).pathname], ...extra };
   const manager = new CcWorkerManager(options);
   const egress = new HttpEgressManager(options);

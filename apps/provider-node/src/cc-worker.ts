@@ -9,6 +9,8 @@ import type { ProxyPool } from "./proxy-pool.js";
 import { IsolationGuard, sameIsolation, validIsolation } from "./isolation.js";
 import type { IsolationContext } from "./protocol.js";
 import { prepareMachineRuntime, machineEnvironment, type MachineRuntime } from "./machine-runtime.js";
+import { anchorDir, chownContents, chownTree, enforceFile, ensureDir, lexists, withDirChain, writeFileAtomic, type DirStep, type Owner } from "./account-files.js";
+import { DEVICE_ID_RE, driftAlertLine, driftReason, findIdentityBackup, healDeviceIdentity, inspectClaudeJson, verifyClaudeJson } from "./device-identity.js";
 
 // cc_worker mode (docs/ccr-supply.md §8.1): run the real Claude Code binary
 // per request on this node and stream its stream-json stdout back as data
@@ -113,6 +115,11 @@ interface Proc {
   hasTools: boolean;
   /** sha256 of the access token the process was started with: a rotated credential retires an idle process. */
   credHash: string;
+  /**
+   * Set when the account's device identity drifted while this process was alive (it may hold the wrong id in memory):
+   * the process is retired as soon as it is idle — after its current turn, at the next open for its key, or by the sweep.
+   */
+  retireAfterTurn?: string;
 }
 
 const TOOL_RESULT_WAIT_MS = 10 * 60_000;
@@ -202,6 +209,11 @@ export interface CcWorkerManagerOptions {
    * /var/lib/1dayapi-cc-worker; without a privilege drop it stays under dataDir.
    */
   workerRoot?: string;
+  /**
+   * The node is root and no unprivileged worker user exists: by default the self-test fails
+   * (`self_test_failed: no_unprivileged_user`) instead of running Claude Code as root. Env CC_WORKER_ALLOW_ROOT=1.
+   */
+  allowRoot?: boolean;
   /** Per-account kernel/distro/architecture identity for native workers and their telemetry. */
   machineIdentity?: boolean;
   machineRuntimeDir?: string;
@@ -360,45 +372,20 @@ export class CcWorkerManager {
     this.log(`session pool: max ${this.maxLive} live, idle ttl ${this.idleTtlMs / 1000}s, max ${this.maxTurns} turns, max age ${this.maxAgeMs / 1000}s, mem high-water ${Math.round(this.memHigh * 100)}%`);
   }
 
-  /**
-   * chown a tree to the worker user (config dir written by the node as root). The tree is live while other sessions
-   * of the same account run (canary 2026-11-02, concurrency 9): Claude Code creates and removes `.claude.json.lock`
-   * and friends between our readdir and lchown, so a vanished entry is skipped, not fatal — it took the whole turn
-   * down as `tunnel closed by node: ENOENT … lchown … .claude.json.lock` (2 × 502 on the canary account).
-   */
-  private chownTree(p: string, identity = this.runAs): void {
-    if (!identity) return;
-    const { uid, gid } = identity;
-    const gone = (err: unknown) => (err as NodeJS.ErrnoException)?.code === "ENOENT";
-    const walk = (f: string) => {
-      try {
-        fs.lchownSync(f, uid, gid);
-      } catch (err) {
-        if (gone(err)) return;
-        throw err;
-      }
-      let st: fs.Stats;
-      try {
-        st = fs.lstatSync(f);
-      } catch {
-        return;
-      }
-      if (!st.isDirectory()) return;
-      let children: string[];
-      try {
-        children = fs.readdirSync(f);
-      } catch (err) {
-        if (gone(err)) return;
-        throw err;
-      }
-      for (const c of children) walk(path.join(f, c));
-    };
-    walk(p);
+  /** chown a tree to the worker user (lchown semantics, see account-files.ts). */
+  private chownTree(p: string, identity: Owner | null = this.runAs): void {
+    chownTree(p, identity);
   }
 
   /** `claude --version` under session isolation; see `selfTestError`. */
   private selfTest(): { version: string | null; error: string | null } {
     if (this.machinePreparationError) return { version: null, error: `self_test_failed: ${this.machinePreparationError}` };
+    // Root node, no unprivileged user to drop to (CC_WORKER_USER missing from /etc/passwd): every non-team worker would
+    // run customer-driven Claude Code as root. Refuse unless the operator says so explicitly.
+    if (!this.runAs && process.getuid?.() === 0 && !(this.opts.allowRoot ?? process.env.CC_WORKER_ALLOW_ROOT === "1")) {
+      this.log(`no unprivileged worker user (CC_WORKER_USER=${this.opts.runAsUser === undefined ? (process.env.CC_WORKER_USER ?? "ccworker") : String(this.opts.runAsUser)} not in /etc/passwd) and the node runs as root; create the user, or set CC_WORKER_ALLOW_ROOT=1 to run workers as root`);
+      return { version: null, error: "self_test_failed: no_unprivileged_user" };
+    }
     const dir = path.join(this.sessionsDir, "selftest");
     try {
       fs.rmSync(dir, { recursive: true, force: true });
@@ -460,6 +447,7 @@ export class CcWorkerManager {
     queued: number;
     pool: { live: number; idle: number; busy: number; awaitingTools: number; maxLive: number; rssMb: number; evictions: Record<string, number> };
     canonical: { enabled: boolean; profiles: string[]; tui: boolean };
+    identityDrift: { healed: number; failed: number; detected: number; lastAt: string | null };
   } {
     let busy = 0;
     let awaiting = 0;
@@ -477,6 +465,7 @@ export class CcWorkerManager {
       active: this.sessions.size,
       queued: this.queue.length,
       canonical: { enabled: this.canonicalEnabled, profiles: this.canonicalEnabled && this.claudeVersion && /\d+\.\d+\.\d+/.test(this.claudeVersion) ? [`cc-${/\d+\.\d+\.\d+/.exec(this.claudeVersion)![0]}-restricted`] : [], tui: this.tuiEnabled },
+      identityDrift: { ...this.drift },
       pool: { live: this.procs.size, idle: this.procs.size - busy - awaiting, busy, awaitingTools: awaiting, maxLive: this.maxLive, rssMb: Math.round(rss / 1048576), evictions: { ...this.evictions } },
     };
   }
@@ -598,7 +587,8 @@ export class CcWorkerManager {
         }
         continue;
       }
-      if (now - p.lastUsedAt > this.idleTtlMs) this.retire(p, "idle");
+      if (p.retireAfterTurn) this.retire(p, p.retireAfterTurn);
+      else if (now - p.lastUsedAt > this.idleTtlMs) this.retire(p, "idle");
       else if (now - p.createdAt > this.maxAgeMs) this.retire(p, "age");
     }
     const used = () => 1 - os.freemem() / os.totalmem();
@@ -644,6 +634,7 @@ export class CcWorkerManager {
     proc.lastUsedAt = Date.now();
     if (s && !s.closed) this.finishSession(s, "complete");
     if (proc.turn >= this.maxTurns) this.retire(proc, "turns");
+    else if (proc.retireAfterTurn) this.retire(proc, proc.retireAfterTurn);
   }
 
   /** Feed the new turn to a live idle process. */
@@ -749,6 +740,12 @@ export class CcWorkerManager {
         this.log(`session ${key.slice(0, 8)}: credential rotated since the process started; retiring it`);
         this.retire(stale, "credential_rotated");
       }
+    }
+    if (persist) {
+      // The account's device identity drifted while this process lived: it may hold the wrong id in memory. Never
+      // feed it another turn (a parked tool round is allowed to finish; turnDone retires it).
+      const marked = this.procs.get(key);
+      if (marked?.retireAfterTurn && !marked.busy && !marked.retiring && !marked.awaitingTools) this.retire(marked, marked.retireAfterTurn);
     }
     if (persist && msg.turnMode === "tool_result") {
       const proc = this.procs.get(key);
@@ -860,88 +857,164 @@ export class CcWorkerManager {
     this.launch(msg, proxyUrl);
   }
 
-  /** Per-account CLAUDE_CONFIG_DIR with the native credential files (0700/0600). */
+  /**
+   * Per-account CLAUDE_CONFIG_DIR with the native credential files (0700/0600), owned by the identity Claude Code
+   * runs as. Every directory on the way is a real directory (never a symlink) and pinned while the files are written;
+   * every file goes through `writeFileAtomic` with that owner (X-49).
+   */
   private materializeConfig(accountId: string, cred: CcWorkerCred, deviceId?: string, teamId?: string): string {
     const identity = this.teamRunAs(teamId);
     const dir = this.accountConfigDir(accountId, teamId);
-    if (teamId) {
-      const accountsRoot = path.dirname(dir);
-      const teamRoot = path.dirname(accountsRoot);
-      for (const parent of [path.dirname(teamRoot), teamRoot, accountsRoot]) {
-        fs.mkdirSync(parent, { recursive: true, mode: 0o711 });
-        fs.chmodSync(parent, 0o711);
+    const want = deviceId && DEVICE_ID_RE.test(deviceId) ? deviceId : null;
+    // Team parents: traversable (0711); with per-team uids the team's own two levels belong to that uid, 0700.
+    const teamOwned = !!identity && process.env.CC_WORKER_TEAM_UIDS === "1";
+    const teamLevel = { mode: teamOwned ? 0o700 : 0o711, enforceMode: true, owner: teamOwned ? identity : null };
+    const steps: DirStep[] = teamId
+      ? [
+          { name: "teams", mode: 0o711, enforceMode: true },
+          { name: createHash("sha256").update(teamId).digest("hex"), ...teamLevel },
+          { name: "cc-accounts", ...teamLevel },
+          { name: encodeURIComponent(accountId), mode: 0o700, enforceMode: true, owner: identity },
+        ]
+      : [
+          { name: "cc-accounts", mode: 0o711 },
+          { name: accountId, mode: 0o700, enforceMode: true, owner: identity },
+        ];
+    withDirChain(this.workerRoot, steps, (d) => {
+      if (teamId) {
+        const ownership = path.join(this.workerRoot, "team-device-owners.json");
+        const owners: Record<string, { teamId: string; accountId: string }> = fs.existsSync(ownership) ? JSON.parse(fs.readFileSync(ownership, "utf8")) : {};
+        const old = deviceId ? owners[deviceId] : undefined;
+        if (!deviceId || (old && (old.teamId !== teamId || old.accountId !== accountId))) throw new Error("device belongs to another team/account");
+        if (Object.values(owners).some((owner) => owner.accountId === accountId && owner.teamId !== teamId)) throw new Error("account belongs to another team");
+        owners[deviceId] = { teamId, accountId };
+        // Root-only registry (never chowned): atomic so a crash mid-write cannot leave a file that fails every team open.
+        writeFileAtomic(ownership, JSON.stringify(owners), { mode: 0o600 });
+        writeFileAtomic(path.join(d, "team-account.json"), JSON.stringify({ teamId, accountId }), { mode: 0o600, owner: identity });
       }
-      if (identity && process.env.CC_WORKER_TEAM_UIDS === "1") {
-        for (const parent of [teamRoot, accountsRoot]) {
-          fs.chownSync(parent, identity.uid, identity.gid);
-          fs.chmodSync(parent, 0o700);
+      this.ensureDeviceIdentity(accountId, d, want, identity);
+      // Claude Code copies the OAuth profile (e-mail, names) into .claude.json and quotes it to the model as a
+      // "# userEmail" context block — on a customer turn that is the account owner's e-mail (customer report
+      // 2026-10-19). Blank it: CC's check is `oauthAccount?.emailAddress && …`, so "" drops the block; stamp
+      // profileFetchedAt so the next launch does not refetch the profile before the first turn.
+      try {
+        const state = inspectClaudeJson(d);
+        const raw = state.kind === "ok" ? state.json : null;
+        const acc = raw && raw.oauthAccount && typeof raw.oauthAccount === "object" ? (raw.oauthAccount as Record<string, unknown>) : null;
+        if (raw && acc && (acc.emailAddress || acc.displayName || acc.fullName)) {
+          acc.emailAddress = "";
+          acc.displayName = "";
+          acc.fullName = "";
+          acc.profileFetchedAt = Date.now();
+          writeFileAtomic(path.join(d, ".claude.json"), JSON.stringify(raw), { mode: 0o600, owner: identity });
         }
+      } catch (err) {
+        this.log(`could not scrub oauth profile for account ${accountId}: ${(err as Error).message}`);
       }
-    }
-    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-    fs.chmodSync(dir, 0o700);
-    if (teamId) {
-      const ownership = path.join(this.workerRoot, "team-device-owners.json");
-      const owners: Record<string, { teamId: string; accountId: string }> = fs.existsSync(ownership) ? JSON.parse(fs.readFileSync(ownership, "utf8")) : {};
-      const old = deviceId ? owners[deviceId] : undefined;
-      if (!deviceId || (old && (old.teamId !== teamId || old.accountId !== accountId))) throw new Error("device belongs to another team/account");
-      if (Object.values(owners).some((owner) => owner.accountId === accountId && owner.teamId !== teamId)) throw new Error("account belongs to another team");
-      owners[deviceId] = { teamId, accountId };
-      fs.writeFileSync(ownership, JSON.stringify(owners), { mode: 0o600 });
-      fs.writeFileSync(path.join(dir, "team-account.json"), JSON.stringify({ teamId, accountId }), { mode: 0o600 });
-      const prior = path.join(dir, ".claude.json");
-      if (fs.existsSync(prior)) {
-        const value = JSON.parse(fs.readFileSync(prior, "utf8")) as { userID?: string };
-        if (value.userID && value.userID !== deviceId) throw new Error("fixed team device identity changed");
-      }
-    }
-    // Fresh config dir: seed Claude Code's device identity with the platform's
-    // value so the account presents the same device on every path from day one.
-    const claudeJson = path.join(dir, ".claude.json");
-    if (deviceId && /^[0-9a-f]{64}$/i.test(deviceId) && !fs.existsSync(claudeJson)) {
-      fs.writeFileSync(claudeJson, JSON.stringify({ userID: deviceId, firstStartTime: new Date().toISOString() }), { mode: 0o600 });
-      this.log(`seeded device identity for account ${accountId}`);
-    }
-    // Claude Code copies the OAuth profile (e-mail, names) into .claude.json and quotes it to the model as a
-    // "# userEmail" context block — on a customer turn that is the account owner's e-mail (customer report
-    // 2026-10-19). Blank it: CC's check is `oauthAccount?.emailAddress && …`, so "" drops the block; stamp
-    // profileFetchedAt so the next launch does not refetch the profile before the first turn.
-    try {
-      const raw = fs.existsSync(claudeJson) ? (JSON.parse(fs.readFileSync(claudeJson, "utf8")) as Record<string, unknown>) : null;
-      const acc = raw && raw.oauthAccount && typeof raw.oauthAccount === "object" ? (raw.oauthAccount as Record<string, unknown>) : null;
-      if (raw && acc && (acc.emailAddress || acc.displayName || acc.fullName)) {
-        acc.emailAddress = "";
-        acc.displayName = "";
-        acc.fullName = "";
-        acc.profileFetchedAt = Date.now();
-        fs.writeFileSync(claudeJson, JSON.stringify(raw), { mode: 0o600 });
-      }
-    } catch (err) {
-      this.log(`could not scrub oauth profile for account ${accountId}: ${(err as Error).message}`);
-    }
-    const expiresAt =
-      typeof cred.expiresAt === "number"
-        ? cred.expiresAt
-        : Date.parse(typeof cred.expiresAt === "string" ? cred.expiresAt : "") || Date.now() + 8 * 3_600_000;
-    fs.writeFileSync(
-      path.join(dir, ".credentials.json"),
-      JSON.stringify({
-        claudeAiOauth: {
-          accessToken: cred.accessToken,
-          refreshToken: cred.refreshToken,
-          expiresAt,
-          scopes: FIXED_SCOPES,
-          subscriptionType: cred.subscriptionType ?? "pro",
-        },
-      }),
-      { mode: 0o600 },
-    );
-    const settingsPath = path.join(dir, "settings.json");
-    if (!fs.existsSync(settingsPath)) {
-      fs.writeFileSync(settingsPath, JSON.stringify({ hasCompletedOnboarding: true }), { mode: 0o600 });
-    }
-    this.chownTree(dir, identity);
+      const expiresAt =
+        typeof cred.expiresAt === "number"
+          ? cred.expiresAt
+          : Date.parse(typeof cred.expiresAt === "string" ? cred.expiresAt : "") || Date.now() + 8 * 3_600_000;
+      writeFileAtomic(
+        path.join(d, ".credentials.json"),
+        JSON.stringify({
+          claudeAiOauth: {
+            accessToken: cred.accessToken,
+            refreshToken: cred.refreshToken,
+            expiresAt,
+            scopes: FIXED_SCOPES,
+            subscriptionType: cred.subscriptionType ?? "pro",
+          },
+        }),
+        { mode: 0o600, owner: identity },
+      );
+      const settingsPath = path.join(d, "settings.json");
+      if (!lexists(settingsPath)) writeFileAtomic(settingsPath, JSON.stringify({ hasCompletedOnboarding: true }), { mode: 0o600, owner: identity });
+      // Anything else in the dir the node (or an older build) left root-owned.
+      chownContents(d, identity);
+    });
     return dir;
+  }
+
+  // ---- device identity guard (X-49) ----
+  /** Platform deviceId last written / verified per account: what `.claude.json` must still say after a turn. */
+  private readonly materialized = new Map<string, string>();
+  /** Drift already reported by the post-turn check (account → what was seen), so one drift is one line, not one per turn. */
+  private readonly driftSeen = new Map<string, string>();
+  private readonly drift: { healed: number; failed: number; detected: number; lastAt: string | null } = { healed: 0, failed: 0, detected: 0, lastAt: null };
+
+  private identityAlert(outcome: "healed" | "failed" | "detected", accountId: string, had: string | null, want: string | null, reason: string, extra = ""): void {
+    this.drift[outcome] += 1;
+    this.drift.lastAt = new Date().toISOString();
+    this.log(driftAlertLine(accountId, had, want, reason, extra));
+  }
+
+  /** Live processes of the account may hold a drifted id in memory: none of them gets another turn. */
+  private markAccountProcs(accountId: string, reason: string): void {
+    for (const p of this.procs.values()) if (p.accountId === accountId && !p.retiring) p.retireAfterTurn = reason;
+  }
+
+  /**
+   * `.claude.json` of the (pinned) account dir `d` must carry the platform's device id before anything starts there:
+   * fresh dir → seeded; drifted (another userID, none, corrupt) → alert + evidence copy + put back (`healDeviceIdentity`);
+   * a symlink / non-file → alert + the open fails. Owner and mode are brought in line either way.
+   * `want` null (the platform sent no device id): nothing to compare, only owner / mode.
+   */
+  private ensureDeviceIdentity(accountId: string, d: string, want: string | null, identity: Owner | null): void {
+    const file = path.join(d, ".claude.json");
+    const state = inspectClaudeJson(d);
+    if (state.kind === "symlink" || state.kind === "not_regular") {
+      this.identityAlert("failed", accountId, null, want, state.kind, "action=refused");
+      throw new Error(`.claude.json of account ${accountId} is not a regular file (${state.kind})`);
+    }
+    if (!want) {
+      if (state.kind !== "missing") enforceFile(file, { mode: 0o600, owner: identity });
+      return;
+    }
+    if (state.kind === "missing") {
+      // A dir that lost the file but still has Claude Code's backups is not a fresh account: restore, loudly.
+      const backup = findIdentityBackup(d, want);
+      if (backup) {
+        writeFileAtomic(file, backup.bytes, { mode: 0o600, owner: identity });
+        this.identityAlert("healed", accountId, null, want, "missing", `action=restored_backup backup=${backup.name}`);
+      } else {
+        // Fresh config dir: seed Claude Code's device identity with the platform's value so the account presents
+        // the same device on every path from day one.
+        writeFileAtomic(file, JSON.stringify({ userID: want, firstStartTime: new Date().toISOString() }), { mode: 0o600, owner: identity });
+        this.log(`seeded device identity for account ${accountId}`);
+      }
+    } else {
+      const reason = driftReason(state, want);
+      if (reason) {
+        const had = state.kind === "ok" ? state.userID : null;
+        try {
+          const r = healDeviceIdentity(d, want, state, identity);
+          this.identityAlert("healed", accountId, had, want, reason, `action=${r.action}${r.backup ? ` backup=${r.backup}` : ""}${r.kept ? ` kept=${r.kept}` : ""}`);
+        } catch (err) {
+          this.identityAlert("failed", accountId, had, want, reason, `action=heal_failed error=${JSON.stringify((err as Error).message.slice(0, 160))}`);
+          throw new Error(`device identity of account ${accountId} drifted and could not be restored: ${(err as Error).message}`);
+        }
+        this.markAccountProcs(accountId, "identity_drift");
+      } else {
+        const fixed = enforceFile(file, { mode: 0o600, owner: identity });
+        if (fixed?.chown) this.log(`.claude.json of account ${accountId} was owned by ${fixed.was.uid}:${fixed.was.gid}; now ${identity?.uid}:${identity?.gid}`);
+      }
+    }
+    this.materialized.set(accountId, want);
+    this.driftSeen.delete(accountId);
+  }
+
+  /**
+   * Last gate before Claude Code starts on an account (all modes): the file it is about to read is a regular file,
+   * owned by the uid the process runs as, 0600, JSON, and carries the platform's device id. Anything else would start
+   * a process that mints or presents another identity — the open fails instead.
+   */
+  private preSpawnIdentityCheck(accountId: string, configDir: string, deviceId: string | undefined, identity: Owner | null): void {
+    const want = deviceId && DEVICE_ID_RE.test(deviceId) ? deviceId : null;
+    const bad = verifyClaudeJson(configDir, { uid: identity ? identity.uid : (process.getuid?.() ?? null), deviceId: want });
+    if (!bad) return;
+    this.identityAlert("failed", accountId, null, want, "pre_spawn_check_failed", `detail=${JSON.stringify(bad)}`);
+    throw new Error(`pre-spawn identity check failed for account ${accountId}: ${bad}`);
   }
 
   private accountConfigDir(accountId: string, teamId?: string): string {
@@ -974,15 +1047,14 @@ export class CcWorkerManager {
       // Nothing from other sessions, the node, or the host is reachable there.
       const scope = msg.isolation ? createHash("sha256").update(JSON.stringify(msg.isolation)).digest("hex") + "-" : "";
       const workDir = path.join(this.sessionsDir, scope + msg.sessionId.replace(/[^A-Za-z0-9_-]/g, "_"));
-      fs.mkdirSync(workDir, { recursive: true, mode: 0o700 });
-      this.chownTree(workDir, identity);
+      ensureDir(workDir, { mode: 0o700, owner: identity });
       session.workDir = workDir;
       // Fixed cwd per account (and isolation scope), 2026-11-05: Claude Code writes the working directory into its system
       // prompt, so a per-session cwd made every session's 16–34k system prefix a fresh cache write (magpie reached the same
       // conclusion). The dir stays empty and is never removed; HOME/TMPDIR and the session's own files stay per session above.
-      fs.mkdirSync(path.join(this.sessionsDir, "cwd"), { recursive: true, mode: 0o711 });
+      ensureDir(path.join(this.sessionsDir, "cwd"), { mode: 0o711 });
       const cwdDir = path.join(this.sessionsDir, "cwd", scope + "acct-" + msg.accountId.replace(/[^A-Za-z0-9_-]/g, "_"));
-      fs.mkdirSync(cwdDir, { recursive: true, mode: 0o700 });
+      ensureDir(cwdDir, { mode: 0o700, owner: identity });
       this.chownTree(cwdDir, identity);
       // The prompt goes over stdin: argv is world-readable (/proc/<pid>/cmdline)
       // and capped at 128 KiB per argument on Linux. With image blocks the input
@@ -997,8 +1069,7 @@ export class CcWorkerManager {
       let systemPromptFile: string | null = null;
       if (!canonical && typeof msg.systemPrompt === "string" && msg.systemPrompt) {
         systemPromptFile = path.join(workDir, "system-prompt.md");
-        fs.writeFileSync(systemPromptFile, msg.systemPrompt, { mode: 0o600 });
-        this.chownTree(workDir, identity);
+        writeFileAtomic(systemPromptFile, msg.systemPrompt, { mode: 0o600, owner: identity });
       }
       // Native caller tools (docs/worker-sessions.md §3): a per-session MCP server
       // entry; only persistent sessions can hold a turn open across requests.
@@ -1011,29 +1082,31 @@ export class CcWorkerManager {
         const url = this.mcp.register(mcpKey, nativeTools, (call) => {
           if (procRef) this.onToolCall(procRef, call);
           else this.onToolCallOneShot(session, call);
-        }, canonical && this.tuiEnabled ? { listedFile: path.join(workDir, "mcp-listed") } : undefined);
+        }, canonical && this.tuiEnabled ? { listedFile: path.join(workDir, "mcp-listed"), listedOwner: identity } : undefined);
         mcpConfigFile = path.join(workDir, "mcp-config.json");
-        fs.writeFileSync(mcpConfigFile, JSON.stringify({ mcpServers: { caller: { type: "http", url } } }), { mode: 0o600 });
-        this.chownTree(workDir, identity);
+        writeFileAtomic(mcpConfigFile, JSON.stringify({ mcpServers: { caller: { type: "http", url } } }), { mode: 0o600, owner: identity });
       }
       // Canonical (spec WP2, invariants I1/I3): the native system prompt stays; the caller's system text is appended
       // (G1: lands at the tail of the main prompt block, billing header and identity sentence untouched).
       let appendFile: string | null = null;
       if (canonical && typeof msg.appendSystemPrompt === "string" && msg.appendSystemPrompt) {
         appendFile = path.join(workDir, "caller-system.md");
-        fs.writeFileSync(appendFile, msg.appendSystemPrompt, { mode: 0o600 });
-        this.chownTree(workDir, identity);
+        writeFileAtomic(appendFile, msg.appendSystemPrompt, { mode: 0o600, owner: identity });
       }
       const nativeSessionId = canonical ? (msg.nativeSession?.id ?? (typeof msg.nativeSessionId === "string" && msg.nativeSessionId ? msg.nativeSessionId : randomUUID())) : null;
       // spec WP3: resume an existing native transcript (G4), or import one the gateway built from the client's history
       // (G3: written in Claude Code's own jsonl shape under projects/<cwd-hash>/<id>.jsonl, then resumed).
       let resumeId: string | null = canonical && msg.nativeSession?.action === "resume" ? msg.nativeSession.id : null;
       if (canonical && Array.isArray(msg.historyImport) && msg.historyImport.length > 0 && nativeSessionId) {
-        const projDir = path.join(configDir, "projects", cwdDir.replace(/[^a-zA-Z0-9]/g, "-"));
-        fs.mkdirSync(projDir, { recursive: true, mode: 0o700 });
         const lines = msg.historyImport.map((l) => JSON.stringify({ ...l, sessionId: nativeSessionId, cwd: cwdDir }));
-        fs.writeFileSync(path.join(projDir, `${nativeSessionId}.jsonl`), lines.join("\n") + "\n", { mode: 0o600 });
-        this.chownTree(projDir, identity);
+        // `projects/` and the per-cwd dir belong to the run-as identity like the transcript itself: a root-owned 0700
+        // `projects/` (first import into an account dir) made `--resume` fail on a transcript it could not reach.
+        const dirOpts = { mode: 0o700, owner: identity };
+        anchorDir(configDir, { within: this.workerRoot }, (d) =>
+          withDirChain(d, [{ name: "projects", ...dirOpts }, { name: cwdDir.replace(/[^a-zA-Z0-9]/g, "-"), ...dirOpts }], (projDir) =>
+            writeFileAtomic(path.join(projDir, `${nativeSessionId}.jsonl`), lines.join("\n") + "\n", { mode: 0o600, owner: identity }),
+          ),
+        );
         resumeId = nativeSessionId;
         this.log(`session ${msg.sessionId}: imported ${lines.length} transcript line(s) into native session ${nativeSessionId.slice(0, 8)}`);
       }
@@ -1140,7 +1213,7 @@ export class CcWorkerManager {
       // model's limit). The gateway ends the message at the first max_tokens stop and cancels the session, so
       // Claude Code's own "continue from where you left off" turn never runs.
       if (typeof msg.maxTokens === "number" && msg.maxTokens > 0) env.CLAUDE_CODE_MAX_OUTPUT_TOKENS = String(Math.floor(msg.maxTokens));
-      const machineEnv = this.machineRuntime ? machineEnvironment(msg.accountId, configDir, this.machineRuntime, identity) : {};
+      const machineEnv = this.machineRuntime ? anchorDir(configDir, { within: this.workerRoot }, (d) => machineEnvironment(msg.accountId, configDir, this.machineRuntime!, identity, d)) : {};
       // TUI worker: the shim wraps the binary and turns the -p argv into the interactive mode's (cc-tui-shim, vendored
       // magpie claudetui). It answers the trust dialog itself (the cwd is the account's own), and waits for the node's MCP
       // server to have listed the caller tools (the marker file) before it pastes the first message.
@@ -1163,6 +1236,7 @@ export class CcWorkerManager {
       }
       const program = tui ? this.tuiShim : this.claudeBin;
       const programArgs = tui ? [this.claudeBin, ...args] : args;
+      this.preSpawnIdentityCheck(msg.accountId, configDir, msg.deviceId, identity);
       const child = spawn(this.machineRuntime?.launcher ?? program, this.machineRuntime ? [program, ...programArgs] : programArgs, {
         stdio: ["pipe", "pipe", "pipe"],
         detached: true, // own process group so the whole tree (MCP children, shells) can be killed
@@ -1257,7 +1331,9 @@ export class CcWorkerManager {
   private seedFolderTrust(configDir: string, cwdDir: string, identity: { uid: number; gid: number } | null | undefined): void {
     const file = path.join(configDir, ".claude.json");
     try {
-      const raw = (fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, "utf8")) : {}) as Record<string, unknown>;
+      const state = inspectClaudeJson(configDir);
+      if (state.kind !== "ok" && state.kind !== "missing") throw new Error(`.claude.json is ${state.kind}`);
+      const raw: Record<string, unknown> = state.kind === "ok" ? state.json : {};
       const projects = (raw.projects && typeof raw.projects === "object" ? raw.projects : {}) as Record<string, Record<string, unknown>>;
       const cur = projects[cwdDir];
       if (cur && cur.hasTrustDialogAccepted === true) return;
@@ -1273,34 +1349,46 @@ export class CcWorkerManager {
         hasTrustDialogAccepted: true,
       };
       raw.projects = projects;
-      // Atomic replace: Claude Code rewrites the file itself (lock + rename); a torn file would break every later launch.
-      const tmp = `${file}.trust-${process.pid}-${Date.now()}`;
-      fs.writeFileSync(tmp, JSON.stringify(raw), { mode: 0o600 });
-      // The replacement must stay readable by the uid Claude Code runs as. With machine identity the launcher drops to
-      // the team uid itself, so "the node does not setuid" never meant "the file may stay root's": a root-owned 0600
-      // .claude.json reads as a first run and Claude Code mints a new userID (2026-11-10: 30 ccr-tui accounts, X-49).
-      const owner = fs.existsSync(file) ? fs.statSync(file) : identity ?? null;
-      if (owner && process.getuid?.() === 0) fs.chownSync(tmp, owner.uid, owner.gid);
-      fs.renameSync(tmp, file);
+      // Atomic replace (Claude Code rewrites the file itself: lock + rename; a torn file would break every later
+      // launch), owned by the uid Claude Code runs as. With machine identity the launcher drops to the team uid
+      // itself, so "the node does not setuid" never meant "the file may stay root's": a root-owned 0600 .claude.json
+      // reads as a first run and Claude Code mints a new userID (2026-11-10: 30 ccr-tui accounts, X-49).
+      writeFileAtomic(file, JSON.stringify(raw), { mode: 0o600, owner: identity ?? null });
     } catch (err) {
       this.log(`could not seed folder trust for ${cwdDir}: ${(err as Error).message}`);
     }
   }
 
-  /** Read .claude.json of one account dir; marks it dirty for the next heartbeat when changed. */
+  /**
+   * Read .claude.json of one account dir; marks it dirty for the next heartbeat when changed. Called after every
+   * turn: when the userID is no longer the device id materialized for the account, that is reported at once (ALERT
+   * line, once per distinct value) — the next open puts it back, and no live process of the account gets another turn.
+   */
   refreshIdentity(accountId: string, teamId?: string): void {
-    const file = path.join(this.accountConfigDir(accountId, teamId), ".claude.json");
-    let next: { deviceId: string | null; accountUuid: string | null; teamId?: string };
+    let state: ReturnType<typeof inspectClaudeJson>;
     try {
-      const j = JSON.parse(fs.readFileSync(file, "utf8")) as { userID?: unknown; oauthAccount?: { accountUuid?: unknown } };
-      next = {
-        ...(teamId ? { teamId } : {}),
-        deviceId: typeof j.userID === "string" && j.userID ? j.userID : null,
-        accountUuid: typeof j.oauthAccount?.accountUuid === "string" && j.oauthAccount.accountUuid ? j.oauthAccount.accountUuid : null,
-      };
+      state = inspectClaudeJson(this.accountConfigDir(accountId, teamId));
     } catch {
-      return; // no config yet (or unreadable): nothing to report
+      return;
     }
+    const want = this.materialized.get(accountId);
+    const reason = want ? driftReason(state, want) : null;
+    if (want && reason) {
+      const had = state.kind === "ok" ? state.userID : null;
+      const seen = `${reason}:${had ?? ""}`;
+      if (this.driftSeen.get(accountId) !== seen) {
+        this.driftSeen.set(accountId, seen);
+        this.identityAlert("detected", accountId, had, want, `${reason}_after_turn`, "action=heal_on_next_open");
+      }
+      this.markAccountProcs(accountId, "identity_drift");
+    }
+    if (state.kind !== "ok") return; // no config yet (or unreadable): nothing to report
+    const uuid = (state.json.oauthAccount as { accountUuid?: unknown } | undefined)?.accountUuid;
+    const next: { deviceId: string | null; accountUuid: string | null; teamId?: string } = {
+      ...(teamId ? { teamId } : {}),
+      deviceId: state.userID,
+      accountUuid: typeof uuid === "string" && uuid ? uuid : null,
+    };
     if (!next.deviceId && !next.accountUuid) return;
     const prev = this.identities.get(accountId);
     if (!prev || prev.deviceId !== next.deviceId || prev.accountUuid !== next.accountUuid || prev.teamId !== next.teamId) {

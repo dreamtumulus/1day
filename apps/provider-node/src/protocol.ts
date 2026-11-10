@@ -77,6 +77,12 @@ export interface ProviderHeartbeat {
     queued: number;
     /** Canonical worker capability (spec WP2 §6.5): enabled by env CC_WORKER_CANONICAL=1; profiles the node's binary produces. */
     canonical?: { enabled: boolean; profiles: string[]; tui?: boolean };
+    /**
+     * Device identity guard (X-49): `.claude.json` userID found different from the platform's deviceId. healed = put
+     * back at an open; failed = open refused (symlink, heal error, pre-spawn check); detected = seen after a turn.
+     * Counters since node start; each event also logs `[cc-worker] ALERT device identity drift …`.
+     */
+    identityDrift?: { healed: number; failed: number; detected: number; lastAt: string | null };
   };
 }
 
