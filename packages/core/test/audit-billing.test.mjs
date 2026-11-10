@@ -110,11 +110,27 @@ test("in-flight budget is shared across Keys, obeys funds and quota, and recover
   assert.ok(c.one("SELECT expires_at FROM gateway_request_budgets WHERE request_id=?", next).expires_at > Date.now() + 80_000);
   c.releaseRequestBudget(next);
   assert.throws(() => c.renewRequestBudget(next), /lease lost/, "missing reservations fence the original call");
+  // Defaults since 2026-11-10 (X-52): 1000 concurrent requests, no in-flight spending cap beyond the balance.
   const rich = user(1000);
-  const ids = Array.from({ length: 4 }, () => c.newId());
-  for (const id of ids) assert.equal(c.acquireRequestBudget(id, rich.id, rich.key, 0.1), true);
-  assert.equal(c.acquireRequestBudget(c.newId(), rich.id, rich.key, 0.1), false, "default concurrency four");
+  const ids = Array.from({ length: 40 }, () => c.newId());
+  for (const id of ids) assert.equal(c.acquireRequestBudget(id, rich.id, rich.key, 20), true, "40 × 20 USD reserved: no 4-request / 10-USD default any more");
+  assert.equal(c.acquireRequestBudget(c.newId(), rich.id, rich.key, 250), false, "the balance still bounds what concurrent requests may reserve");
   for (const id of ids) c.releaseRequestBudget(id);
+  // a per-user override still applies
+  c.run("UPDATE users SET max_inflight = 2 WHERE id = ?", rich.id);
+  const two = [c.newId(), c.newId()];
+  for (const id of two) assert.equal(c.acquireRequestBudget(id, rich.id, rich.key, 0.1), true);
+  assert.equal(c.acquireRequestBudget(c.newId(), rich.id, rich.key, 0.1), false, "users.max_inflight overrides the default");
+  for (const id of two) c.releaseRequestBudget(id);
+  c.run("UPDATE users SET max_inflight = NULL WHERE id = ?", rich.id);
+  // the env value brings a spending cap back
+  process.env.USER_MAX_INFLIGHT_USD = "10";
+  try {
+    const x = c.newId();
+    assert.equal(c.acquireRequestBudget(x, rich.id, rich.key, 8), true);
+    assert.equal(c.acquireRequestBudget(c.newId(), rich.id, rich.key, 8), false, "USER_MAX_INFLIGHT_USD caps the reserved spending");
+    c.releaseRequestBudget(x);
+  } finally { delete process.env.USER_MAX_INFLIGHT_USD; }
 });
 
 test("journal storage failure closes admission and never reports a successful unrecorded charge", () => {

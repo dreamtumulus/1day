@@ -23,8 +23,11 @@ export function acquireRequestBudget(requestId: string, userId: string, apiKeyId
     const user = one<{ n: number; reserved: number }>("SELECT COUNT(*) AS n, COALESCE(SUM(reserved_usd),0) AS reserved FROM gateway_request_budgets WHERE user_id = ?", userId)!;
     const key = one<{ reserved: number }>("SELECT COALESCE(SUM(reserved_usd),0) AS reserved FROM gateway_request_budgets WHERE api_key_id = ?", apiKeyId)!;
     // Per-user overrides (migration 29, admin console → user → 并发上限); the env values stay the defaults.
-    const maxInflight = funds.max_inflight && funds.max_inflight > 0 ? funds.max_inflight : limit("USER_MAX_INFLIGHT", 4);
-    const cap = Math.min(funds.available, funds.max_inflight_usd && funds.max_inflight_usd > 0 ? funds.max_inflight_usd : limit("USER_MAX_INFLIGHT_USD", 10));
+    // Defaults since 2026-11-10 (operator decision, X-52): 1000 concurrent requests and no separate in-flight spending
+    // cap. The reservation is still bounded by what the user can pay (`available`) and by the key's remaining quota,
+    // so concurrent requests cannot overdraw a balance; USER_MAX_INFLIGHT_USD (a positive number) brings a cap back.
+    const maxInflight = funds.max_inflight && funds.max_inflight > 0 ? funds.max_inflight : limit("USER_MAX_INFLIGHT", 1000);
+    const cap = Math.min(funds.available, funds.max_inflight_usd && funds.max_inflight_usd > 0 ? funds.max_inflight_usd : limit("USER_MAX_INFLIGHT_USD", Infinity));
     // One postpaid request may overrun its final balance; it reserves the whole
     // remaining budget so that concurrent requests cannot multiply that exposure.
     const reserve = q8(Math.min(Math.max(0.000001, estimatedUsd), cap, funds.remaining ?? Infinity));

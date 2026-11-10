@@ -140,8 +140,8 @@ override 层（`withKeyPolicyOverride`），不动 auto。控制台 Key 页显�
 - **可见性**：响应头 `x-1day-probe: platform`、`x-1day-model: <model>`、`x-1day-model-status: ok|unavailable`；用量日志写一行 `mode=probe`、费用为 0 的记录
   （503 时 `error_code=no_available_account`），错误日志里是 "probe answered by the platform (identical tiny request ×n within 10 min): <model>: ok|unavailable"。
 
-**`users.max_inflight` / `users.max_inflight_usd`**（控制台 → 用户 → 余额页「并发上限」）：覆盖 `USER_MAX_INFLIGHT`（默认 4）与
-`USER_MAX_INFLIGHT_USD`（默认 10）；空 / 0 = 用默认。超出返回 429 `user_inflight_limit`（`packages/core/src/request-budget.ts`）。
+**`users.max_inflight` / `users.max_inflight_usd`**（控制台 → 用户 → 余额页「并发上限」）：覆盖 `USER_MAX_INFLIGHT`（默认 1000，2026-11-10 前为 4）与
+`USER_MAX_INFLIGHT_USD`（默认不设上限，此前为 10；预约仍受余额约束）；空 / 0 = 用默认。超出返回 429 `user_inflight_limit`（`packages/core/src/request-budget.ts`）。
 
 ## 3. 选账户
 
