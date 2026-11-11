@@ -609,6 +609,8 @@ export interface AccountUsage {
   d7: UsageBucket;
   d30: UsageBucket;
   all: UsageBucket;
+  /** Served inside the latest known five-hour quota window (the 5 h ending at window5hResetAt); null = no window reported. */
+  w5?: (UsageBucket & { startAt: string; endAt: string }) | null;
   rpm: number;
   errors24h: number;
 }

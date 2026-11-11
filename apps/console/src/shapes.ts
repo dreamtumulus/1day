@@ -127,13 +127,20 @@ export interface AccountUsageStats {
   d7: { requests: number; costUsd: number; tokens: number };
   d30: { requests: number; costUsd: number; tokens: number };
   all: { requests: number; costUsd: number; tokens: number };
+  /**
+   * What the account served inside its latest known five-hour quota window, i.e. the five hours ending at
+   * `accounts.window_5h_reset_at` (the current window while that reset is ahead, the last one once it has passed).
+   * `h5` is a rolling "last five hours" and falls towards 0 while an exhausted account rests; this bucket is the yield
+   * of one quota window. null when the upstream never reported a five-hour reset for the account.
+   */
+  w5: { requests: number; costUsd: number; tokens: number; startAt: string; endAt: string } | null;
   /** Successful requests in the last 60 s (what the gateway's RPM gate counts). */
   rpm: number;
   errors24h: number;
 }
 
 const EMPTY_BUCKET = { requests: 0, costUsd: 0, tokens: 0 };
-export const EMPTY_USAGE: AccountUsageStats = { h5: EMPTY_BUCKET, d7: EMPTY_BUCKET, d30: EMPTY_BUCKET, all: EMPTY_BUCKET, rpm: 0, errors24h: 0 };
+export const EMPTY_USAGE: AccountUsageStats = { h5: EMPTY_BUCKET, d7: EMPTY_BUCKET, d30: EMPTY_BUCKET, all: EMPTY_BUCKET, w5: null, rpm: 0, errors24h: 0 };
 
 /** One grouped scan of usage_logs for the given accounts (a page of the admin list). */
 export function accountUsageStats(ids: string[]): Map<string, AccountUsageStats> {
@@ -163,7 +170,25 @@ export function accountUsageStats(ids: string[]): Map<string, AccountUsageStats>
     ...ids,
   );
   const b = (r: Record<string, number>, k: string) => ({ requests: r[`r_${k}`] ?? 0, costUsd: r[`c_${k}`] ?? 0, tokens: r[`t_${k}`] ?? 0 });
-  for (const r of rows) m.set(r.account_id, { h5: b(r, "h5"), d7: b(r, "d7"), d30: b(r, "d30"), all: b(r, "all"), rpm: r.rpm ?? 0, errors24h: r.errors24h ?? 0 });
+  // The five-hour quota window of each account: [reset − 5 h, reset). Bounds are computed in SQL from the stored reset
+  // so both sides compare as the same `YYYY-MM-DDTHH:MM:SSZ` text as usage_logs.created_at.
+  const windows = all<{ account_id: string; start_at: string; end_at: string; r_w5: number; c_w5: number; t_w5: number }>(
+    `SELECT a.id AS account_id, w.start_at, w.end_at,
+            COALESCE(SUM(CASE WHEN u.status_code < 300 THEN 1 ELSE 0 END),0) AS r_w5,
+            COALESCE(SUM(u.actual_cost),0) AS c_w5, COALESCE(SUM(${tokens}),0) AS t_w5
+     FROM accounts a
+     JOIN (SELECT id, strftime('%Y-%m-%dT%H:%M:%SZ', window_5h_reset_at, '-5 hours') AS start_at,
+                  strftime('%Y-%m-%dT%H:%M:%SZ', window_5h_reset_at) AS end_at
+           FROM accounts WHERE window_5h_reset_at IS NOT NULL) w ON w.id = a.id
+     LEFT JOIN usage_logs u ON u.account_id = a.id AND u.created_at >= w.start_at AND u.created_at < w.end_at
+     WHERE a.id IN (${ids.map(() => "?").join(",")}) AND w.start_at IS NOT NULL
+     GROUP BY a.id`,
+    ...ids,
+  );
+  const w5 = new Map(windows.map((r) => [r.account_id, { requests: r.r_w5, costUsd: r.c_w5, tokens: r.t_w5, startAt: r.start_at, endAt: r.end_at }]));
+  for (const r of rows) m.set(r.account_id, { h5: b(r, "h5"), d7: b(r, "d7"), d30: b(r, "d30"), all: b(r, "all"), w5: w5.get(r.account_id) ?? null, rpm: r.rpm ?? 0, errors24h: r.errors24h ?? 0 });
+  // an account with a known window but no usage row at all still reports its (empty) window
+  for (const [id, w] of w5) if (!m.has(id)) m.set(id, { ...EMPTY_USAGE, w5: w });
   return m;
 }
 

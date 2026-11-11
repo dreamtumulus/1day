@@ -707,8 +707,8 @@ export function AdminAccounts() {
   function usageCell(a: AdminAccount) {
     const u = a.usage;
     const v = (n: number) => (n > 0 ? fmtUsd(n) : "—");
-    const Row = ({ label, cost, extra, extraTone }: { label: string; cost: number; extra?: ReactNode; extraTone?: StatTone }) => (
-      <div className="flex items-baseline gap-2 text-[11px] leading-[16px]">
+    const Row = ({ label, cost, extra, extraTone, title }: { label: string; cost: number; extra?: ReactNode; extraTone?: StatTone; title?: string }) => (
+      <div className="flex items-baseline gap-2 text-[11px] leading-[16px]" title={title}>
         <span className="w-[26px] shrink-0 text-on-surface-faint">{label}</span>
         <span className={`w-[52px] shrink-0 text-right font-mono tabular-nums ${statToneClass[cost > 0 ? "success" : "muted"]}`}>{v(cost)}</span>
         {extra != null && <span className={`font-mono tabular-nums ${statToneClass[extraTone ?? "muted"]}`}>{extra}</span>}
@@ -716,7 +716,16 @@ export function AdminAccounts() {
     );
     return (
       <div className="min-w-[138px]">
-        <Row label="5H" cost={u.h5.costUsd} />
+        <Row label="5H" cost={u.h5.costUsd} title={t("admin.accounts.cost5hHint")} />
+        {u.w5 && (
+          <Row
+            label={t("admin.accounts.costWindow")}
+            cost={u.w5.costUsd}
+            extra={`${fmtNum(u.w5.requests)} req`}
+            extraTone={u.w5.requests > 0 ? "plain" : "muted"}
+            title={t("admin.accounts.costWindowHint", { start: new Date(u.w5.startAt).toLocaleString(), end: new Date(u.w5.endAt).toLocaleString() })}
+          />
+        )}
         <Row label="7D" cost={u.d7.costUsd} />
         <Row label="30D" cost={u.d30.costUsd} extra={`${fmtNum(u.d30.requests)} req`} extraTone={u.d30.requests > 0 ? "plain" : "muted"} />
         <Row label={t("admin.accounts.costAll")} cost={u.all.costUsd} extra={`${fmtTokens(u.all.tokens)} tok`} extraTone={u.all.tokens > 0 ? "info" : "muted"} />
