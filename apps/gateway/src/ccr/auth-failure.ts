@@ -9,8 +9,13 @@
 // repeated hits inside the window escalate to `status = 'error'` like a direct
 // 401/403 does, instead of a 30 s cooldown that re-picks the account forever.
 
+// "Login expired · Please run /login" is what Claude Code prints once its access token is past expiry and its
+// refresh token no longer works (2026-11-11: 257 failed requests on 17 accounts in three days were read as plain
+// transient failures, 30 s cooldown, the account re-picked for hours); "Login reached its time limit" is its sibling
+// in the same Claude Code message table (a grant past its maximum lifetime). "Not logged in · Please run /login" is NOT
+// matched: that one means the process never read a credential (a launch / config fault, 2026-10-19), not the account.
 const AUTH_FAILURE_RE =
-  /Failed to authenticate|OAuth token revoked|OAuth session expired|could not be refreshed|invalid_grant|Please log in again|authentication_error/i;
+  /Failed to authenticate|OAuth token revoked|OAuth session expired|could not be refreshed|invalid_grant|Please log in again|authentication_error|Login expired|Login reached its time limit|reached its time limit and cannot be renewed/i;
 
 /** Anthropic's time-boxed per-model org suspension rides inside "Failed to authenticate. API Error: 403 …" — not an auth failure. */
 const MODEL_SUSPENDED_RE = /is suspended for this organization/i;

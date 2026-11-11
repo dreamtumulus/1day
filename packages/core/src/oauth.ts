@@ -175,6 +175,49 @@ function refreshTimeoutMs(): number {
   return Number.isFinite(n) && n > 0 ? n : 20_000;
 }
 
+/**
+ * The token endpoint refused the stored refresh token (400 / 401: invalid_grant and its relatives). Nothing the
+ * platform can do renews such a grant, yet the refresh used to be retried on every keep-alive tick and before every
+ * request while the account stayed `active` and kept failing customers (2026-11-11: seven accounts, 5-minute retries
+ * for an hour, "Login expired" on every turn). After REFRESH_REJECT_THRESHOLD refusals of the SAME refresh token, at
+ * least REFRESH_REJECT_SPACING_MS apart and inside REFRESH_REJECT_WINDOW_MS, the account leaves scheduling with
+ * `status = 'error'` until it is authorised again. The spacing keeps a burst of requests on one expired account from
+ * counting one upstream answer three times.
+ */
+export const REFRESH_REJECT_THRESHOLD = 3;
+export const REFRESH_REJECT_SPACING_MS = 60_000;
+export const REFRESH_REJECT_WINDOW_MS = 60 * 60_000;
+const refreshRejections = new Map<string, { token: string; hits: number[] }>();
+
+function noteRefreshRejected(accountId: string, cred: Credential, status: number, detail: string, now = Date.now()): void {
+  const token = cred.refreshToken ?? "";
+  // Someone else rotated the credential meanwhile: this refusal was for a token nobody holds any more.
+  if (storedCredential(accountId)?.refreshToken !== token) { refreshRejections.delete(accountId); return; }
+  const prev = refreshRejections.get(accountId);
+  const hits = prev && prev.token === token ? prev.hits.filter((t) => now - t < REFRESH_REJECT_WINDOW_MS) : [];
+  if (hits.length && now - hits[hits.length - 1]! < REFRESH_REJECT_SPACING_MS) { refreshRejections.set(accountId, { token, hits }); return; }
+  hits.push(now);
+  refreshRejections.set(accountId, { token, hits });
+  if (hits.length < REFRESH_REJECT_THRESHOLD) return;
+  refreshRejections.delete(accountId);
+  try {
+    const message = `token refresh rejected ×${hits.length}: HTTP ${status}${detail ? ` ${detail}` : ""} — re-authorize this account`.slice(0, 500);
+    const changed = run("UPDATE accounts SET status = 'error', error_message = ?, updated_at = ? WHERE id = ? AND status = 'active'", message, nowIso(), accountId);
+    if (changed && (changed as { changes?: number }).changes) console.error(`[oauth] account ${accountId}: refresh token rejected ×${hits.length} (HTTP ${status}) → status error`);
+  } catch (err) {
+    console.warn(`[oauth] account ${accountId}: could not record the rejected refresh token: ${(err as Error).message}`);
+  }
+}
+
+/** Tests only. */
+export function resetRefreshRejectionsForTests(): void {
+  refreshRejections.clear();
+}
+/** Tests only: one refusal at a chosen time. */
+export function noteRefreshRejectedForTests(accountId: string, cred: Credential, status: number, detail: string, now: number): void {
+  noteRefreshRejected(accountId, cred, status, detail, now);
+}
+
 async function refreshOAuthCredentialLocked(
   account: Pick<AccountRow, "id" | "platform">,
   cred: Credential,
@@ -221,7 +264,10 @@ async function refreshOAuthCredentialLocked(
       return null;
     }
     if (!res.ok) {
-      console.warn(`[oauth] refresh for account ${account.id} failed: HTTP ${res.status}`);
+      // The token endpoint's error body names the reason ({"error":"invalid_grant", …}); it carries no secret.
+      const detail = (await res.text().catch(() => "")).replace(/\s+/g, " ").slice(0, 300);
+      console.warn(`[oauth] refresh for account ${account.id} failed: HTTP ${res.status}${detail ? ` ${detail}` : ""}`);
+      if (res.status === 400 || res.status === 401) noteRefreshRejected(account.id, cred, res.status, detail);
       return null;
     }
     const json = (await res.json()) as Record<string, unknown>;
@@ -236,6 +282,7 @@ async function refreshOAuthCredentialLocked(
     // whatever happened to the caller that asked for it.
     writeCredential(account.id, next);
     try { run("UPDATE accounts SET last_refresh_at = ?, refresh_cooldown_until = NULL WHERE id = ?", nowIso(), account.id); } catch { /* pre-migration dev DB */ }
+    refreshRejections.delete(account.id);
     console.log(`[oauth] refreshed access token for account ${account.id}`);
     return next;
   } catch (err) {

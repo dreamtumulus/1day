@@ -1,6 +1,6 @@
 # X-65：canonical/TUI third-party 400 按指纹回退 legacy `-p`（2026-11-11）
 
-> 状态：代码与自动化测试完成，待灰度发布。发布结果、生产验证与回滚快照在发布时补记。
+> 状态：灰度已上线，Kevin 的真实 third-party 拒绝已被回退接住；24h 观察与公开池 online 基线复验仍未完成。
 
 ## 1. 背景与证据
 
@@ -77,19 +77,49 @@ TUI 自己生成原生 Claude Code 的 UA / beta / metadata / 主 system，但�
 - magpie 参考项目针对性 Go 测试通过；
 - 完整 `pnpm gate`：**964 passed / 0 failed**（catalog 8、core 198、gateway 427、console 132、E2E 199；120s，`GATE: PASS`）。
 
-生产发布验证结果在发布时补记。
+## 7. 生产发布记录（2026-11-11 03:39–03:58Z）
 
-## 7. 发布与回滚计划
+- commit：`705a2b7`，已推送服务器 `main`；dist 快照
+  `/opt/1dayapi/backups/pre-third-party-20261111T033937Z-dist.tgz`。
+- `pnpm install --frozen-lockfile && pnpm build` 通过；gateway 蓝绿切到 **8402**，切换前真实请求 200。
+- 03:40Z 首轮 `release-verify` 通过：canary / 常规请求均 200、online 100、三节点心跳、监控矩阵、
+  三节点设备身份（38 / 47 / 27）全部正常。
+- 初始开关保持 `0`，随后 `canonical_third_party_fallback=canary`，并启动 2h phase guard 与持续 canary watchdog。
+- 灰度探针连续 8 次 200，上游当时没有自然拒绝，因此未把它们冒充回退证据。另做 5 分钟人工指纹验证，
+  确认生产 direct-memory 车道返回 200 后已删除该测试指纹。
 
-- 初始保持 `canonical_third_party_fallback=0` 发布代码，灰度组才设 `canary`。
-- 灰度真实流量至少观察 24h：目标 prompt 的 third-party 400 应消失；非目标 prompt 不应出现车道变化；
-  检查 `ccr_tui_third_party_*`、窗口消耗、499/502、组织级错误。
-- 立即功能回退：设置改回 `0`。已有指纹不再被读取，无需删表。
-- 代码回滚：恢复发布前 dist 快照 / 上一个提交后执行 `ops/bin/gateway-switch --rollback`；节点包无需回滚。
+### Kevin 真实流量
 
-发布时补记：快照名、灰度 Key、生产验证、release-verify 输出、commit。
+- 03:48:46Z，运营方要求将 Kevin `test`（`3a927676…`）迁入灰度组。
+- 03:50:54Z，首个真实 third-party 拒绝被记录；日志确认随后多个请求直接 `starting on legacy -p`。
+  之后自然回退指纹增至 3 个；Kevin 迁入后的 `third_party_extra_usage` 为 **0**。
+- 初期灰度组只有 3 个账号，出现 `team_capacity_exhausted`。运营方随后指定扩容：
+  先补至 12 个，再把 `NGO team 01` 与 `1103 普通team`、`1103普通team 02`、`普通03 Team`、`普通04 team`
+  的 active/approved 账号追加进来，最终 **47 个账号**。原分组、节点、代理与设备绑定不变。
+- 扩容使普通节点碰到旧设置 `canonical_no_legacy_fallback=canary`：能力缺口被直接回 400。
+  已恢复该旧开关为 `0`；新 third-party 开关仍为 `canary`。
+- 03:56:30Z 后采样窗口 **16/16 请求 200**，无 third-party 400，也无容量错误。
 
-## 8. 真实性变化（铁律 3）
+### 尚未通过的复验
+
+03:58Z 再次 `release-verify`：真实请求、监控矩阵、节点心跳和设备身份均通过，但公开池
+`online=89 < baseline=100`，所以脚本结论为 **RELEASE NOT VERIFIED**。没有重置基线。
+同期 03:46–03:52 新增 7 个 OAuth refresh 失效账号，另有窗口暂停及 1 个代理冻结；
+这些是独立供给变化，需单独处置并恢复公开池后复验，不能据此声称发布全绿。
+
+## 8. 灰度配置与回滚
+
+- 立即功能回退：`canonical_third_party_fallback=0`；已有指纹不再被读取，无需删表。
+- Kevin / canary-test 的原组记录在 `/root/monitor/canary-moved-keys.json`，用 `canary-move-keys revert <key_id>` 恢复。
+- 追加账号的精确撤销清单：`/root/monitor/canary-third-party-added-accounts.json`、
+  `/root/monitor/canary-third-party-team-expansion.json`。
+- 旧 `canonical_no_legacy_fallback` 的恢复记录：`/root/monitor/canary-third-party-restore-canonical_no_legacy_fallback.json`。
+- 代码回滚：先恢复 `pre-third-party-20261111T033937Z-dist.tgz` / 上一个提交，再执行
+  `ops/bin/gateway-switch --rollback`；节点包无需回滚。发布时的 600 秒旧实例保留期已结束，不能再按“旧进程仍在”处理。
+- 24h 观察继续：目标 prompt 的 third-party 400、非目标车道、窗口消耗、499/502 与组织级错误；
+  公开池 online 基线恢复后必须再跑 `release-verify`。
+
+## 9. 真实性变化（铁律 3）
 
 - 未命中 third-party 拒绝的请求：**=**，上游看到的请求与之前一致。
 - 命中拒绝的 prompt：**↓**，从交互式 `cli` 回退到 `sdk-cli`，且该通道额度成本更高。

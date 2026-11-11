@@ -195,3 +195,48 @@ test("429 from the token endpoint parks the account: back-off persisted, next re
   assert.equal(parseRetryAfterMs(null), null);
   assert.equal(parseRetryAfterMs("garbage"), null);
 });
+
+test("refresh token refused by the token endpoint: three spaced refusals of the same token put the account in error (2026-11-11)", async () => {
+  const { noteRefreshRejectedForTests, resetRefreshRejectionsForTests, REFRESH_REJECT_SPACING_MS, REFRESH_REJECT_THRESHOLD } = core;
+  resetRefreshRejectionsForTests();
+  const cred = { accessToken: "at-0", refreshToken: "rt-dead", expiresAt: new Date(Date.now() - 60_000).toISOString() };
+  const a = account(cred);
+  const status = () => one("SELECT status, error_message FROM accounts WHERE id = ?", a.id);
+  const refused = async () => new Response(JSON.stringify({ error: "invalid_grant", error_description: "Refresh token not found or invalid" }), { status: 400 });
+  // A burst (every request on an expired account asks for a refresh): one upstream answer, counted once.
+  for (let i = 0; i < 5; i++) assert.equal(await refreshOAuthCredential(a, cred, refused), null);
+  assert.equal(status().status, "active", "a burst is one hit");
+  // Spaced refusals reach the threshold.
+  const t0 = Date.now();
+  for (let i = 1; i < REFRESH_REJECT_THRESHOLD; i++) noteRefreshRejectedForTests(a.id, cred, 400, "invalid_grant", t0 + i * (REFRESH_REJECT_SPACING_MS + 1));
+  const s = status();
+  assert.equal(s.status, "error");
+  assert.match(s.error_message, /token refresh rejected ×3: HTTP 400/);
+  assert.match(s.error_message, /re-authorize/);
+});
+
+test("refused refresh: a rotated credential or a success in between never escalates; 5xx is not a refusal", async () => {
+  const { noteRefreshRejectedForTests, resetRefreshRejectionsForTests, REFRESH_REJECT_SPACING_MS } = core;
+  resetRefreshRejectionsForTests();
+  const step = REFRESH_REJECT_SPACING_MS + 1;
+  const cred = { accessToken: "at-0", refreshToken: "rt-0", expiresAt: new Date(Date.now() - 60_000).toISOString() };
+  const status = (id) => one("SELECT status FROM accounts WHERE id = ?", id).status;
+  // Another process rotated the stored credential: refusals of the old token are nobody's verdict.
+  const a = account(cred);
+  run("UPDATE accounts SET credential_enc = ? WHERE id = ?", encryptJson({ ...cred, accessToken: "at-1", refreshToken: "rt-1" }), a.id);
+  for (let i = 0; i < 4; i++) noteRefreshRejectedForTests(a.id, cred, 400, "invalid_grant", Date.now() + i * step);
+  assert.equal(status(a.id), "active");
+  // Two refusals, then the refresh works: the count starts again.
+  const b = account(cred);
+  noteRefreshRejectedForTests(b.id, cred, 400, "invalid_grant", Date.now() - 2 * step);
+  noteRefreshRejectedForTests(b.id, cred, 400, "invalid_grant", Date.now() - step);
+  const next = await refreshOAuthCredential(b, cred, async () => tokenResponse("b1"));
+  assert.equal(next?.refreshToken, "rt-b1");
+  noteRefreshRejectedForTests(b.id, next, 400, "invalid_grant", Date.now() + step);
+  noteRefreshRejectedForTests(b.id, next, 400, "invalid_grant", Date.now() + 2 * step);
+  assert.equal(status(b.id), "active", "two hits after a success are below the threshold");
+  // A server error says nothing about the grant.
+  const c = account(cred);
+  for (let i = 0; i < 4; i++) assert.equal(await refreshOAuthCredential(c, cred, async () => new Response("upstream", { status: 503 })), null);
+  assert.equal(status(c.id), "active");
+});

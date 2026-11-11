@@ -37,3 +37,27 @@ test("escalates on the third hit inside the window, resets on success or after t
   assert.deepEqual(t.record("a"), { count: 1, escalate: false });
   assert.deepEqual(t.record("b"), { count: 1, escalate: false }, "accounts are tracked separately");
 });
+
+test("Claude Code's expired-login sentences are auth failures; a process that never logged in is not (2026-11-11)", () => {
+  assert.ok(isCcAuthFailure("stream: ccr_worker: Login expired · Please run /login (after partial output)"));
+  assert.ok(isCcAuthFailure("ccr_worker: Login expired · Please run /login"));
+  assert.ok(isCcAuthFailure("ccr_worker: Login reached its time limit · Please run /login"));
+  assert.ok(isCcAuthFailure("Failed to authenticate: this login reached its time limit and cannot be renewed. Run `claude auth login` to sign in again"));
+  // launch / config fault (2026-10-19): the process read no credential at all — not the account's verdict
+  assert.equal(isCcAuthFailure("ccr_worker: Not logged in · Please run /login"), false);
+});
+
+test("three expired-login hits inside the window escalate, a served request in between resets", () => {
+  let now = 0;
+  const t = new AuthFailureTracker(3, 30 * 60_000, () => now);
+  assert.equal(t.record("a").escalate, false);
+  now += 5 * 60_000;
+  assert.equal(t.record("a").escalate, false);
+  t.clear("a");
+  now += 5 * 60_000;
+  assert.equal(t.record("a").escalate, false);
+  now += 5 * 60_000;
+  assert.equal(t.record("a").escalate, false);
+  now += 5 * 60_000;
+  assert.equal(t.record("a").escalate, true);
+});

@@ -86,7 +86,7 @@ Claude Code 2.1.300 已具备做持久会话所需的全部开关（worker-01 �
 
 | 风险 | 对策 |
 |---|---|
-| 常驻进程期间 CC 自行刷新 OAuth token，与 console 保活刷新竞争（refresh token 轮换） | 会话 max age 60 min ≪ token 8 h；console 已提前保活刷新，CC 极少触发；若出现 `auth` 失败，console 下次 open 会下发新凭据（fresh 进程重写 .credentials.json） |
+| 常驻进程期间 CC 自行刷新 OAuth token，与 console 保活刷新竞争（refresh token 轮换） | **2026-11-11（X-66）起 refresh token 不再下发到节点（`worker_withhold_refresh_token=1`），CC 无从自行刷新，竞争消失；以下为此前的对策：** 会话 max age 60 min ≪ token 8 h；console 已提前保活刷新，CC 极少触发；若出现 `auth` 失败，console 下次 open 会下发新凭据（fresh 进程重写 .credentials.json） |
 | 增量误判（客户改了历史却恰好前缀相同） | 比对的是全量分块哈希 + 上一轮回答原文，改历史 = 不同哈希 → fresh；只可能"该复用没复用"，不会"错复用" |
 | 串味 | reuseKey 含 accountId + stickyKey；无 stickyKey（匿名单轮）永不复用（与云端池同） |
 | 内存失控 | 高水位看门狗 + LRU；busy 不杀但受 600 s 超时 |

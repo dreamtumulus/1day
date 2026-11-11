@@ -543,9 +543,15 @@ export async function runCcrWorker(input: CcrWorkerInput): Promise<Response | nu
     // Canonical: no history — a live-process miss must fail (session_lost), never restart from a folded transcript (I3/I9).
     ...(plan.mode === "continue" && !canonical ? { history: fullBlocks } : {}),
     stream,
+    // The refresh token stays on the platform (worker_withhold_refresh_token, 2026-11-11): Claude Code on the node
+    // refreshes by itself inside the last minutes of a token's life — the same minutes in which the console's
+    // keep-alive, deferred while the account had live sessions, finally refreshes. Whoever came second replayed a
+    // rotated refresh token; the token endpoint answered 400 and the account needed a new authorization (7 accounts
+    // of one organisation in one night). The node rewrites .credentials.json from this message on every turn, so a
+    // live process still receives each access token the platform obtains.
     cred: {
       accessToken: cred.accessToken,
-      refreshToken: cred.refreshToken,
+      ...(featureFor("worker_withhold_refresh_token", { groupId: input.groupId, accountId: account.id }) ? {} : { refreshToken: cred.refreshToken }),
       expiresAt: cred.expiresAt,
       subscriptionType: account.subscription_type ?? undefined,
     },

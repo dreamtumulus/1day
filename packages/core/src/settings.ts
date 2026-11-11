@@ -119,6 +119,11 @@ export const SETTING_DEFAULTS = {
   // canonical/TUI 被上游以 third-party extra usage 拒绝时，未产出回答的当前轮以 legacy -p 重试一次；
   // 同一 system 前缀指纹随后 12h 直接走 legacy -p，其他 prompt 不变。0 = 老行为（直接回 400）；canary；1。
   canonical_third_party_fallback: "0",
+  // worker 通道不把 refresh token 下发到节点（2026-11-11）：只有平台刷新令牌，节点上的 Claude Code 拿不到 refresh token，
+  // 就不会在令牌临期时自己刷新、与 console 保活互相把对方手里的 refresh token 轮换作废（令牌端点 400 → 账号须重新授权）。
+  // 节点每轮都按下发的凭据重写 .credentials.json，活进程照样拿到平台刷新后的 access token。
+  // 1（默认）= 不下发；canary；0 = 老行为（下发）。上游不可见（令牌端点本来就经节点出口调用）。
+  worker_withhold_refresh_token: "1",
   // raw-v1（spec WP5.4）：原样透传账号的请求到节点出口也不补 Claude Code 指纹头（preserveHeaders）。默认 0 = 节点照旧补齐。上游可见。
   raw_preserve_headers: "0",
   telemetry_evidence_required: "0",
