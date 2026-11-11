@@ -17,9 +17,21 @@ function unansweredThirdPartyRefusal(text: string): boolean {
   return classifyCcRequestError(text)?.code === "third_party_extra_usage" && !/\(after partial output\)/i.test(text);
 }
 
+function frames(text: string): string[] {
+  return text.split(/\r?\n\r?\n/).map((s) => s.trim()).filter(Boolean);
+}
+
+function keepaliveFrame(frame: string): boolean {
+  return frame.startsWith(":") || frame.startsWith("event: ping\n");
+}
+
 function errorOnlySse(text: string): boolean {
-  const frames = text.split(/\r?\n\r?\n/).map((s) => s.trim()).filter(Boolean);
-  return frames.length > 0 && frames.every((s) => s.startsWith("event: error\n")) && unansweredThirdPartyRefusal(text);
+  const events = frames(text).filter((s) => !keepaliveFrame(s));
+  return events.length > 0 && events.every((s) => s.startsWith("event: error\n")) && unansweredThirdPartyRefusal(text);
+}
+
+function keepaliveOnlySse(text: string): boolean {
+  return frames(text).every(keepaliveFrame);
 }
 
 function withBody(res: Response, body: string | ReadableStream<Uint8Array> | null): Response {
@@ -41,15 +53,22 @@ export async function inspectThirdPartyResponse(res: Response, stream: boolean):
   }
   if (!res.body) return { response: res, refused: false };
   const reader = res.body.getReader();
-  const first = await reader.read();
-  if (first.done) return { response: withBody(res, null), refused: false };
-  if (errorOnlySse(new TextDecoder().decode(first.value))) {
-    await reader.cancel().catch(() => {});
-    return { response: null, refused: true };
+  const chunks: Uint8Array[] = [];
+  const decoder = new TextDecoder();
+  for (;;) {
+    const next = await reader.read();
+    if (next.done) break;
+    chunks.push(next.value);
+    const text = decoder.decode(next.value, { stream: true });
+    if (errorOnlySse(text)) {
+      await reader.cancel().catch(() => {});
+      return { response: null, refused: true };
+    }
+    if (!keepaliveOnlySse(text)) break;
   }
   const body = new ReadableStream<Uint8Array>({
     start(controller) {
-      controller.enqueue(first.value);
+      for (const chunk of chunks) controller.enqueue(chunk);
     },
     async pull(controller) {
       try {

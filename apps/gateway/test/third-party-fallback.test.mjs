@@ -76,3 +76,20 @@ test("stream: a refusal marked after partial output is forwarded, not replayed",
   assert.equal(checked.refused, false);
   assert.equal(await checked.response.text(), event);
 });
+
+
+test("stream: ping and comment keepalives do not suppress a safe retry", async () => {
+  const ping = "event: ping\ndata: {}\n\n";
+  const comment = ": keepalive\n\n";
+  const checked = await inspectThirdPartyResponse(sse(ping, comment, errorEvent(REFUSALS[0])), true);
+  assert.equal(checked.refused, true);
+  assert.equal(checked.response, null);
+});
+
+test("stream: ping followed by message_start is an answer and is replayed losslessly without retry", async () => {
+  const ping = "event: ping\ndata: {}\n\n";
+  const start = "event: message_start\ndata: {\"type\":\"message_start\"}\n\n";
+  const checked = await inspectThirdPartyResponse(sse(ping, start, errorEvent(REFUSALS[0])), true);
+  assert.equal(checked.refused, false);
+  assert.equal(await checked.response.text(), ping + start + errorEvent(REFUSALS[0]));
+});

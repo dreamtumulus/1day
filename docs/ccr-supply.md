@@ -166,8 +166,8 @@ stream-json 消息族——`{type:"assistant", message:{id, content:[…], usage
 三态设置 `canonical_third_party_fallback`（默认 `0`）启用后，canonical/TUI 被上游以
 `Third-party apps now draw from [your] extra usage…` 拒绝时按 magpie #4503 处理：
 
-- 非流式响应尚无回答内容，或流式首 chunk 就是这一错误：当前轮在同一账号以 legacy `-p` 重试一次；
-  `(after partial output)` 或任何正常首包均已到达时绝不重放，只记录后续回退。
+- 非流式响应尚无回答内容，或流式在 `ping` / 注释保活之后的首个非保活帧就是这一错误：当前轮在同一账号以 legacy `-p` 重试一次；
+  `(after partial output)`、`message_start`、正文、thinking 或工具事件到达时绝不重放，只记录后续回退。
 - system 去客户端计费头后取前 2048 字符做 SHA-256，在 `affinity_bindings` 以 `kind='tui_third_party'` 保存 12h；
   期间同 Agent 直接从 legacy `-p` 开始，到期才重新尝试 canonical/TUI。两个网关实例共享，发布不丢。
 - legacy 再拒绝则按请求级 400 返回，不再次重试、不换号、不冷却。其他 prompt 的 system、reuseKey 与 canonical 车道不变。

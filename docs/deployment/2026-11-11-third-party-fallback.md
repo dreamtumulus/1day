@@ -29,7 +29,8 @@ TUI 自己生成原生 Claude Code 的 UA / beta / metadata / 主 system，但�
 
 1. canonical/TUI 返回 third-party 400，且回答尚未产出时：
    - 非流式：读取 worker 的 502 JSON；不是 `(after partial output)` 才允许重试。
-   - 流式：只预读下游尚未看到的第一个 SSE chunk；首 chunk 必须只含该错误事件。
+   - 流式：预读下游尚未看到的 SSE chunk；`ping` / 注释保活可跳过，遇到的首个非保活帧必须只含该错误事件。
+     `message_start`、正文、thinking、工具事件均视为回答已开始，禁止重放。
    - 当前轮在同一账号以 `runCcrWorker({canonical:false})` 重试一次。legacy 再失败不循环、不冷却、不换号。
 2. 已经产出回答：当前请求绝不重放，避免重复文本或重复工具副作用；只为后续请求记录回退。
 3. 指纹：`callerSystemText` 去掉客户端计费头，trim 后前 2048 字符做 SHA-256。
@@ -71,11 +72,12 @@ TUI 自己生成原生 Claude Code 的 UA / beta / metadata / 主 system，但�
 已完成：
 
 - core 全套：198/198；
-- 新增回退单测：6/6；
+- 新增回退单测：8/8（含 ping / 注释保活后继续判错、ping 后 `message_start` 不重试）；
 - 新 E2E：11/11，覆盖默认关闭、非流式重试、12h 直接回退、非目标 prompt 不变、流式首包重试、
   非流式/流式 partial output 不重放及其下轮回退；
 - magpie 参考项目针对性 Go 测试通过；
-- 完整 `pnpm gate`：**964 passed / 0 failed**（catalog 8、core 198、gateway 427、console 132、E2E 199；120s，`GATE: PASS`）。
+- 首轮完整 `pnpm gate`：**964 passed / 0 failed**（catalog 8、core 198、gateway 427、console 132、E2E 199；120s，`GATE: PASS`）；
+- 保活首包修正后工作树门禁：**970 passed / 0 failed**（包含并行 X-66 的测试，X-66 不属于本提交）。
 
 ## 7. 生产发布记录（2026-11-11 03:39–03:58Z）
 
@@ -100,6 +102,15 @@ TUI 自己生成原生 Claude Code 的 UA / beta / metadata / 主 system，但�
   已恢复该旧开关为 `0`；新 third-party 开关仍为 `canary`。
 - 03:56:30Z 后采样窗口 **16/16 请求 200**，无 third-party 400，也无容量错误。
 
+### 守护回滚与保活首包修正
+
+- 03:56:41Z，phase guard 因灰度账号 `c5035091` 变为 `error` 自动把新开关回滚为 `0`；
+  用户随后指出的 `7800051b-cd6e-4eb7-a95b-71b61be066c5`（04:00:20Z）确实因此未回退。
+  已把失效账号仅移出灰度组并恢复 `canary`，其余账号状态不变。
+- 复查另几条后续 400 时发现初版首包检查把纯 `ping` / 注释也当作回答已开始，过于保守。
+  已修正为只跳过保活帧；`message_start`、正文、thinking、工具事件仍绝不重试。
+  新增 2 个单测，E2E 故障注入也改为 ping 后拒绝，防止这条回归。
+
 ### 尚未通过的复验
 
 03:58Z 再次 `release-verify`：真实请求、监控矩阵、节点心跳和设备身份均通过，但公开池
@@ -112,7 +123,8 @@ TUI 自己生成原生 Claude Code 的 UA / beta / metadata / 主 system，但�
 - 立即功能回退：`canonical_third_party_fallback=0`；已有指纹不再被读取，无需删表。
 - Kevin / canary-test 的原组记录在 `/root/monitor/canary-moved-keys.json`，用 `canary-move-keys revert <key_id>` 恢复。
 - 追加账号的精确撤销清单：`/root/monitor/canary-third-party-added-accounts.json`、
-  `/root/monitor/canary-third-party-team-expansion.json`。
+  `/root/monitor/canary-third-party-team-expansion.json`；失效账号移出灰度组的记录：
+  `/root/monitor/canary-third-party-inactive-accounts-removed.json`。
 - 旧 `canonical_no_legacy_fallback` 的恢复记录：`/root/monitor/canary-third-party-restore-canonical_no_legacy_fallback.json`。
 - 代码回滚：先恢复 `pre-third-party-20261111T033937Z-dist.tgz` / 上一个提交，再执行
   `ops/bin/gateway-switch --rollback`；节点包无需回滚。发布时的 600 秒旧实例保留期已结束，不能再按“旧进程仍在”处理。

@@ -22,6 +22,7 @@ const thirdPartyPartial = `${system}\n${prompt}`.includes("fixture-third-party-p
 if ((thirdParty || thirdPartyPartial) && process.env.FAKE_CLAUDE_MODE === "canonical") {
   const message = "API Error: 400 Third-party apps now draw from extra usage, not plan limits. Ask your workspace admin to add more and keep going.";
   line({ type: "system", subtype: "init", model: "claude-sonnet-5-5" });
+  if (thirdParty) line({ type: "stream_event", event: { type: "ping" } });
   if (thirdPartyPartial) line({ type: "assistant", message: { id: "msg_partial", role: "assistant", content: [{ type: "text", text: "partial answer" }], usage } });
   line({ type: "result", subtype: "error_during_execution", is_error: true, result: message, modelUsage, duration_ms: 50, duration_api_ms: 40, num_turns: 1 });
   process.exit(1);
