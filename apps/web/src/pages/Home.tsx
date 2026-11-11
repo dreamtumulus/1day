@@ -229,7 +229,7 @@ function Trust() {
               ))}
             </div>
             <div className="mt-9 flex flex-col gap-3 sm:flex-row sm:flex-wrap">
-              <Link to="/tools/verify" className="wk-btn wk-btn-md wk-btn-primary w-full sm:w-auto">
+              <Link to="/tech" className="wk-btn wk-btn-md wk-btn-primary w-full sm:w-auto">
                 {t("home.trust.ctaVerifier")}
                 <ArrowRightIcon width={18} height={18} />
               </Link>

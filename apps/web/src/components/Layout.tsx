@@ -21,7 +21,7 @@ const navItems = [
   { to: "/models", key: "nav.models" },
   { to: "/pool", key: "nav.pool" },
   { to: "/docs", key: "nav.api" },
-  { to: "/tools/verify", key: "nav.verify" },
+  { to: "/tech", key: "nav.tech" },
   { to: "/pricing", key: "nav.pricing" },
   { to: "/provider", key: "nav.provider" },
 ] as const;
@@ -262,7 +262,7 @@ export function Layout() {
             <FooterCol
               title={t("footer.trust")}
               links={[
-                { to: "/tools/verify", label: t("footer.verify") },
+                { to: "/tech", label: t("footer.tech") },
                 { to: "/docs", label: t("footer.docs") },
               ]}
             />

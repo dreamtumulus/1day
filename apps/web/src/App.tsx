@@ -12,7 +12,7 @@ import { OnboardSite } from "./pages/OnboardSite";
 import { Pool } from "./pages/Pool";
 import { Pricing } from "./pages/Pricing";
 import { Provider } from "./pages/Provider";
-import { Verify } from "./pages/Verify";
+import { Tech } from "./pages/Tech";
 
 export default function App() {
   return (
@@ -27,7 +27,8 @@ export default function App() {
         <Route path="pricing" element={<Pricing />} />
         <Route path="docs" element={<Docs />} />
         <Route path="docs/endpoints" element={<DocsEndpoints />} />
-        <Route path="tools/verify" element={<Verify />} />
+        <Route path="tech" element={<Tech />} />
+        <Route path="tools/verify" element={<Navigate to="/tech" replace />} />
         <Route path="tools/claude-api-cost-calculator" element={<CostCalculator />} />
         <Route path="provider" element={<Provider />} />
         <Route path="login" element={<Login />} />

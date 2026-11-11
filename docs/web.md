@@ -28,7 +28,7 @@ src/
 | `/pricing` | Pricing | `GET /api/models/pricing` | 价格表 |
 | `/docs` | Docs | 静态 | 快速上手，示例 Key 为 `sk-1d-…`；网关地址按域名生成（`*.1dayapi.com` → `https://api.1dayapi.com`，否则 `http://localhost:8400`） |
 | `/docs/endpoints` | DocsEndpoints | 静态 | 网关端点 + v3 控制台主要端点 |
-| `/tools/verify` | Verify | 纯前端 | TEE 证明解析（见 §6） |
+| `/tech` | Tech | 纯前端 | 技术说明：请求执行方式、worker / TUI 节点、检测项差异（见 §6）；旧地址 `/tools/verify` 跳转到这里 |
 | `/tools/claude-api-cost-calculator` | CostCalculator | `GET /api/models/pricing` | 费用计算器 |
 | `/provider` | Provider | 静态 | 号商介绍，按钮进 `/console` |
 | `/login` | Login | `POST /auth/login` | 只粘贴登录密钥；提示"不开放注册，账户由管理员开通"；粘贴 `sk-1d-` 时提示应使用登录密钥；登录后跳 `?next=` 或 `/console` |
@@ -94,12 +94,14 @@ admin 节点页 `/admin/nodes`（协议 v2；2026-10-23 改为卡片）：顶部
 - 语言 `en` / `zh`：`?lang=` > `localStorage["oneday-lang"]` > `en`。公开站点用 `useT()`（`i18n/`），控制台用 `useCT()`（`console/i18n/`），共享同一个语言状态。
 - 主题：`data-theme` + `localStorage["oneday-theme"]`，默认 dark；颜色全部是 CSS 变量。
 
-## 6. Verify 页（TEE 证明）
+## 6. 技术说明页（`/tech`，2026-11-11 取代 Verify 页）
 
-- 网关只在请求带 `x-1dayapi-tee-proof-mode` 头时输出证明（页面文案已说明）。
-- 解析 SSE 中的 `event: tee.proof` 或粘贴的证明 JSON。
-- 已知问题（未修）：前端 HMAC 校验与网关算法不一致（网关签 `"<upstream_host>:<body_sha256>"`，前端只签 `body_sha256`；
-  十六进制密钥的处理也不同），因此永远校验失败；且这是对称签名，验证者必须持有服务端密钥。见 `issues-and-decisions.md`。
+- 导航「验证」改为「技术说明」；原 Verify 页（TEE 证明解析，HMAC 校验因算法不一致永远失败，X-4）及其文案已删除，`/tools/verify` 跳转到 `/tech`。
+- 内容：请求路径、worker 节点（一号一出口 / 一号一设备 / 组织隔离 / system 追加 / 工具由调用方执行 / 不换模型 / 额度窗口）、
+  TUI 交互模式（做法、原因、代价、回落）、常见检测项为何对不上（消息 ID、思考签名、Token 用量、身份、采样参数、首字延迟）、
+  为什么不为检测分数改动上游可见的东西（避免烧号）、更有意义的验证方式、不适合的场景。
+- 中英文长文案写在 `apps/web/src/pages/Tech.tsx` 里（按 `lang` 取），不进 i18n 字典；改运行方式时要同步改这一页。
+- 首页「信任」区块的按钮与页脚链接指向本页；该区块正文仍是 TEE / 加密证明的旧说法，与本页不一致，待运营方决定是否改写。
 
 ## 7. 构建
 
