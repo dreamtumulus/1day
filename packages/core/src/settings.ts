@@ -116,6 +116,9 @@ export const SETTING_DEFAULTS = {
   // 关掉 canonical→legacy 回落（legacy 退场第一步，2026-11-09）：0 = 照旧回落；canary = 灰度组 Key / 账号的 canonical 拒绝原样回客户端
   //（409/400 带原因），不再悄悄跑 legacy -p——TUI 稳定性测试要的就是"失败可见"；1 = 全站不回落。
   canonical_no_legacy_fallback: "0",
+  // canonical/TUI 被上游以 third-party extra usage 拒绝时，未产出回答的当前轮以 legacy -p 重试一次；
+  // 同一 system 前缀指纹随后 12h 直接走 legacy -p，其他 prompt 不变。0 = 老行为（直接回 400）；canary；1。
+  canonical_third_party_fallback: "0",
   // raw-v1（spec WP5.4）：原样透传账号的请求到节点出口也不补 Claude Code 指纹头（preserveHeaders）。默认 0 = 节点照旧补齐。上游可见。
   raw_preserve_headers: "0",
   telemetry_evidence_required: "0",

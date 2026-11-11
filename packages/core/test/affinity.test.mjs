@@ -15,12 +15,28 @@ const {
   one, loadStickyBinding, saveStickyBinding, loadDeviceBinding, saveDeviceBinding,
   sweepAffinityBindings, countAffinityBindings, clearAffinityBindings,
   loadTurnMemory, saveTurnMemory, deleteTurnMemory,
+  loadTuiThirdPartyRefusal, saveTuiThirdPartyRefusal,
 } = await import("../dist/index.js");
 
 test("migrations 16/17 created the tables", () => {
   assert.equal(one("SELECT 1 AS ok FROM sqlite_master WHERE type='table' AND name='affinity_bindings'")?.ok, 1);
   assert.equal(one("SELECT 1 AS ok FROM sqlite_master WHERE type='table' AND name='worker_turn_memory'")?.ok, 1);
   assert.ok(one("SELECT 1 AS ok FROM schema_migrations WHERE version = 17"));
+});
+
+test("TUI third-party refusal: shared row, upsert, expiry and sweep", () => {
+  clearAffinityBindings();
+  const now = Date.now();
+  assert.equal(loadTuiThirdPartyRefusal("abc", now), undefined);
+  saveTuiThirdPartyRefusal("abc", now + 1000);
+  assert.equal(loadTuiThirdPartyRefusal("abc", now), now + 1000);
+  saveTuiThirdPartyRefusal("abc", now + 2000);
+  assert.equal(loadTuiThirdPartyRefusal("abc", now + 1001), now + 2000);
+  assert.equal(one("SELECT kind FROM affinity_bindings WHERE key='tui-third-party:abc'").kind, "tui_third_party");
+  saveTuiThirdPartyRefusal("expired", now - 1);
+  assert.equal(loadTuiThirdPartyRefusal("expired", now), undefined);
+  assert.equal(sweepAffinityBindings(now), 1);
+  assert.equal(loadTuiThirdPartyRefusal("abc", now + 2001), undefined);
 });
 
 test("worker turn memory: opaque JSON round-trips, expires, deletes, is swept and counted", () => {

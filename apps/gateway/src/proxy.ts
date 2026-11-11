@@ -69,7 +69,10 @@ import {
   upstreamMessage,
   type UpstreamFailure,
   featureFor,
+  loadTuiThirdPartyRefusal,
+  saveTuiThirdPartyRefusal,
 } from "@1dayapi/core";
+import { inspectThirdPartyResponse, thirdPartyPromptKey, THIRD_PARTY_FALLBACK_TTL_MS } from "./ccr/third-party-fallback.js";
 import { authenticate, type CallerContext } from "./auth.js";
 import { PROBE_WINDOW_MS, detectProbe, poolHealth, probeReply, type ProbeVerdict } from "./probe.js";
 import { AUTH_FAILURE_COOLDOWN_MS, AuthFailureTracker, isCcAccountOnHold, isCcAuthFailure } from "./ccr/auth-failure.js";
@@ -411,6 +414,8 @@ interface Ctx {
   hideDiagHeaders: boolean;
   /** Observability trace for the usage row: last path tried, its node, what upstream answered. */
   trace: { mode: Mode | null; nodeId: string | null; upstreamStatus: number | null; upstreamMessage: string | null; failure: UpstreamFailure | null };
+  /** Current canonical attempt's third-party fallback state; reset before every account. */
+  tuiThirdParty?: { promptKey: string; enabled: boolean; canonicalAttempt: boolean };
   /**
    * sub2api ForceCacheBilling: the request had a live sticky binding but had to
    * run on a different account (cooldown / failover / proxy down), so its prompt
@@ -442,6 +447,16 @@ interface Ctx {
   retry: RetryState;
   /** The account whose answer was in hand when the conversation's ownership turned out to have changed (F). */
   scopeLossAccount?: AccountRow | null;
+}
+
+function rememberTuiThirdParty(ctx: Ctx, from: "retry" | "started"): boolean {
+  const state = ctx.tuiThirdParty;
+  if (!state?.enabled || !state.canonicalAttempt || !state.promptKey) return false;
+  saveTuiThirdPartyRefusal(state.promptKey, Date.now() + THIRD_PARTY_FALLBACK_TTL_MS);
+  state.canonicalAttempt = false;
+  bump("ccr_tui_third_party_remembered_total", { from });
+  console.warn(`[ccr-worker] ${ctx.requestId} third-party refusal on canonical/TUI; system ${state.promptKey.slice(0, 12)} uses legacy -p for 12h (${from})`);
+  return true;
 }
 
 const PASSTHROUGH_STATUSES = new Set([400, 404, 413, 422]);
@@ -1214,6 +1229,7 @@ async function proxyRequest(req: FastifyRequest, reply: FastifyReply, format: Cl
       ctx.trace.upstreamStatus = null;
       ctx.trace.upstreamMessage = null;
       ctx.trace.failure = null;
+      ctx.tuiThirdParty = undefined;
       // Raw passthrough relay on a same-protocol request (§4a): the client's model spelling travels as-is
       // (no canonical id, no account model mapping), upstream errors come back verbatim, no cooldown.
       const raw = account.raw_passthrough === 1 && mode.startsWith("passthrough-");
@@ -1301,12 +1317,31 @@ async function proxyRequest(req: FastifyRequest, reply: FastifyReply, format: Cl
                 userId: caller.userId,
                 facts: ctx.turnFacts,
               };
+              const thirdPartyPrompt = thirdPartyPromptKey(ccrReq);
+              const thirdPartyEnabled = canonicalWorker && !!thirdPartyPrompt && featureFor("canonical_third_party_fallback", { groupId: caller.groupId, accountId: account.id });
+              const thirdPartyRemembered = thirdPartyEnabled && loadTuiThirdPartyRefusal(thirdPartyPrompt) !== undefined;
+              const canonicalAttempt = canonicalWorker && !thirdPartyRemembered;
+              ctx.tuiThirdParty = { promptKey: thirdPartyPrompt, enabled: thirdPartyEnabled, canonicalAttempt };
+              if (thirdPartyRemembered) {
+                bump("ccr_tui_third_party_fallback_total", { from: "memory" });
+                console.log(`[proxy] ${ctx.requestId} system ${thirdPartyPrompt.slice(0, 12)} was refused on canonical/TUI within 12h: starting on legacy -p`);
+              }
               let lostRerun = false;
               for (;;) {
               try {
                 // Canonical worker (spec WP2): the key's effective workerMode (override ?? judge ?? legacy) AND the
                 // three-state master switch for this key group / account (铁律 2).
-                res = await runCcrWorker({ ...workerInput, canonical: canonicalWorker });
+                res = await runCcrWorker({ ...workerInput, canonical: canonicalAttempt });
+                if (res && canonicalAttempt && thirdPartyEnabled) {
+                  const inspected = await inspectThirdPartyResponse(res, ctx.stream);
+                  if (inspected.refused) {
+                    rememberTuiThirdParty(ctx, "retry");
+                    bump("ccr_tui_third_party_fallback_total", { from: "refusal" });
+                    res = await runCcrWorker({ ...workerInput, canonical: false });
+                  } else {
+                    res = inspected.response;
+                  }
+                }
                 break;
               } catch (err) {
                 // session_lost rerun (2026-11-10): the node holds no live process for this continue / tool_result (process
@@ -1332,6 +1367,7 @@ async function proxyRequest(req: FastifyRequest, reply: FastifyReply, format: Cl
                   }
                   bump("canonical_fallback_legacy_total", { code: err.nodeCode });
                   console.log(`[proxy] ${ctx.requestId} canonical cannot carry this turn (${err.nodeCode}) on ${account.name}: legacy worker takes it`);
+                  if (ctx.tuiThirdParty) ctx.tuiThirdParty.canonicalAttempt = false;
                   res = await runCcrWorker({ ...workerInput, canonical: false });
                   break;
                 } else throw err;
@@ -1494,6 +1530,7 @@ async function proxyRequest(req: FastifyRequest, reply: FastifyReply, format: Cl
           return;
         }
         const reqErr = isCcrMode(mode) ? classifyCcRequestError(text) : null;
+        if (reqErr?.code === "third_party_extra_usage") rememberTuiThirdParty(ctx, "started");
         if (reqErr) {
           ctx.trace.failure = { scope: "request", code: reqErr.code, message: reqErr.message, retryable: false, status: 400, credentialVersion: ctx.credentialVersion ?? undefined, executionSequence: ctx.executionSequence };
           // Context overflow / safety-classifier refusal inside Claude Code: the request is the problem.
@@ -2591,6 +2628,7 @@ async function deliverStream(
         // the client Claude Code's own sentence (the auto-compact trigger) as an invalid_request_error.
         // `mode` here is the wire mode (passthrough-anthropic for a worker stream too): the CCR flag is ccrExecuted.
         const reqErr = ccrExecuted || isCcrMode(mode) ? classifyCcRequestError(message) : null;
+        if (reqErr?.code === "third_party_extra_usage") rememberTuiThirdParty(ctx, "started");
         // A request-level refusal is not the account's fault: no cooldown (2026-11-08: 162 streamed safeguards refusals of one
         // key in three days each cooled the account that answered them). Raw relay (§4a): no cooldown either.
         // Worker / cloud stream: the provenance the executor recorded decides what the text may do (D). A direct-lane

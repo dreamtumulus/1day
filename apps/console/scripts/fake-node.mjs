@@ -162,7 +162,7 @@ ws.on("open", () => {
     type: "provider.hello",
     nodeId,
     nodeVersion: "fake-node/0.1",
-    capabilities: ["official_exit", "http_egress", "cc_worker", "team_isolation_v1"],
+    capabilities: ["official_exit", "http_egress", "cc_worker", "team_isolation_v1", ...(process.env.FAKE_NODE_CANONICAL === "1" ? ["canonical_v1", "tui_v1"] : [])],
     isolatedContexts: [],
     acceptingSessions: true,
   });
@@ -254,14 +254,16 @@ ws.on("message", (data) => {
     }
     case "cc_worker.open": {
       const { sessionId } = msg;
-      console.log(`[fake-node] cc_worker.open ${sessionId} (account=${msg.accountId} model=${msg.model} prompt=${(msg.prompt ?? "").length}ch)`);
+      console.log(`[fake-node] cc_worker.open ${sessionId} (account=${msg.accountId} model=${msg.model} mode=${msg.mode ?? "legacy"} prompt=${(msg.prompt ?? "").length}ch)`);
       const owner = deviceOwners.get(msg.deviceId);
       if (!authorized(msg) || !msg.isolation || !/^[0-9a-f]{64}$/i.test(msg.deviceId ?? "") ||
         (owner && (owner.accountId !== msg.accountId || owner.teamId !== msg.isolation.teamId))) {
         send({ type: "cc_worker.open_response", sessionId, accepted: false, reasonCode: "isolation_mismatch" }); break;
       }
       deviceOwners.set(msg.deviceId, { accountId: msg.accountId, teamId: msg.isolation.teamId });
-      const child = spawn("node", [fakeClaude, "-p", msg.prompt ?? "", "--model", msg.model ?? "", "--output-format", "stream-json", "--verbose"]);
+      const child = spawn("node", [fakeClaude, "-p", msg.prompt ?? "", "--model", msg.model ?? "", "--output-format", "stream-json", "--verbose"], {
+        env: { ...process.env, FAKE_CLAUDE_MODE: msg.mode ?? "legacy", FAKE_CLAUDE_SYSTEM: msg.appendSystemPrompt ?? msg.systemPrompt ?? "" },
+      });
       workers.set(sessionId, { child, isolation: msg.isolation });
       send({ type: "cc_worker.open_response", sessionId, accepted: true });
       let seq = 0;

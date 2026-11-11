@@ -35,7 +35,7 @@
 | `onboarding_jobs` | 上号异步任务（docs/onboarding.md §5） | — |
 | `node_bind_codes` | 节点绑定码 | `provider_id → users` (CASCADE) |
 | `settings` | 键值配置 | — |
-| `affinity_bindings` | 网关粘性会话 / 设备池的落盘副本（跨蓝绿发布保持会话、设备 → 账号的对应） | 无外键（account_id 只是值） |
+| `affinity_bindings` | 网关粘性会话 / 设备池 / TUI third-party 拒绝指纹的落盘副本（跨蓝绿发布保持对应与 12h 回退记录） | 无外键（account_id 只是值） |
 | `worker_turn_memory` | 网关侧 worker 持久会话轮次记忆的落盘副本（reuseKey → JSON TurnMemory） | — |
 | `ccr_overhead_calibration` | CCR 通道平台提示词开销的校准状态（键 → 样本窗口 / p10 值），各网关实例共享（X-54，迁移 43） | — |
 
@@ -115,10 +115,12 @@ console 定时任务每 `cache_refund_interval_sec`（默认 86400）跑一轮�
 
 ### affinity_bindings（迁移 16，2026-10-21）
 
-网关「粘性会话」与「设备亲和」两张进程内表的写穿副本（gateway.md §3「跨发布保持」，core `affinity.ts`）。
-`key` 主键即网关的会话键 `s:<api_key_id>:<session>:<model>` 或设备键 `d:<api_key_id>:<device_id>`；`kind` = `session`（`account_id` 有值）
-或 `device`（`accounts` 为 JSON 数组，按记录顺序，最多 `device_affinity_pool_size` 个）；`expires_at` 为 unix 毫秒，读到已过期的行视为不存在，
-网关每 10 min 删一次过期行。只有网关读写；两个蓝绿实例在交接期间共用，所以新实例接着旧实例的绑定继续，不会把对话 / 设备重新发牌。
+网关「粘性会话」「设备亲和」与「TUI third-party 拒绝指纹」的写穿副本（gateway.md §3「跨发布保持」，core `affinity.ts`）。
+`key` 主键即网关的会话键 `s:<api_key_id>:<session>:<model>`、设备键 `d:<api_key_id>:<device_id>`，或 `tui-third-party:<system_sha256>`；
+`kind` = `session`（`account_id` 有值）、`device`（`accounts` 为 JSON 数组，按记录顺序，最多 `device_affinity_pool_size` 个），
+或 `tui_third_party`（X-65：账号字段均为 NULL，system 去计费头前 2048 字符的哈希，12h 内 canonical/TUI 直接回退 legacy `-p`）；
+`expires_at` 为 unix 毫秒，读到已过期的行视为不存在，网关每 10 min 删一次过期行。只有网关读写；两个蓝绿实例在交接期间共用，
+所以新实例接着旧实例的绑定与回退记录继续，不会把对话 / 设备重新发牌或让同一 prompt 再撞一次 TUI 拒绝。
 不是账单数据，可以清空（后果只是等同一次冷启动）。
 
 ### worker_turn_memory（迁移 17，2026-10-22）

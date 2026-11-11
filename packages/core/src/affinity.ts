@@ -50,6 +50,7 @@ let stmts: {
   putTurn: ReturnType<typeof db.prepare>;
   delTurn: ReturnType<typeof db.prepare>;
   sweepTurn: ReturnType<typeof db.prepare>;
+  putThirdParty: ReturnType<typeof db.prepare>;
 } | null = null;
 
 function s() {
@@ -77,6 +78,12 @@ function s() {
       ),
       delTurn: db.prepare("DELETE FROM worker_turn_memory WHERE key = ?"),
       sweepTurn: db.prepare("DELETE FROM worker_turn_memory WHERE expires_at < ?"),
+      putThirdParty: db.prepare(
+        `INSERT INTO affinity_bindings (key, kind, account_id, accounts, expires_at, updated_at)
+         VALUES (?, 'tui_third_party', NULL, NULL, ?, strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+         ON CONFLICT(key) DO UPDATE SET kind = 'tui_third_party', account_id = NULL, accounts = NULL,
+           expires_at = excluded.expires_at, updated_at = excluded.updated_at`,
+      ),
     };
   }
   return stmts;
@@ -133,6 +140,16 @@ export function saveTurnMemory(key: string, data: unknown, expiresAt: number): v
 
 export function deleteTurnMemory(key: string): void {
   s().delTurn.run(key);
+}
+
+/** TUI third-party refusals are shared by both gateway instances and survive releases. */
+export function loadTuiThirdPartyRefusal(key: string, now: number = Date.now()): number | undefined {
+  const row = s().get.get(`tui-third-party:${key}`, "tui_third_party") as BindingRow | undefined;
+  return row && Number(row.expires_at) >= now ? Number(row.expires_at) : undefined;
+}
+
+export function saveTuiThirdPartyRefusal(key: string, expiresAt: number): void {
+  s().putThirdParty.run(`tui-third-party:${key}`, Math.floor(expiresAt));
 }
 
 /** Drop expired bindings and turn memories; returns how many rows went. The gateway runs this every 10 min. */

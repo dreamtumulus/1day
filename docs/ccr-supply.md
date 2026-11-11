@@ -161,6 +161,21 @@ stream-json 消息族——`{type:"assistant", message:{id, content:[…], usage
 动机：云端会话路径的工具是 prompt 级模拟，承载不了 CC 客户端的真实工具往返（会露馅）；
 而订阅 token 直打 Messages API 正是 CC 的原生形态，零降级。
 
+### 5.2a canonical/TUI 的 third-party 400 回退（X-65，2026-11-11）
+
+三态设置 `canonical_third_party_fallback`（默认 `0`）启用后，canonical/TUI 被上游以
+`Third-party apps now draw from [your] extra usage…` 拒绝时按 magpie #4503 处理：
+
+- 非流式响应尚无回答内容，或流式首 chunk 就是这一错误：当前轮在同一账号以 legacy `-p` 重试一次；
+  `(after partial output)` 或任何正常首包均已到达时绝不重放，只记录后续回退。
+- system 去客户端计费头后取前 2048 字符做 SHA-256，在 `affinity_bindings` 以 `kind='tui_third_party'` 保存 12h；
+  期间同 Agent 直接从 legacy `-p` 开始，到期才重新尝试 canonical/TUI。两个网关实例共享，发布不丢。
+- legacy 再拒绝则按请求级 400 返回，不再次重试、不换号、不冷却。其他 prompt 的 system、reuseKey 与 canonical 车道不变。
+- 这是临时兼容性取舍：命中 prompt 从 `cli` 降为 `sdk-cli`，额度成本更高；不全局改 `appendSystemPrompt`，也不改 UA / beta / metadata。
+
+实现：`apps/gateway/src/ccr/third-party-fallback.ts`（指纹与首包检查）、`apps/gateway/src/proxy.ts`（车道编排）、
+`packages/core/src/affinity.ts`（共享指纹）。参考：magpie `claude_subscription.go` #4503。
+
 ### 5.3 会话池与释放（2026-10-16 拍板，X-12 解决）
 
 会话冷启动实测 6–12s，复用可降到 ~2s 级；往既有 `cse_` 会话推新 user 事件已验证可行。

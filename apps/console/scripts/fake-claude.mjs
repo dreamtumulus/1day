@@ -16,6 +16,16 @@ const modelUsage = { "claude-sonnet-5-5": { inputTokens: 12, outputTokens: 7, ca
 // section carries the ```tool_call fence protocol.
 const toolMatch = prompt.includes("fenced block tagged tool_call") ? /"name":"([^"]+)"/.exec(prompt) : null;
 const safeguards = prompt.includes("fixture-safeguards-refusal");
+const system = process.env.FAKE_CLAUDE_SYSTEM ?? "";
+const thirdParty = `${system}\n${prompt}`.includes("fixture-third-party-refusal");
+const thirdPartyPartial = `${system}\n${prompt}`.includes("fixture-third-party-partial");
+if ((thirdParty || thirdPartyPartial) && process.env.FAKE_CLAUDE_MODE === "canonical") {
+  const message = "API Error: 400 Third-party apps now draw from extra usage, not plan limits. Ask your workspace admin to add more and keep going.";
+  line({ type: "system", subtype: "init", model: "claude-sonnet-5-5" });
+  if (thirdPartyPartial) line({ type: "assistant", message: { id: "msg_partial", role: "assistant", content: [{ type: "text", text: "partial answer" }], usage } });
+  line({ type: "result", subtype: "error_during_execution", is_error: true, result: message, modelUsage, duration_ms: 50, duration_api_ms: 40, num_turns: 1 });
+  process.exit(1);
+}
 const text = safeguards
   ? "Opus 5.5's safeguards flagged this session (https://www.anthropic.com/legal/aup). Details: [fixture]"
   : toolMatch

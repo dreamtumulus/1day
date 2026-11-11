@@ -54,6 +54,7 @@
   | `raw_preserve_headers` | 原样透传账号到节点出口不补 Claude Code 指纹头（raw-v1，spec WP5.4） | `0` |
   | `telemetry_evidence_required` | native-required 的 Key 开 canonical 会话前要求账号×profile 遥测证据 ≥ secondary（spec §6.4 / WP6） | `0` |
   | `worker_canonical` | 车道 B canonical 进程：节点官方 CC 原生身份 + `--restricted` + caller MCP + 原生 session，客户 system 追加（spec WP2；节点还需 `CC_WORKER_CANONICAL=1`） | `0` |
+  | `canonical_third_party_fallback` | canonical/TUI 被 third-party 400 拒绝且尚未产出回答时，当前轮以 legacy `-p` 重试一次；同 system 前缀指纹 12h 内直接 `-p`（X-65） | `0` |
 - 灰度组：控制台「设置 → 灰度测试账号组」选择；账号加入该组 = 账号页编辑分组；测试 Key = 该组下的 consumer Key。
 - **开关按谁判定**：直连路径的形态判定与出站整形发生在选号之前，`featureFor` 只拿到 **Key 的组**（`proxy.ts` `strictProfile`、`upstream.ts` `UpstreamShaping`）；
   账号组只在选号之后的分支（CCR 车道、历史策略）参与。因此**把灰度账号加进默认组并不能灰度**——默认组 Key 落到灰度账号上仍走老行为；要让真实流量吃到新行为，
@@ -98,6 +99,7 @@
 - X-42 ④ 流式请求级拒绝不冷却账号：=（只影响我方调度，上游不可见）。
 - X-42 ⑤ 上游 refusal 原样下发客户（`stop_reason: "refusal"` + `stop_details`）：=（只影响下游响应形态，上游不可见）。
 - X-43 TUI worker（CCR 实例 `tui`）：入口 `sdk-cli`→`cli` ↑；identity 块回到 "Claude Code, Anthropic's official CLI" ↑；beta 列表回到交互集 ↑；节点版本 2.1.312→2.1.319 跟上主流 ↑；tap.js 以 `BUN_OPTIONS --preload` 进入 CC 进程、tee 主轮响应 ↓（只读、不改请求、不改头；运营方 11-08 书面接受："不钩 Bun 运行时、不改请求体、不改标签 这个限制可以放宽"）。
+- X-65 third-party 400 回退：未命中的 prompt =（system、头、车道不变）；命中的 prompt ↓（`cli`→`sdk-cli`，额度成本更高）。运营方 2026-11-11 定“暂时这样改吧”，接受仅被拒绝 system 指纹 12h 回退；不改 `appendSystemPrompt`，不全关 TUI。
 
 ## 附：请求级拒绝不扩散（已做，2026-11-01，spec I12）
 
