@@ -48,3 +48,12 @@ test("upstream 400 rendered by Claude Code is a request error (no failover); acc
   assert.equal(classifyCcRequestError("ccr_worker: API Error: 529 overloaded"), null);
   assert.equal(classifyCcRequestError("ccr_worker: fetch failed"), null);
 });
+
+test("Anthropic's third-party-harness 400 has its own code: request-scoped, never a failover or cooldown (X-64, 2026-11-11)", async () => {
+  const { classifyCcRequestError } = await import("../dist/ccr/model-unavailable.js");
+  const msg = "stream: ccr_worker: API Error: 400 Third-party apps now draw from extra usage, not plan limits. Ask your workspace admin to add more and keep going.";
+  const r = classifyCcRequestError(msg);
+  assert.equal(r?.code, "third_party_extra_usage");
+  assert.equal(r.message, "Upstream rejected the request: Third-party apps now draw from extra usage, not plan limits. Ask your workspace admin to add more and keep going.");
+  assert.equal(classifyCcRequestError("ccr_worker: API Error: 400 Third-party apps now draw from your extra usage, not your plan limits. Add more at claude.ai/settings/usage and keep going.")?.code, "third_party_extra_usage");
+});

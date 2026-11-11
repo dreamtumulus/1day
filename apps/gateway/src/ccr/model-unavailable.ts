@@ -51,12 +51,24 @@ const SAFEGUARDS_RE = /safeguards flagged this|can't help with this\. Start a ne
 const UPSTREAM_INVALID_REQUEST_RE = /API Error:\s*400\b/i;
 const ACCOUNT_SCOPED_400_RE = /credit balance|billing|organization has been disabled|organization .{0,40}disabled/i;
 
-export type CcRequestError = { code: "prompt_too_long" | "safeguards_refusal" | "upstream_invalid_request"; message: string };
+/**
+ * Anthropic's third-party-harness rule (April 2026; first seen on this platform 2026-11-11 02:22Z, X-64): a request whose
+ * system prompt identifies another harness ("You are OpenCode, …", its sub-agents) draws from the subscription's
+ * *extra usage*, and with none bought the upstream answers 400 "Third-party apps now draw from extra usage, not plan
+ * limits. Ask your workspace admin to add more and keep going." It is the caller's prompt, not the account: the same
+ * accounts served Claude-Code-shaped turns of the same key in the same minute. Its own code so the usage row, the
+ * counter and the client tell the caller what to change (the harness or the organization's extra usage) — the prompt
+ * is never rewritten to look like something it is not (铁律 3).
+ */
+const THIRD_PARTY_EXTRA_USAGE_RE = /Third-party apps now draw from (?:your )?extra usage/i;
+
+export type CcRequestError = { code: "prompt_too_long" | "safeguards_refusal" | "upstream_invalid_request" | "third_party_extra_usage"; message: string };
 
 /** Worker-path failures that belong to the request: answered once as 400, no failover, no cooldown. */
 export function classifyCcRequestError(message: string): CcRequestError | null {
   if (PROMPT_TOO_LONG_RE.test(message)) return { code: "prompt_too_long", message: promptTooLongMessage(message) };
   if (SAFEGUARDS_RE.test(message)) return { code: "safeguards_refusal", message: refusalMessage(message) };
+  if (THIRD_PARTY_EXTRA_USAGE_RE.test(message)) return { code: "third_party_extra_usage", message: invalidRequestMessage(message) };
   if (UPSTREAM_INVALID_REQUEST_RE.test(message) && !ACCOUNT_SCOPED_400_RE.test(message)) return { code: "upstream_invalid_request", message: invalidRequestMessage(message) };
   return null;
 }

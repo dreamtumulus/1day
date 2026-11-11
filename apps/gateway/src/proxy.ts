@@ -1498,6 +1498,7 @@ async function proxyRequest(req: FastifyRequest, reply: FastifyReply, format: Cl
           ctx.trace.failure = { scope: "request", code: reqErr.code, message: reqErr.message, retryable: false, status: 400, credentialVersion: ctx.credentialVersion ?? undefined, executionSequence: ctx.executionSequence };
           // Context overflow / safety-classifier refusal inside Claude Code: the request is the problem.
           // 400 with Claude Code's own sentence (clients auto-compact on "prompt is too long"), no failover/cooldown.
+          bump("cc_request_error_total", { code: reqErr.code });
           console.warn(`[proxy] ${ctx.requestId} ${reqErr.code} on Claude Code (${account.name}): 400 to client, no failover/cooldown`);
           fail(ctx, account, 400, reqErr.code, reqErr.message, "invalid_request_error");
           return;
@@ -2594,6 +2595,7 @@ async function deliverStream(
         // key in three days each cooled the account that answered them). Raw relay (§4a): no cooldown either.
         // Worker / cloud stream: the provenance the executor recorded decides what the text may do (D). A direct-lane
         // `error` event is the upstream's own structured answer.
+        if (reqErr) bump("cc_request_error_total", { code: reqErr.code });
         if (decision.coolAccount && !reqErr && account.raw_passthrough !== 1) markCcrFailure(ctx, account, `stream: ${message.slice(0, 300)}`, ccrExecuted ? workerFailureSource(ctx) : "http_body");
         ctx.streamTruncated = true;
         ctx.trace.failure = {
