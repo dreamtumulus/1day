@@ -97,7 +97,7 @@ TUI 自己生成原生 Claude Code 的 UA / beta / metadata / 主 system，但�
   之后自然回退指纹增至 3 个；Kevin 迁入后的 `third_party_extra_usage` 为 **0**。
 - 初期灰度组只有 3 个账号，出现 `team_capacity_exhausted`。运营方随后指定扩容：
   先补至 12 个，再把 `NGO team 01` 与 `1103 普通team`、`1103普通team 02`、`普通03 Team`、`普通04 team`
-  的 active/approved 账号追加进来，最终 **47 个账号**。原分组、节点、代理与设备绑定不变。
+  的 active/approved 账号追加进来，扩容时 **47 个账号**；随后移除 1 个失效账号，当前 **46 个账号**。原分组、节点、代理与设备绑定不变。
 - 扩容使普通节点碰到旧设置 `canonical_no_legacy_fallback=canary`：能力缺口被直接回 400。
   已恢复该旧开关为 `0`；新 third-party 开关仍为 `canary`。
 - 03:56:30Z 后采样窗口 **16/16 请求 200**，无 third-party 400，也无容量错误。
