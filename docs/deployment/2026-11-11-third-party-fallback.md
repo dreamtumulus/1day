@@ -79,7 +79,7 @@ TUI 自己生成原生 Claude Code 的 UA / beta / metadata / 主 system，但�
 - 首轮完整 `pnpm gate`：**964 passed / 0 failed**（catalog 8、core 198、gateway 427、console 132、E2E 199；120s，`GATE: PASS`）；
 - 保活首包修正后工作树门禁：**970 passed / 0 failed**（包含并行 X-66 的测试，X-66 不属于本提交）。
 
-## 7. 生产发布记录（2026-11-11 03:39–03:58Z）
+## 7. 生产发布记录（2026-11-11 03:39–04:12Z）
 
 - commit：`705a2b7`，已推送服务器 `main`；dist 快照
   `/opt/1dayapi/backups/pre-third-party-20261111T033937Z-dist.tgz`。
@@ -110,11 +110,14 @@ TUI 自己生成原生 Claude Code 的 UA / beta / metadata / 主 system，但�
 - 复查另几条后续 400 时发现初版首包检查把纯 `ping` / 注释也当作回答已开始，过于保守。
   已修正为只跳过保活帧；`message_start`、正文、thinking、工具事件仍绝不重试。
   新增 2 个单测，E2E 故障注入也改为 ping 后拒绝，防止这条回归。
+- 修正提交 `5d06c11` 已推送并上线；快照
+  `/opt/1dayapi/backups/pre-third-party-keepalive-20261111T040945Z-dist.tgz`。
+  新实例切换前真实请求 200，04:10Z 后 Kevin 采样窗口 **91/91 请求 200、third-party 400 为 0**。
 
 ### 尚未通过的复验
 
-03:58Z 再次 `release-verify`：真实请求、监控矩阵、节点心跳和设备身份均通过，但公开池
-`online=89 < baseline=100`，所以脚本结论为 **RELEASE NOT VERIFIED**。没有重置基线。
+03:58Z 与 04:12Z 两次 `release-verify`：真实请求、监控矩阵、节点心跳和设备身份均通过，但公开池
+`online=89 < baseline=100`，所以脚本结论均为 **RELEASE NOT VERIFIED**。没有重置基线。
 同期 03:46–03:52 新增 7 个 OAuth refresh 失效账号，另有窗口暂停及 1 个代理冻结；
 这些是独立供给变化，需单独处置并恢复公开池后复验，不能据此声称发布全绿。
 
