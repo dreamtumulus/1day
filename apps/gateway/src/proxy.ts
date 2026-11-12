@@ -1054,14 +1054,21 @@ async function proxyRequest(req: FastifyRequest, reply: FastifyReply, format: Cl
     // cannot silently become a fallback for a subscription conversation.
     // Organization budgets (spec WP7.1): an organization over its daily token / cost budget or at its concurrency cap
     // takes no NEW conversation; in-flight work is untouched. Suspended organizations are already out of listCandidates.
+    // One budget check per organization, not per account (X-71, 2026-11-12): the day's usage SUM ran once for every
+    // candidate account (~330 accounts × ~10 ms) plus an O(n²) in-flight reduce — ~3 s of synchronous work for each new
+    // conversation, which froze the gateway's event loop (every request 499 for minutes at a time).
     const budgetBlocked = new Map<string, string>();
+    const budgetOk = new Set<string>();
+    const inFlightByTeam = new Map<string, number>();
+    if (!scope.row.team_id) for (const b of usable) { const t = accountTeamId(b); if (t) inFlightByTeam.set(t, (inFlightByTeam.get(t) ?? 0) + accountInFlight(b.id)); }
     const teams = usable.filter((a) => {
       const t = accountTeamId(a);
       if (!t) return false;
       if (budgetBlocked.has(t)) return false;
-      if (!scope?.row.team_id) {
-        const st = teamBudgetState(t, usable.filter((b) => accountTeamId(b) === t).reduce((n, b) => n + accountInFlight(b.id), 0));
+      if (!scope.row.team_id && !budgetOk.has(t)) {
+        const st = teamBudgetState(t, inFlightByTeam.get(t) ?? 0);
         if (!st.ok) { budgetBlocked.set(t, st.reason ?? "budget"); bump("org_budget_exhausted_total", { team: t }); console.warn(`[proxy] ${ctx.requestId} organization ${t} takes no new conversation: ${st.reason}`); return false; }
+        budgetOk.add(t);
       }
       return true;
     });
