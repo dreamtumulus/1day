@@ -879,10 +879,10 @@ function InflightLimits({ user, onChanged }: { user: UserDetail; onChanged: () =
       <p className="text-[13px] text-on-surface-faint">{t("admin.users.inflightHint")}</p>
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-[160px_160px_auto] sm:items-end">
         <Field label={t("admin.users.maxInflight")}>
-          <Input type="number" min={0} step="1" value={n} placeholder="4" onChange={(e) => setN(e.target.value)} />
+          <Input type="number" min={0} step="1" value={n} placeholder="1000" onChange={(e) => setN(e.target.value)} />
         </Field>
         <Field label={`${t("admin.users.maxInflightUsd")} (USD)`}>
-          <Input type="number" min={0} step="0.01" value={usd} placeholder="10" onChange={(e) => setUsd(e.target.value)} />
+          <Input type="number" min={0} step="0.01" value={usd} placeholder={t("admin.users.inflightNoCap")} onChange={(e) => setUsd(e.target.value)} />
         </Field>
         <Button
           variant="primary"

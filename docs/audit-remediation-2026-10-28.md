@@ -13,7 +13,7 @@
 | B1 | 收到 usage 不代表完成。Anthropic/OpenAI/Responses 各自要求相应完成事件；提前 EOF 记录失败并按现有失败零收费政策结算，向客户端传递可识别错误。 | `gateway/src/proxy.ts`；`team-isolation.test.mjs` 的 usage+EOF 回归。 |
 | B2 | usage 统一校验有限、非负、安全整数及总量上界；缓存子集关系也校验。异常上游 usage 使用有标记的请求/文本估算；核心结算再次拒绝非法计数和金额。仅 request_id 唯一冲突可视为重复，其他 SQLite 错误显式暴露。 | `gateway/src/usage.ts`、`core/src/money.ts`、`billing.ts`；`usage-validation.test.mjs`、`core/test/audit-billing.test.mjs`。 |
 | B3 | 先将结算内容和价格快照写入独立、fsync 的 0600 journal，再进行幂等入账；数据库故障保留待补账记录，10 秒周期重放。存在待补账或存储不可写时关闭新推理准入；修账不会重新执行模型。 | `core/src/settlement-journal.ts` 及 gateway 接入；`audit-billing.test.mjs` 注入数据库写失败、改价后重放、重复恢复和 journal 不可写。 |
-| B4 | 用户所有 Key、所有网关共享在途预约；默认 `USER_MAX_INFLIGHT=4`、`USER_MAX_INFLIGHT_USD=10`，同时受实时可用余额/授信和 Key 剩余额度限制。估算来自请求输入及最大输出；低余额仍可准入一笔后付费请求，该请求占满剩余预约预算。 | `core/src/request-budget.ts`、`gateway/src/proxy.ts`；`audit-billing.test.mjs` 验证共享预算、低余额、过期恢复和默认并发。这是估算准入，最终账单仍按实际用量，不能当作绝对的单笔费用硬上限。 |
+| B4 | 用户所有 Key、所有网关共享在途预约；当时默认 `USER_MAX_INFLIGHT=4`、`USER_MAX_INFLIGHT_USD=10`（**2026-11-10 起改为 1000 / 不设金额上限**，X-52，见 data-model.md「默认在途额度政策」），同时受实时可用余额/授信和 Key 剩余额度限制。估算来自请求输入及最大输出；低余额仍可准入一笔后付费请求，该请求占满剩余预约预算。 | `core/src/request-budget.ts`、`gateway/src/proxy.ts`；`audit-billing.test.mjs` 验证共享预算、低余额、过期恢复和默认并发。这是估算准入，最终账单仍按实际用量，不能当作绝对的单笔费用硬上限。 |
 | B5 | 新结算保存定价快照及退款基数，后续改价不改变历史退款。无快照的旧账单不补造价格，不纳入新的自动退款计算。 | `core/src/billing.ts`、`cache-refund.ts`；`audit-billing.test.mjs` 和 `cache-refund.test.mjs`。 |
 | A1 | 推理时校验当前专属组授权；撤销后既有 Key 的新推理立即拒绝。Key 与历史账目保留。 | `gateway/src/auth.ts`；`exclusive-group-auth.test.mjs`。 |
 | A2 | 先规范模型身份，再读取统一的 enabled、价格和 allowlist；点号、连字符和日期别名不能绕过基础模型禁用。显式配置的透传政策继续单独生效。 | `core/src/models.ts`、`allowlist.ts`；`audit-billing.test.mjs`、`model-alias.test.mjs`。 |
