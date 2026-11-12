@@ -1538,7 +1538,10 @@ async function proxyRequest(req: FastifyRequest, reply: FastifyReply, format: Cl
           passUpstreamError(ctx, account, wireModeFor(mode), status, text, res.headers.get("retry-after"));
           return;
         }
-        const reqErr = isCcrMode(mode) ? classifyCcRequestError(text) : null;
+        // The worker's 502 is a JSON error body: classify its message, not the raw JSON, or the client-facing sentence
+        // ends in the body's closing `"}}` (2026-11-12: 75 prompt_too_long rows read `Prompt is too long"}}` after X-68
+        // started failing worker streams through this path).
+        const reqErr = isCcrMode(mode) ? classifyCcRequestError(workerErrorText(text)) : null;
         if (reqErr?.code === "third_party_extra_usage") rememberTuiThirdParty(ctx, "started");
         if (reqErr) {
           ctx.trace.failure = { scope: "request", code: reqErr.code, message: reqErr.message, retryable: false, status: 400, credentialVersion: ctx.credentialVersion ?? undefined, executionSequence: ctx.executionSequence };

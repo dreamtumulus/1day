@@ -45,6 +45,14 @@ if (loginGone) {
   line({ type: "result", subtype: "error_during_execution", is_error: true, result: message, duration_ms: 50, duration_api_ms: 0, num_turns: 1 });
   process.exit(1);
 }
+// Claude Code's context overflow: its own `<synthetic>` sentence, then an error result carrying the same sentence.
+if (prompt.includes("fixture-prompt-too-long")) {
+  const message = "Prompt is too long · the request is ~1088871 tokens (limit 1000000) but this conversation is only ~384968 tokens — the rest is system prompt, tool definitions, and attachment content. A single-exchange conversation cannot be compacted; reduce attached files/tools or start with less context.";
+  line({ type: "system", subtype: "init", model: "claude-sonnet-5-5" });
+  line({ type: "assistant", message: { id: "msg_synth", model: "<synthetic>", role: "assistant", content: [{ type: "text", text: message }] } });
+  line({ type: "result", subtype: "error_during_execution", is_error: true, result: message, duration_ms: 50, duration_api_ms: 0, num_turns: 1 });
+  process.exit(1);
+}
 // X-69: a first token that takes a while (`fixture-slow-first:<ms>`), so a client can leave before it.
 const slowFirst = /fixture-slow-first:(\d+)/.exec(prompt);
 if (slowFirst) await sleep(Number(slowFirst[1]));

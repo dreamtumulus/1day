@@ -167,6 +167,21 @@ check("non-stream safeguards refusal is request-scoped and non-retryable", r.sta
   });
   check("second worker account", acc2.status === 201, acc2);
   const stream = (content) => messages(wkey, { stream: true, messages: [{ role: "user", content }] });
+  // The worker's 502 body is JSON: the client gets Claude Code's sentence itself, not the sentence plus the body's `"}}`
+  // (2026-11-12: 75 prompt_too_long rows read `… start with less context."}}`). Runs before the login fixtures below,
+  // which cool both accounts.
+  const clean = (t) => t.includes("Prompt is too long · the request is ~1088871 tokens") && t.includes("start with less context.") && !t.includes('"}}') && !t.includes("ccr_worker");
+  // the usage row keeps the upstream body after " | upstream 502:" for diagnosis; the client-facing part comes first
+  const cleanRow = (t) => clean((t ?? "").split(" | upstream")[0]);
+  r = await stream("fixture-prompt-too-long");
+  u = await lastUsage();
+  const ev = /event: error\ndata: (.*)\n/.exec(r.text);
+  const evMsg = ev ? JSON.parse(ev[1]).error?.message ?? "" : "";
+  check("stream: prompt too long -> error event with Claude Code's own sentence, no JSON tail", !!ev && clean(evMsg) && !r.text.includes("text_delta") && u.statusCode === 400 && u.errorCode === "prompt_too_long" && cleanRow(u.errorMessage), { evMsg, u });
+  r = await messages(wkey, { messages: [{ role: "user", content: "fixture-prompt-too-long" }] });
+  u = await lastUsage();
+  const nsMsg = (() => { try { return JSON.parse(r.text).error?.message ?? ""; } catch { return ""; } })();
+  check("non-stream: prompt too long -> 400 with Claude Code's own sentence, no JSON tail", r.status === 400 && clean(nsMsg) && u.statusCode === 400 && u.errorCode === "prompt_too_long" && cleanRow(u.errorMessage), { status: r.status, nsMsg, u });
   r = await stream(`fixture-login-expired-once:${uniq()}`);
   check("stream: login gone on the first account -> answered by the other, Claude Code's sentence never forwarded", r.status === 200 && r.text.includes("Hello from fake claude.") && r.text.includes("event: message_stop") && !r.text.includes("Login expired") && !r.text.includes("event: error"), r.text.slice(0, 600));
   r = await stream("fixture-login-expired-always");
