@@ -1,5 +1,7 @@
 import profile from "./profiles/2.1.322.json" with { type: "json" };
 import { UUID_RE } from "./identity.js";
+import { accountMachine, machineHeaders } from "./machine.js";
+import { canonicalBetas, ccBuildSuffix } from "./shape.js";
 import type { Json, RuntimeAccount } from "./types.js";
 
 export const ACTIVE_PROFILE = profile;
@@ -37,11 +39,10 @@ function nativeEntrypoint(headers: Headers): string {
   return KNOWN_ENTRYPOINTS.test(entrypoint) ? entrypoint : ACTIVE_PROFILE.entrypoint;
 }
 
-export function nativeProfileOverrides(incoming: Headers): Record<string, string> {
+export function nativeProfileOverrides(incoming: Headers, account: RuntimeAccount): Record<string, string> {
   return {
     "user-agent": `claude-cli/${ACTIVE_PROFILE.claudeCodeVersion} (external, ${nativeEntrypoint(incoming)})`,
-    "x-stainless-arch": process.arch === "arm64" ? "arm64" : "x64",
-    "x-stainless-os": process.platform === "darwin" ? "Darwin" : process.platform === "win32" ? "Windows" : "Linux",
+    ...machineHeaders(accountMachine(account)),
     "x-stainless-package-version": ACTIVE_PROFILE.sdkVersion,
     "x-stainless-runtime": "node",
     "x-stainless-runtime-version": ACTIVE_PROFILE.runtimeVersion,
@@ -54,7 +55,7 @@ export function normalizeNativeBody(body: Json, headers: Headers): Json {
   const text = typeof first === "string" ? first : first?.text;
   if (typeof text !== "string") return body;
   const next = text
-    .replace(/cc_version=\d+\.\d+\.\d+(?:\.[0-9a-f]+)?/i, `cc_version=${ACTIVE_PROFILE.claudeCodeVersion}.${ACTIVE_PROFILE.buildSuffix}`)
+    .replace(/cc_version=\d+\.\d+\.\d+(?:\.[0-9a-z]+)?/i, `cc_version=${ACTIVE_PROFILE.claudeCodeVersion}.${ccBuildSuffix(body.messages)}`)
     .replace(/cc_entrypoint=[^;]*/, `cc_entrypoint=${nativeEntrypoint(headers)}`);
   if (next === text) return body;
   const billing = typeof first === "string" ? next : { ...first, text: next };
@@ -62,22 +63,19 @@ export function normalizeNativeBody(body: Json, headers: Headers): Json {
 }
 
 export function agentHeaders(sessionId: string, account: RuntimeAccount): Record<string, string> {
-  const betas = [...ACTIVE_PROFILE.betas];
-  if (account.accessToken) betas.push("oauth-2025-04-20");
   const headers: Record<string, string> = {
     accept: "application/json",
     "content-type": "application/json",
     "user-agent": `claude-cli/${ACTIVE_PROFILE.claudeCodeVersion} (external, ${ACTIVE_PROFILE.entrypoint})`,
     "x-claude-code-session-id": sessionId,
-    "x-stainless-arch": process.arch === "arm64" ? "arm64" : "x64",
     "x-stainless-lang": "js",
-    "x-stainless-os": process.platform === "darwin" ? "Darwin" : process.platform === "win32" ? "Windows" : "Linux",
+    ...machineHeaders(accountMachine(account)),
     "x-stainless-package-version": ACTIVE_PROFILE.sdkVersion,
     "x-stainless-retry-count": "0",
     "x-stainless-runtime": "node",
     "x-stainless-runtime-version": ACTIVE_PROFILE.runtimeVersion,
     "x-stainless-timeout": "600",
-    "anthropic-beta": betas.join(","),
+    "anthropic-beta": canonicalBetas(Boolean(account.accessToken)),
     "anthropic-dangerous-direct-browser-access": "true",
     "anthropic-version": "2023-06-01",
     "x-app": "cli",
@@ -97,7 +95,7 @@ function thinkingFor(body: Json, model: string, maxTokens: number): Json {
 export function agentBody(source: Json, model: string, account: RuntimeAccount, sessionId: string): Json {
   const originalSystem = source.system;
   const system: Json[] = [
-    { type: "text", text: `x-anthropic-billing-header: cc_version=${ACTIVE_PROFILE.claudeCodeVersion}.${ACTIVE_PROFILE.buildSuffix}; cc_entrypoint=${ACTIVE_PROFILE.entrypoint};` },
+    { type: "text", text: `x-anthropic-billing-header: cc_version=${ACTIVE_PROFILE.claudeCodeVersion}.${ccBuildSuffix(source.messages)}; cc_entrypoint=${ACTIVE_PROFILE.entrypoint};` },
     { type: "text", text: ACTIVE_PROFILE.identityBlock, cache_control: { type: "ephemeral" } },
     { type: "text", text: ACTIVE_PROFILE.mainPrompt, cache_control: { type: "ephemeral" } },
   ];

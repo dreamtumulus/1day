@@ -103,6 +103,21 @@ Native CC 的“零注入”指不增加业务内容，不排除凭证替换、�
 
 Agent 兼容模式是协议适配，不宣称任意第三方 Agent 的业务正文与官方 Claude Code 逐字相同。
 
+### 3.4 出站形态管线（关键不变量）
+
+worker-0 不以 UA 作为最终判断，也不以旧版硬门槛代替归一。每次上行严格按以下顺序执行：
+
+1. **入口分类**：结构完整的 CC 走 Native；缺 beta 自动补齐；结构不完整走 Agent 修复，不因未知版本、身份块或 Profile 未登记而拒绝。
+2. **软件归一**：UA、`cc_version`、SDK、runtime、机器头和真实 entrypoint 归一到激活 Profile；客户自定义 entrypoint 不直接透传。
+3. **thinking 归一**：按目标模型处理 enabled/budget、adaptive、disabled、between_tools 与 effort，不丢 display 等其余意图。
+4. **身份与 session**：metadata 固定为 `device_id → account_uuid → session_id` 的键序；派生 session 必须是确定性的合法 UUIDv4；JSON 与 legacy `user_…_session_…` 都能读取。
+5. **机器环境**：`# Environment` 的 cwd、Platform、Shell、OS Version 和 scratchpad 与账号机器头同源，避免 Darwin 正文配 Linux 头。
+6. **beta 与顶层结构**：`claude-code-20250219` 必须存在，OAuth beta 紧跟其后；功能 beta 保留；顶层键按 Messages 顺序校验。
+7. **计费后缀最后重算**：所有改体完成后，使用 suffix-v1（盐 + 首条用户文本 `[4,7,20]` + 出站版本）重算。首条用户文本跳过 `<system-reminder>`，不把样本里的 `93a` 当常量。
+8. **出站硬校验**：再次核对 UA/计费版本与后缀、entrypoint、metadata/session、Stainless lang/package/runtime、beta 顺序、机器环境和顶层键序。任一不符返回 400 `cc_shape_mismatch`，请求不进入账号冷却、不计费，也不发往上游。
+
+`2.1.322` 的 suffix-v1 已通过真实客户端样本验证：同一消息计算结果确为 `93a`；其他消息必须得到各自的后缀。归一后的出站校验与入站分类相互独立，避免“入站看似合规、归一后又混版”。
+
 ## 4. 版本化 Claude Code Profile
 
 每个 Profile 对应一个明确的 Claude Code 版本，包含：

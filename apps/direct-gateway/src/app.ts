@@ -5,7 +5,9 @@ import { ControlPlaneClient, ControlPlaneError } from "./control-plane.js";
 import { AnthropicToOpenaiStream, anthropicMessageToOpenai, openaiChatToAnthropic } from "./convert.js";
 import { Egress, EgressError } from "./egress.js";
 import { conversationSession, metadataSession, pinIdentity } from "./identity.js";
+import { accountMachine, pinMachineEnvironment } from "./machine.js";
 import { OAuthManager } from "./oauth.js";
+import { alignBillingSuffix, assertOutgoingShape, canonicalBetas, canonicalBodyOrder, normalizeThinking, ShapeError } from "./shape.js";
 import { ACTIVE_PROFILE, agentBody, agentHeaders, claudeCodeLike, isClaudeCodeRequest, nativeProfileOverrides, normalizeNativeBody } from "./profile.js";
 import { StateStore } from "./state.js";
 import { UsageAccumulator, collectText } from "./usage.js";
@@ -196,9 +198,11 @@ export class DirectGateway {
         const { max_tokens: _max, thinking: _thinking, context_management: _context, stream: _stream, ...rest } = upstreamBody;
         upstreamBody = rest;
       }
+      upstreamBody = alignBillingSuffix(canonicalBodyOrder(pinMachineEnvironment(normalizeThinking(upstreamBody, input.model), accountMachine(account), sessionId)));
       const path = countTokens ? "/v1/messages/count_tokens" : "/v1/messages?beta=true";
       const send = async (current: RuntimeAccount): Promise<Response> => {
         const headers = native ? this.nativeHeaders(request.headers, current) : agentHeaders(sessionId, current);
+        assertOutgoingShape(headers, upstreamBody, countTokens);
         return this.egress.request(account = current, `${current.baseUrl}${path}`, { method: "POST", headers, body: JSON.stringify(upstreamBody), signal: request.signal });
       };
       let response = await send(account);
@@ -227,8 +231,8 @@ export class DirectGateway {
       if (dialect === "anthropic") return Response.json(json, { headers: responseHeaders(response.headers) });
       return Response.json(anthropicMessageToOpenai(json, input.model));
     } catch (error) {
-      const code = error instanceof EgressError ? error.code : error instanceof ControlPlaneError ? error.code : "upstream_error";
-      const status = error instanceof ControlPlaneError ? error.status : code === "no_proxy_available" ? 503 : 502;
+      const code = error instanceof ShapeError ? "cc_shape_mismatch" : error instanceof EgressError ? error.code : error instanceof ControlPlaneError ? error.code : "upstream_error";
+      const status = error instanceof ShapeError ? 400 : error instanceof ControlPlaneError ? error.status : code === "no_proxy_available" ? 503 : 502;
       try {
         const headers = new Headers({ "content-type": "application/json" });
         await this.accountEvent(selected, input.model, { status, headers } as Response, (error as Error).message);
@@ -291,16 +295,12 @@ export class DirectGateway {
       if (DROP_HEADERS.has(name) || name.startsWith("cf-") || name.startsWith("x-forwarded-") || name.startsWith("x-1dayapi-")) return;
       headers[name] = value;
     });
-    Object.assign(headers, nativeProfileOverrides(incoming));
+    Object.assign(headers, nativeProfileOverrides(incoming, account));
     headers["content-type"] = "application/json";
     headers["accept-encoding"] = "gzip, deflate, br, zstd";
-    const betas = new Set((headers["anthropic-beta"] ?? "").split(",").filter(Boolean));
-    betas.add("claude-code-20250219");
-    if (account.accessToken) {
-      headers.authorization = `Bearer ${account.accessToken}`;
-      betas.add("oauth-2025-04-20");
-    } else headers["x-api-key"] = account.apiKey!;
-    headers["anthropic-beta"] = [...betas].join(",");
+    if (account.accessToken) headers.authorization = `Bearer ${account.accessToken}`;
+    else headers["x-api-key"] = account.apiKey!;
+    headers["anthropic-beta"] = canonicalBetas(Boolean(account.accessToken), headers["anthropic-beta"]);
     return headers;
   }
 

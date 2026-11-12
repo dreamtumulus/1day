@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { gzipSync } from "node:zlib";
 import { DirectGateway } from "../src/app.ts";
+import { ccBuildSuffix } from "../src/shape.ts";
 import { StateStore } from "../src/state.ts";
 import type { GatewayConfig, Json } from "../src/types.ts";
 
@@ -175,7 +176,7 @@ describe("worker-0 direct gateway", () => {
     expect(records[0].headers["x-stainless-runtime-version"]).toBe("v26.12.1");
     expect(records[0].headers["anthropic-beta"]).toContain("claude-code-20250219");
     expect(upstream.messages).toEqual(nativeBody.messages);
-    expect(upstream.system[0].text).toBe("x-anthropic-billing-header: cc_version=2.1.322.93a; cc_entrypoint=cli;");
+    expect(upstream.system[0].text).toBe(`x-anthropic-billing-header: cc_version=2.1.322.${ccBuildSuffix(upstream.messages)}; cc_entrypoint=cli;`);
     expect(upstream.system.slice(1)).toEqual(nativeBody.system.slice(1));
     expect(upstream.tools).toEqual(nativeBody.tools);
     expect(upstream.thinking).toEqual(nativeBody.thinking);
@@ -188,7 +189,7 @@ describe("worker-0 direct gateway", () => {
     expect(repaired.status).toBe(200);
     expect(await repaired.text()).toContain("message_stop");
     expect(records).toHaveLength(2);
-    expect(records[1].body.system[0].text).toContain("cc_version=2.1.322.93a");
+    expect(records[1].body.system[0].text).toContain(`cc_version=2.1.322.${ccBuildSuffix(records[1].body.messages)}`);
     expect(records[1].body.system.length).toBeGreaterThanOrEqual(3);
     expect(records[1].body.metadata.user_id).toContain(session);
   });
