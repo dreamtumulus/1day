@@ -280,6 +280,8 @@ TLS ClientHello 需要专用抓包/TLS 工具；REA 不替代这类证据。
 - Pi 通过 OpenAI Chat 完成文本和工具调用。
 - OpenCode 通过 Anthropic 或 OpenAI Chat 完成相同矩阵。
 - Claude Code 通过 Native CC 路径完成文本与工具调用。
+- `test/deferred-mcp.mjs` + `test/scenario-upstream.mjs` 验证本地 deferred MCP：`ToolSearch → 完整 schema 注入 → deferred_echo → tool_result`；直发与经 worker-0 的工具名和消息结构一致，Native 不代替客户端执行 ToolSearch。
+- 后台标题生成仅确认当前会话存在 `ai-title` 事件；本次受控交互未出现独立的标题 API 请求，因此后台小模型专项一致性仍未完成，不能计入已通过项。
 - 编译后的二进制在脱离源码目录的条件下重复上述冒烟测试。
 
 ### 10.3 上线顺序
