@@ -1,10 +1,12 @@
 import profile from "./profiles/2.1.322.json" with { type: "json" };
+import agentProfile from "./profiles/2.1.322-restricted.json" with { type: "json" };
 import { UUID_RE } from "./identity.js";
 import { accountMachine, machineHeaders } from "./machine.js";
 import { canonicalBetas, ccBuildSuffix } from "./shape.js";
 import type { Json, RuntimeAccount } from "./types.js";
 
 export const ACTIVE_PROFILE = profile;
+export const AGENT_PROFILE = agentProfile;
 
 export function isClaudeCodeRequest(headers: Headers, body: Json): boolean {
   const ua = /^claude-(?:cli|code)\/(\d+\.\d+\.\d+)/.exec(headers.get("user-agent") ?? "");
@@ -66,16 +68,16 @@ export function agentHeaders(sessionId: string, account: RuntimeAccount): Record
   const headers: Record<string, string> = {
     accept: "application/json",
     "content-type": "application/json",
-    "user-agent": `claude-cli/${ACTIVE_PROFILE.claudeCodeVersion} (external, ${ACTIVE_PROFILE.entrypoint})`,
+    "user-agent": `claude-cli/${AGENT_PROFILE.claudeCodeVersion} (external, ${AGENT_PROFILE.entrypoint})`,
     "x-claude-code-session-id": sessionId,
     "x-stainless-lang": "js",
     ...machineHeaders(accountMachine(account)),
-    "x-stainless-package-version": ACTIVE_PROFILE.sdkVersion,
+    "x-stainless-package-version": AGENT_PROFILE.sdkVersion,
     "x-stainless-retry-count": "0",
     "x-stainless-runtime": "node",
-    "x-stainless-runtime-version": ACTIVE_PROFILE.runtimeVersion,
+    "x-stainless-runtime-version": AGENT_PROFILE.runtimeVersion,
     "x-stainless-timeout": "600",
-    "anthropic-beta": canonicalBetas(Boolean(account.accessToken)),
+    "anthropic-beta": canonicalBetas(Boolean(account.accessToken), "", AGENT_PROFILE),
     "anthropic-dangerous-direct-browser-access": "true",
     "anthropic-version": "2023-06-01",
     "x-app": "cli",
@@ -95,9 +97,9 @@ function thinkingFor(body: Json, model: string, maxTokens: number): Json {
 export function agentBody(source: Json, model: string, account: RuntimeAccount, sessionId: string): Json {
   const originalSystem = source.system;
   const system: Json[] = [
-    { type: "text", text: `x-anthropic-billing-header: cc_version=${ACTIVE_PROFILE.claudeCodeVersion}.${ccBuildSuffix(source.messages)}; cc_entrypoint=${ACTIVE_PROFILE.entrypoint};` },
-    { type: "text", text: ACTIVE_PROFILE.identityBlock, cache_control: { type: "ephemeral" } },
-    { type: "text", text: ACTIVE_PROFILE.mainPrompt, cache_control: { type: "ephemeral" } },
+    { type: "text", text: `x-anthropic-billing-header: cc_version=${AGENT_PROFILE.claudeCodeVersion}.${ccBuildSuffix(source.messages)}; cc_entrypoint=${AGENT_PROFILE.entrypoint};` },
+    { type: "text", text: AGENT_PROFILE.identityBlock, cache_control: { type: "ephemeral" } },
+    { type: "text", text: AGENT_PROFILE.mainPrompt, cache_control: { type: "ephemeral" } },
   ];
   if (typeof originalSystem === "string" && originalSystem) {
     system.push({ type: "text", text: originalSystem, cache_control: { type: "ephemeral" } });
@@ -117,7 +119,7 @@ export function agentBody(source: Json, model: string, account: RuntimeAccount, 
     metadata: { user_id: JSON.stringify({ device_id: account.deviceId, account_uuid: account.accountUuid ?? "", session_id: sessionId }) },
     max_tokens: maxTokens,
     thinking: thinkingFor(source, model, maxTokens),
-    context_management: source.context_management ?? ACTIVE_PROFILE.contextManagement,
+    context_management: source.context_management ?? AGENT_PROFILE.contextManagement,
     stream: source.stream === true,
   };
 }

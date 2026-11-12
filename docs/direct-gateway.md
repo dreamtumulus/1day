@@ -95,7 +95,7 @@ Native CC 的“零注入”指不增加业务内容，不排除凭证替换、�
 非 Claude Code 请求进入 Agent 兼容模式：
 
 1. OpenAI Chat 请求先转换为 Anthropic Messages；Anthropic 请求保留业务语义。
-2. 按激活 Profile 构造 Claude Code 请求头、beta、计费块、身份块、metadata 和上下文管理字段。
+2. 按 Agent 专用 restricted Profile 构造请求头、beta、计费块、身份块、metadata 和上下文管理字段；该 Profile 来自官方无工具配置采样，不含 ToolSearch、DeferredToolPlaceholder 或延迟工具指令，不伪造客户端无法执行的搜索工具。
 3. 客户端 system/developer 内容作为独立缓存文本块保留，不写入客户端消息。
 4. 客户端工具转换为 Anthropic 工具并按名称排序；不伪造客户端无法执行的 Claude Code 内置工具。
 5. 客户端未提供会话时，根据客户端密钥、模型和对话根生成稳定 UUID；支持 `x-1dayapi-session-id` 显式指定。

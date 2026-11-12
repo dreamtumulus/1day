@@ -121,13 +121,14 @@ describe("worker-0 direct gateway", () => {
     expect(upstream.headers.authorization).toBeUndefined();
     expect(upstream.headers["x-api-key"]).toBe("upstream-token");
     expect(upstream.headers["user-agent"]).toBe("claude-cli/2.1.322 (external, sdk-cli)");
-    expect(upstream.headers["anthropic-beta"]).toContain("advanced-tool-use-2025-11-20");
+    expect(upstream.headers["anthropic-beta"]).not.toContain("advanced-tool-use-2025-11-20");
     expect(upstream.headers["anthropic-beta"]).not.toContain("oauth-2025-04-20");
     expect(upstream.headers["accept-encoding"]).toBe("gzip, deflate, br, zstd");
     expect(upstream.body.system).toHaveLength(4);
     expect(upstream.body.system[0].text).toContain("cc_version=2.1.322");
     expect(upstream.body.system[1].text).toContain("Claude agent");
     expect(upstream.body.system[2].text.length).toBeGreaterThan(20_000);
+    expect(upstream.body.system[2].text).not.toContain("ToolSearch");
     expect(upstream.body.system[3].text).toBe("client system");
     expect(upstream.body.tools.map((tool: Json) => tool.name)).toEqual(["Bash", "Write"]);
     const identity = JSON.parse(upstream.body.metadata.user_id);

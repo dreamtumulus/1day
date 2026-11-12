@@ -49,9 +49,9 @@ export function metadataUserId(identity: Json, account: RuntimeAccount, sessionI
   return JSON.stringify({ device_id: account.deviceId, account_uuid: account.accountUuid ?? "", session_id: sessionId, ...others });
 }
 
-export function canonicalBetas(oauth: boolean, incoming = ""): string {
+export function canonicalBetas(oauth: boolean, incoming = "", profile: typeof ACTIVE_PROFILE = ACTIVE_PROFILE): string {
   const present = new Set(incoming.split(",").map((v) => v.trim()).filter(Boolean));
-  const base = [...ACTIVE_PROFILE.betas];
+  const base = [...profile.betas];
   const betas = oauth ? [base[0], "oauth-2025-04-20", ...base.slice(1)] : base;
   for (const beta of present) if (!betas.includes(beta)) betas.push(beta);
   return betas.join(",");
