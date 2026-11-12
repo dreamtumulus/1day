@@ -37,6 +37,7 @@
 | [`auth.md`](./auth.md) | 鉴权（登录密钥 + 会话；API Key；上游 OAuth 凭证生命周期） |
 | [`provider-protocol.md`](./provider-protocol.md) | 节点 ↔ 平台 ↔ 网关协议（含协议 v2：http_egress）；组织隔离增量见 `team-isolation.md` |
 | [`claude-code-compat.md`](./claude-code-compat.md) | Claude Code 客户端请求兼容性规范（直连路径使用；§10 一号一设备） |
+| [`direct-gateway.md`](./direct-gateway.md) | **worker-0 独立直连网关**：Bun 单文件二进制、Native CC / Agent 双路径、独立设备与代理状态、Profile 升级和验收契约 |
 | [`worker-sessions.md`](./worker-sessions.md) | **worker 持久会话**（2026-10-17 立项）：stream-json 双向进程池、回收与容量、原生工具 / thinking / document 分期计划与进度 |
 
 ### 现状参考（"是什么"）

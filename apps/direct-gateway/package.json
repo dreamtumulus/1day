@@ -1,0 +1,21 @@
+{
+  "name": "@1dayapi/direct-gateway",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "worker-0 standalone Bun Claude Code direct gateway",
+  "engines": {
+    "node": ">=22.15.0",
+    "bun": ">=1.4.0"
+  },
+  "scripts": {
+    "dev": "bun --watch src/index.ts serve",
+    "build": "tsc -p tsconfig.json && bun build src/index.ts --compile --outfile dist/1dayapi-direct",
+    "start": "bun src/index.ts serve",
+    "test": "tsc -p tsconfig.json && bun test"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "typescript": "^5.6.0"
+  }
+}

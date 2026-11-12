@@ -26,6 +26,7 @@ packages/
   core/         共享库：SQLite + 迁移、加密、模型注册表与计价、调度、结算
 apps/
   gateway/      推理网关 :8400
+  direct-gateway/ worker-0 独立 Bun 直连网关（默认 127.0.0.1:8410）
   console/      控制台 API + 节点控制面 :8401
   web/          前端：公开站点 + /console 三角色控制台 :8402
   provider-node/ 号商节点守护进程（本地控制台 127.0.0.1:16889）
