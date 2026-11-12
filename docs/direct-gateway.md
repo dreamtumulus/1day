@@ -281,7 +281,7 @@ TLS ClientHello 需要专用抓包/TLS 工具；REA 不替代这类证据。
 - OpenCode 通过 Anthropic 或 OpenAI Chat 完成相同矩阵。
 - Claude Code 通过 Native CC 路径完成文本与工具调用。
 - `test/deferred-mcp.mjs` + `test/scenario-upstream.mjs` 验证本地 deferred MCP：`ToolSearch → 完整 schema 注入 → deferred_echo → tool_result`；直发与经 worker-0 的工具名和消息结构一致，Native 不代替客户端执行 ToolSearch。
-- 后台标题生成仅确认当前会话存在 `ai-title` 事件；本次受控交互未出现独立的标题 API 请求，因此后台小模型专项一致性仍未完成，不能计入已通过项。
+- 后台标题生成已通过 `generate_session_title` 独立请求验证：确认 `structured-outputs-2025-12-15`、JSON Schema 输出格式、3059 字符 system、disabled thinking、temperature 和 stream；直发与经 worker-0 在规范化设备、账号、session 和机器环境后逐字段 MATCH，且 `temperature → output_config → stream` 顺序一致。
 - 编译后的二进制在脱离源码目录的条件下重复上述冒烟测试。
 
 ### 10.3 上线顺序

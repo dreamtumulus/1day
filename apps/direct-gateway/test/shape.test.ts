@@ -2,7 +2,7 @@ import { describe, expect, it } from "bun:test";
 import { metadataSession, stableUuid } from "../src/identity.ts";
 import { accountMachine, pinMachineEnvironment } from "../src/machine.ts";
 import { agentBody, agentHeaders } from "../src/profile.ts";
-import { alignBillingSuffix, assertOutgoingShape, canonicalBetas, ccBuildSuffix, nativeBetas, normalizeThinking, ShapeError } from "../src/shape.ts";
+import { alignBillingSuffix, assertOutgoingShape, canonicalBetas, canonicalBodyOrder, ccBuildSuffix, nativeBetas, normalizeThinking, ShapeError } from "../src/shape.ts";
 import type { RuntimeAccount } from "../src/types.ts";
 
 const account: RuntimeAccount = {
@@ -77,5 +77,10 @@ describe("Claude Code outgoing shape", () => {
     const session = stableUuid("order");
     const body = agentBody({ model: "claude-sonnet-4-5-20250929", messages: [], max_tokens: 1, stream: true }, "claude-sonnet-4-5-20250929", account, session);
     expect(body.metadata.user_id).toBe(`{"device_id":"${"a".repeat(64)}","account_uuid":"","session_id":"${session}"}`);
+  });
+
+  it("places temperature before output_config and stream like title-generation requests", () => {
+    const body = canonicalBodyOrder({ model: "m", messages: [], system: [], tools: [], metadata: {}, max_tokens: 1, thinking: { type: "disabled" }, temperature: 0, output_config: { effort: "medium" }, stream: true });
+    expect(Object.keys(body)).toEqual(["model", "messages", "system", "tools", "metadata", "max_tokens", "thinking", "temperature", "output_config", "stream"]);
   });
 });

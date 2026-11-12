@@ -102,7 +102,7 @@ export function normalizeThinking(body: Json, model: string): Json {
 }
 
 export function canonicalBodyOrder(body: Json): Json {
-  const order = ["model", "messages", "system", "tools", "metadata", "max_tokens", "thinking", "context_management", "safeguards", "output_config", "stream"];
+  const order = ["model", "messages", "system", "tools", "metadata", "max_tokens", "thinking", "context_management", "temperature", "safeguards", "output_config", "stream"];
   const out: Json = {};
   for (const key of order) if (key in body) out[key] = body[key];
   for (const [key, value] of Object.entries(body)) if (!(key in out)) out[key] = value;
@@ -123,7 +123,7 @@ export function assertOutgoingShape(headers: Record<string, string>, body: Json,
   const betas = (headers["anthropic-beta"] ?? "").split(",");
   if (!betas.includes("claude-code-20250219")) missing.push("beta_claude_code");
   if (headers.authorization && betas[1] !== "oauth-2025-04-20") missing.push("oauth_beta_order");
-  const topLevelOrder = ["model", "messages", "system", "tools", "metadata", "max_tokens", "thinking", "context_management", "safeguards", "output_config", "stream"];
+  const topLevelOrder = ["model", "messages", "system", "tools", "metadata", "max_tokens", "thinking", "context_management", "temperature", "safeguards", "output_config", "stream"];
   let previous = -1;
   for (const key of Object.keys(body)) {
     const index = topLevelOrder.indexOf(key);
