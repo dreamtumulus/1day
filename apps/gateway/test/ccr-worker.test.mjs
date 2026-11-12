@@ -111,3 +111,41 @@ test("ids are Anthropic-shaped: msg_/toolu_ + 24 base62 chars, no underscore or 
   assert.notEqual(anthropicId("msg"), anthropicId("msg"), "fresh per call");
   assert.match(t.message().id, /^msg_[A-Za-z0-9]{24}$/, "final message carries the same id");
 });
+
+// X-68 (2026-11-11): Claude Code's own (`<synthetic>`) sentence for a turn it could not run was streamed as answer text,
+// then the turn ended "… (after partial output)". It is the error, never output.
+test("a <synthetic> assistant message is held: no text block, the error carries its sentence without 'partial output'", () => {
+  for (const sentence of ["OAuth token revoked · Please run /login", "Login expired · Please run /login", "You've reached your Fable limit. /model to switch models."]) {
+    const t = new SessionTranslator({ model: "m", simulateTools: false });
+    let sse = t.push({ type: "system", subtype: "init", session_id: "s1" });
+    sse += t.push({ type: "assistant", message: { id: "x", model: "<synthetic>", role: "assistant", content: [{ type: "text", text: sentence }] }, error: "authentication_failed" });
+    sse += t.push({ type: "result", subtype: "error_during_execution", is_error: true, result: sentence });
+    assert.equal(sse, "", "nothing is forwarded before the failure");
+    assert.ok(t.finished);
+    assert.equal(t.error, sentence);
+    assert.equal(t.errorSource, "cc_result");
+  }
+});
+
+test("a <synthetic>-only turn is an error even when the result calls it a success; real output before it stays partial", () => {
+  const only = new SessionTranslator({ model: "m", simulateTools: false });
+  only.push({ type: "assistant", message: { id: "x", model: "<synthetic>", role: "assistant", content: [{ type: "text", text: "Login expired · Please run /login" }] } });
+  only.push({ type: "result", subtype: "success", is_error: false });
+  assert.equal(only.error, "Login expired · Please run /login");
+  assert.equal(only.errorSource, "cc_result");
+
+  const partial = new SessionTranslator({ model: "m", simulateTools: false });
+  let sse = partial.push({ type: "assistant", message: { id: "a1", model: "claude-sonnet-5-5", role: "assistant", content: [{ type: "text", text: "First part." }] } });
+  sse += partial.push({ type: "assistant", message: { id: "x", model: "<synthetic>", role: "assistant", content: [{ type: "text", text: "OAuth token revoked · Please run /login" }] } });
+  sse += partial.push({ type: "result", subtype: "error_during_execution", is_error: true, result: "OAuth token revoked · Please run /login" });
+  assert.ok(sse.includes("First part.") && !sse.includes("OAuth token revoked"), "the sentence is not appended to the answer");
+  assert.equal(partial.error, "OAuth token revoked · Please run /login (after partial output)");
+});
+
+test("a model that writes the same words is still answered: only the model field marks Claude Code's own message", () => {
+  const t = new SessionTranslator({ model: "m", simulateTools: false });
+  let sse = t.push({ type: "assistant", message: { id: "a1", model: "claude-sonnet-5-5", role: "assistant", content: [{ type: "text", text: "OAuth token revoked · Please run /login" }] } });
+  sse += t.push({ type: "result", subtype: "success", is_error: false, result: "OAuth token revoked · Please run /login" });
+  assert.equal(t.error, null);
+  assert.ok(sse.includes("OAuth token revoked"));
+});

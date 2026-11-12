@@ -27,6 +27,24 @@ if ((thirdParty || thirdPartyPartial) && process.env.FAKE_CLAUDE_MODE === "canon
   line({ type: "result", subtype: "error_during_execution", is_error: true, result: message, modelUsage, duration_ms: 50, duration_api_ms: 40, num_turns: 1 });
   process.exit(1);
 }
+// X-68: Claude Code's own (`<synthetic>`) message for a login that is gone, then an error result — nothing else.
+// `fixture-login-expired-once:<nonce>` fails only the first process that sees the nonce (the retry on another account
+// answers); `fixture-login-expired-always` fails every time.
+const loginOnce = /fixture-login-expired-once:([\w-]+)/.exec(prompt);
+let loginGone = prompt.includes("fixture-login-expired-always");
+if (loginOnce) {
+  const { existsSync, writeFileSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const flag = `${tmpdir()}/fake-claude-login-${loginOnce[1]}`;
+  if (!existsSync(flag)) { writeFileSync(flag, ""); loginGone = true; }
+}
+if (loginGone) {
+  const message = "Login expired · Please run /login";
+  line({ type: "system", subtype: "init", model: "claude-sonnet-5-5" });
+  line({ type: "assistant", message: { id: "msg_synth", model: "<synthetic>", role: "assistant", content: [{ type: "text", text: message }] }, error: "authentication_failed" });
+  line({ type: "result", subtype: "error_during_execution", is_error: true, result: message, duration_ms: 50, duration_api_ms: 0, num_turns: 1 });
+  process.exit(1);
+}
 const text = safeguards
   ? "Opus 5.5's safeguards flagged this session (https://www.anthropic.com/legal/aup). Details: [fixture]"
   : toolMatch

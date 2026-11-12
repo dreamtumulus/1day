@@ -45,7 +45,8 @@ export interface ThirdPartyInspection {
 
 /** Inspect before the downstream sees anything. A started answer is never replayed. */
 export async function inspectThirdPartyResponse(res: Response, stream: boolean): Promise<ThirdPartyInspection> {
-  if (!stream) {
+  // A stream that failed before its first SSE text is a 502 too (worker.ts priming, X-68).
+  if (!stream || !res.ok) {
     if (res.status !== 502) return { response: res, refused: false };
     const text = await res.text();
     if (unansweredThirdPartyRefusal(text)) return { response: null, refused: true };

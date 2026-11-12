@@ -728,6 +728,49 @@ export async function runCcrWorker(input: CcrWorkerInput): Promise<Response | nu
     return new Response(JSON.stringify(translator.message()), { status: 200, headers: { "content-type": "application/json" } });
   }
 
+  // Streaming, before anything is forwarded (X-68, 2026-11-11): the turn is read here until its first SSE text. A turn
+  // that fails with nothing to show — the account's login is gone, the node lost the process — is answered like the
+  // non-stream path does, with a 502 the proxy can take to another account; returned as a stream it was final for the
+  // client (93 "Login expired" + 16 "OAuth token revoked / session expired" streams on 2026-11-11). The proxy's own
+  // keepalive covers the wait; it is bounded so a slow first token never holds the response headers of a strict key.
+  const PRIME_MAX_MS = 60_000;
+  const primed: string[] = [];
+  /** The turn ended (or was handed over) while priming: the stream below only delivers. */
+  let primeEnded = false;
+  try {
+    while (Date.now() - startedAt < PRIME_MAX_MS) {
+      input.signal?.throwIfAborted();
+      if (Date.now() > deadline) throw new Error("worker timed out");
+      const r = await readFor(1_000);
+      if (r === null) continue;
+      let out = "";
+      if (r.done) for (const p of lines.end()) out += translator.push(p);
+      else for (const p of lines.push(decoder.decode(r.value, { stream: true }))) out += translator.push(p);
+      if (out) primed.push(out);
+      if (r.done || translator.finished || translator.awaitingTools) { primeEnded = true; break; }
+      if (out) break;
+    }
+  } catch (err) {
+    input.signal?.removeEventListener("abort", onAbort);
+    await reader.cancel().catch(() => {});
+    capture?.finish(translator, { status: input.signal?.aborted ? 499 : 502, error: input.signal?.aborted ? "client_closed" : (err as Error).message });
+    if (input.signal?.aborted) throw input.signal.reason;
+    noteFailureSource(input, "process");
+    return errorResponse(502, `ccr_worker: ${(err as Error).message}`);
+  }
+  if (primeEnded && primed.length === 0 && !translator.awaitingTools && (translator.error || !translator.finished)) {
+    input.signal?.removeEventListener("abort", onAbort);
+    await reader.cancel().catch(() => {});
+    rememberTurn(translator);
+    noteTurnFacts(input, translator, account.name, "ccr-worker");
+    logGuard();
+    if (translator.error) logResult(input.requestId, translator);
+    const message = translator.error ?? "worker exited without a result";
+    capture?.finish(translator, { status: 502, error: translator.error ? undefined : message });
+    noteFailureSource(input, translator.error ? (translator.errorSource ?? "process") : "process");
+    return errorResponse(502, `ccr_worker: ${message}`);
+  }
+
   // Streaming: SSE produced as stdout lines arrive. Failures mid-stream
   // surface as an SSE `error` event (same convention as the cloud executor).
   const encoder = new TextEncoder();
@@ -737,7 +780,8 @@ export async function runCcrWorker(input: CcrWorkerInput): Promise<Response | nu
       void (async () => {
       const write = (s: string) => demand.write(controller, encoder.encode(s));
       try {
-        for (;;) {
+        for (const s of primed) await write(s);
+        while (!primeEnded) {
           input.signal?.throwIfAborted();
         if (Date.now() > deadline) throw new Error("worker timed out");
           const r = await readFor(1_000);

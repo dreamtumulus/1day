@@ -137,6 +137,21 @@ check("non-stream safeguards refusal is request-scoped and non-retryable", r.sta
   check("clear the per-user concurrency cap", (await setCap(null)).status === 200);
 }
 
+// ---- X-68: a login that is gone before any output ----
+{
+  const acc2 = await fixture.createAccount({
+    name: "ccr-worker-2", platform: "anthropic", type: "oauth", protocol: "anthropic", baseUrl: MOCK,
+    accessToken: "worker-ok", executor: "ccr_worker", nodeId, priority: 0, groupIds: [grp.data.id],
+  });
+  check("second worker account", acc2.status === 201, acc2);
+  const stream = (content) => messages(wkey, { stream: true, messages: [{ role: "user", content }] });
+  r = await stream(`fixture-login-expired-once:${uniq()}`);
+  check("stream: login gone on the first account -> answered by the other, Claude Code's sentence never forwarded", r.status === 200 && r.text.includes("Hello from fake claude.") && r.text.includes("event: message_stop") && !r.text.includes("Login expired") && !r.text.includes("event: error"), r.text.slice(0, 600));
+  r = await stream("fixture-login-expired-always");
+  u = await lastUsage();
+  check("stream: login gone everywhere -> an error event, no answer text, no 'partial output'", !r.text.includes("text_delta") && !r.text.includes("message_start") && r.text.includes("event: error") && !r.text.includes("partial output") && u.statusCode >= 500, { text: r.text.slice(0, 600), u });
+}
+
 // ---- node deploy_meta carries ccWorker telemetry (from fake-node heartbeats) ----
 await new Promise((r2) => setTimeout(r2, 1200));
 const nodeRow = (await admin("GET", "/api/admin/nodes")).data.find((n) => n.nodeId === nodeId);

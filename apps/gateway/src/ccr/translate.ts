@@ -744,6 +744,12 @@ export class SessionTranslator {
   private errorFrom: "cc_result" | "model_text" | null = null;
   /** A held "API Error: …" assistant text (see case "assistant"); surfaces as the session error at `result`. */
   private heldApiError: string | null = null;
+  /**
+   * Text of a `<synthetic>` assistant message that is not an "API Error: …" sentence: Claude Code's own wording for a
+   * turn it could not run ("OAuth token revoked · Please run /login", "Login expired · Please run /login", "You've
+   * reached your Fable limit"). Never model output, so never a text block; it names the error when `result` reports one.
+   */
+  private heldSynthetic: string | null = null;
   /** The session's `result` event, condensed for logs (subtype / is_error / text head). */
   private resultInfo: { subtype: string; isError: boolean; text: string | null } | null = null;
 
@@ -1383,6 +1389,13 @@ export class SessionTranslator {
             // safeguards flagged this session …", "API Error: 529 overloaded", the 5-hour-limit sentence). That is
             // not an answer: streaming it as text made clients take the refusal for content (customer report
             // 2026-10-29). Hold it; the `result` turns it into the session's error, never into a text block.
+            if (msg.model === "<synthetic>" && !isCcApiErrorText(b.text)) {
+              // X-68 (2026-11-11): until now these went out as answer text, followed by the error event — 130 streams a
+              // day ended "… (after partial output)" whose only output was Claude Code's own sentence, and a stream
+              // that has forwarded text cannot move to another account.
+              this.heldSynthetic ??= b.text.trim();
+              continue;
+            }
             if (isCcApiErrorText(b.text)) {
               // After an upstream refusal the sentence is Claude Code's rendering of a stop the client already gets
               // as stop_reason "refusal": neither output nor an error.
@@ -1422,17 +1435,20 @@ export class SessionTranslator {
         // A refusal is a served turn in the Messages API (HTTP 200, stop_reason refusal); Claude Code's `result` calls it
         // an error and repeats its sentence in `result` — neither reaches the client.
         const refused = this.stopReason === "refusal";
-        const isError = !refused && (r.is_error === true || (typeof r.subtype === "string" && r.subtype.startsWith("error")) || held !== null);
         const produced = this.nonEmptyBlocks().length > 0 || this.blockText.length > 0;
+        // A turn whose only message is Claude Code's own (`<synthetic>`) is not an answer, whatever the result calls it.
+        const syntheticOnly = this.heldSynthetic !== null && !produced;
+        const isError = !refused && (r.is_error === true || (typeof r.subtype === "string" && r.subtype.startsWith("error")) || held !== null || syntheticOnly);
         const subtype = String(r.subtype ?? (isError ? "error" : refused ? "refusal" : "success"));
-        const resultText = held ?? (typeof r.result === "string" && r.result ? r.result : null);
+        const resultText = held ?? (typeof r.result === "string" && r.result ? r.result : null) ?? this.heldSynthetic;
         this.resultInfo = { subtype, isError, text: resultText ? resultText.slice(0, 300) : null };
         // error_max_turns after real output is a legitimate (truncated) answer → stop_reason max_tokens below.
         if (isError && (subtype !== "error_max_turns" || !produced || held !== null)) {
           const text = resultText ?? `session ended with ${subtype}`;
           this.errorMessage = produced ? `${text} (after partial output)` : text;
           // Claude Code itself called the turn an error → its structured verdict. Only the held look-alike text → model text.
-          this.errorFrom = r.is_error === true || (typeof r.subtype === "string" && r.subtype.startsWith("error")) ? "cc_result" : "model_text";
+          // A `<synthetic>` message is Claude Code's too: the model cannot set that field.
+          this.errorFrom = r.is_error === true || (typeof r.subtype === "string" && r.subtype.startsWith("error")) || (held === null && syntheticOnly) ? "cc_result" : "model_text";
         } else if (!refused && !produced && resultText) {
           // No assistant message observed (schema drift?) — fall back to the summarized result text.
           out += this.appendText(r.result);
