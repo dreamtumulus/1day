@@ -1,0 +1,26 @@
+# Gateway liveness watchdog (docs/operations.md §7.1, X-72): every 10 s /health of the live gateway instance; after
+# 3 failures (no answer in 3 s, non-200, or event-loop p99 >= 2 s) it alerts and runs ops/bin/gateway-switch --hold 0.
+# Install: cp ops/systemd/1dayapi-gateway-watchdog.service /etc/systemd/system/ && systemctl daemon-reload &&
+#          systemctl enable --now 1dayapi-gateway-watchdog
+# Root like gateway-switch (systemctl, nginx reload). AUTO_SWITCH=0 turns it into an alert-only probe.
+[Unit]
+Description=1dayAPI gateway liveness watchdog (automatic blue/green switch when the live gateway stops answering)
+After=network.target nginx.service
+Wants=nginx.service
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/1dayapi
+ExecStart=/opt/1dayapi/ops/bin/gateway-watchdog
+Environment=INTERVAL=10
+Environment=FAILS=3
+Environment=HEALTH_TIMEOUT=3
+Environment=LAG_MAX_MS=2000
+Environment=SWITCH_COOLDOWN=1800
+Environment=AUTO_SWITCH=1
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

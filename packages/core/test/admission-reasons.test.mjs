@@ -48,6 +48,24 @@ test("concurrency_cap: the user's in-flight requests reached max_inflight, with 
   assert.equal(c.one("SELECT COUNT(*) AS n FROM gateway_request_budgets WHERE user_id = ?", u.id).n, 2, "a refusal reserves nothing");
 });
 
+test("rate_cap (X-72): admitted requests in the last 60 s reached max_rpm; refusals and other users do not count", () => {
+  c.resetRequestRateWindows();
+  const u = user({ maxInflight: 1 });
+  c.run("UPDATE users SET max_rpm = 2 WHERE id = ?", u.id);
+  const first = c.newId();
+  assert.equal(c.acquireRequestBudgetDetailed(first, u.id, u.key, 0.1).ok, true);
+  assert.equal(acquire(u, 0.1).reason, "concurrency_cap", "an in-flight refusal is not an admitted request");
+  c.releaseRequestBudget(first);
+  assert.equal(acquire(u, 0.1).ok, true, "second admitted request of the minute");
+  c.run("DELETE FROM gateway_request_budgets WHERE user_id = ?", u.id);
+  const r = acquire(u, 0.1);
+  assert.deepEqual([r.ok, r.reason, r.rpm, r.maxRpm, r.inFlight, r.availableUsd], [false, "rate_cap", 2, 2, null, 10]);
+  assert.equal(acquire(user(), 0.1).ok, true, "another user has its own window");
+  const uncapped = user();
+  for (let i = 0; i < 5; i++) { const id = c.newId(); assert.equal(c.acquireRequestBudgetDetailed(id, uncapped.id, uncapped.key, 0.1).ok, true); c.releaseRequestBudget(id); }
+  c.resetRequestRateWindows();
+});
+
 test("reserved_spending_cap: in-flight requests reserve the whole balance (capIsBalance) or a configured cap", () => {
   const u = user({ balance: 1 });
   assert.equal(acquire(u, 0.6).ok, true);

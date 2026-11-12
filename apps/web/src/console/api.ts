@@ -837,6 +837,7 @@ export interface AdminUser {
   /** Admission overrides; null = gateway defaults (USER_MAX_INFLIGHT / USER_MAX_INFLIGHT_USD). */
   maxInflight?: number | null;
   maxInflightUsd?: number | null;
+  maxRpm?: number | null;
 }
 
 export interface ModelPrices {

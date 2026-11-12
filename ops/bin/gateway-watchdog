@@ -1,0 +1,125 @@
+#!/bin/bash
+# Gateway liveness watchdog (docs/operations.md §7.1, X-72, 2026-11-12).
+#
+# The gateway is one Node thread. On 2026-11-12 a synchronous job (X-71) froze it for ~3 s at a time all morning and
+# completely from 09:04Z; every request ended 499 for 20 minutes until a human ran ops/bin/gateway-switch. This loop does
+# that part on its own: every INTERVAL seconds it asks the LIVE instance (the port nginx's `gateway_live` upstream names)
+# for /health; a check fails when the answer takes longer than HEALTH_TIMEOUT, is not HTTP 200, or — when the internal
+# token is readable (INTERNAL_TOKEN or INTERNAL_TOKEN_FILE, default /opt/1dayapi/data/internal.key) — /internal/metrics
+# reports an event-loop p99 (`event_loop_delay_p99_ms`, apps/gateway/src/loop-lag.ts) of LAG_MAX_MS or more. After FAILS consecutive failures it
+# alerts (the same channels as the functional probe, /root/monitor/alert.py) and runs `gateway-switch --hold 0`, which
+# starts the idle instance on the build on disk, probes it with one real request and flips nginx — the frozen instance
+# drains and exits. At most one automatic switch per SWITCH_COOLDOWN (the drained instance cannot be restarted while it is
+# `deactivating`, up to 26 min); a second freeze inside the cooldown is alerted, not switched. A switch never changes code:
+# whatever froze the old instance is still there, so the alert says a human must look.
+#
+# Runs as root (systemctl + nginx reload, like gateway-switch); unit: ops/systemd/1dayapi-gateway-watchdog.service.
+# Tunables (environment): INTERVAL=10 FAILS=3 HEALTH_TIMEOUT=3 LAG_MAX_MS=2000 SWITCH_COOLDOWN=1800 PROBE_TIMEOUT=60
+#   LOG=/var/log/1dayapi-gateway-watchdog.log STATE=/var/lib/1dayapi-gateway-watchdog ALERT_PY=/root/monitor/alert.py
+#   SWITCH=/opt/1dayapi/ops/bin/gateway-switch GATEWAY_UPSTREAM_CONF=/etc/nginx/conf.d/1dayapi-gateway-upstream.conf
+#   AUTO_SWITCH=1 (0 = alert only)
+set -u
+UP=${GATEWAY_UPSTREAM_CONF:-/etc/nginx/conf.d/1dayapi-gateway-upstream.conf}
+INTERVAL=${INTERVAL:-10}
+FAILS=${FAILS:-3}
+HEALTH_TIMEOUT=${HEALTH_TIMEOUT:-3}
+LAG_MAX_MS=${LAG_MAX_MS:-2000}
+SWITCH_COOLDOWN=${SWITCH_COOLDOWN:-1800}
+AUTO_SWITCH=${AUTO_SWITCH:-1}
+LOG=${LOG:-/var/log/1dayapi-gateway-watchdog.log}
+STATE=${STATE:-/var/lib/1dayapi-gateway-watchdog}
+ALERT_PY=${ALERT_PY:-/root/monitor/alert.py}
+SWITCH=${SWITCH:-/opt/1dayapi/ops/bin/gateway-switch}
+INTERNAL_TOKEN_FILE=${INTERNAL_TOKEN_FILE:-${DATA_DIR:-/opt/1dayapi/data}/internal.key}
+export PROBE_TIMEOUT=${PROBE_TIMEOUT:-60}
+
+internal_token() {
+  if [ -n "${INTERNAL_TOKEN:-}" ]; then printf '%s' "$INTERNAL_TOKEN"; elif [ -r "$INTERNAL_TOKEN_FILE" ]; then tr -d '\n' < "$INTERNAL_TOKEN_FILE"; fi
+}
+
+mkdir -p "$STATE"
+log() { echo "$(date -u +%FT%TZ) $*" >> "$LOG"; }
+
+# alert <text> <ok 0|1>: every configured channel of /root/monitor/alert.conf; the log keeps a copy either way.
+alert() {
+  log "ALERT ok=$2: $1"
+  [ -f "$ALERT_PY" ] || return 0
+  python3 - "$1" "$2" "$(dirname "$ALERT_PY")" <<'PY' >> "$LOG" 2>&1
+import sys
+sys.path.insert(0, sys.argv[3])
+import alert
+alert.send(sys.argv[1], sys.argv[2] == "1", "gateway-watchdog")
+PY
+}
+
+live_port() { grep -E '^\s*server\s+127\.0\.0\.1:[0-9]+' "$UP" 2>/dev/null | grep -oE '[0-9]+;?$' | tr -d ';' | head -1; }
+
+# check <port>: 0 when healthy; otherwise prints why and returns 1.
+check() {
+  local port=$1 out code body lag
+  out=$(curl -sS --noproxy '*' -m "$HEALTH_TIMEOUT" -w $'\n%{http_code}' "http://127.0.0.1:$port/health" 2>/dev/null) || { echo "no answer within ${HEALTH_TIMEOUT}s"; return 1; }
+  code=${out##*$'\n'}
+  body=${out%$'\n'*}
+  [ "$code" = 200 ] || { echo "HTTP ${code:-000}"; return 1; }
+  # Event-loop delay gauge (/internal/metrics, review H keeps it off the public /health). No token → liveness only.
+  local token; token=$(internal_token)
+  [ -n "$token" ] || return 0
+  body=$(curl -sS --noproxy '*' -m "$HEALTH_TIMEOUT" -H "x-1dayapi-internal: $token" "http://127.0.0.1:$port/internal/metrics" 2>/dev/null) || { echo "/internal/metrics: no answer within ${HEALTH_TIMEOUT}s"; return 1; }
+  lag=$(printf '%s' "$body" | python3 -c 'import json,sys
+try:
+  print(int((json.load(sys.stdin).get("counters") or {}).get("event_loop_delay_p99_ms") or 0))
+except Exception:
+  print(0)' 2>/dev/null || echo 0)
+  case "$lag" in ''|*[!0-9]*) lag=0 ;; esac
+  [ "$lag" -lt "$LAG_MAX_MS" ] || { echo "event loop p99 ${lag}ms"; return 1; }
+  return 0
+}
+
+fails=0
+open=0
+log "watchdog start pid=$$ interval=${INTERVAL}s fails=${FAILS} timeout=${HEALTH_TIMEOUT}s lag_max=${LAG_MAX_MS}ms cooldown=${SWITCH_COOLDOWN}s auto_switch=${AUTO_SWITCH}"
+while :; do
+  port=$(live_port)
+  if [ -z "$port" ]; then
+    log "cannot read the live port from $UP"
+    sleep "$INTERVAL"
+    continue
+  fi
+  if why=$(check "$port"); then
+    [ "$fails" -gt 0 ] && log "live $port healthy again after $fails failed check(s)"
+    fails=0
+    if [ "$open" = 1 ]; then
+      alert "[1dayAPI][gateway-watchdog] 网关 127.0.0.1:$port 恢复响应" 1
+      open=0
+    fi
+  else
+    fails=$((fails + 1))
+    log "live $port unhealthy ($why) fail=$fails/$FAILS"
+    if [ "$fails" -ge "$FAILS" ]; then
+      if [ "$open" = 0 ]; then
+        alert "[1dayAPI][gateway-watchdog] 在线网关 127.0.0.1:$port 连续 $fails 次探测失败（$why）$([ "$AUTO_SWITCH" = 1 ] && echo '，准备自动切换到另一实例' || echo '，自动切换已关闭，需要人工处理')" 0
+        open=1
+      fi
+      if [ "$AUTO_SWITCH" = 1 ]; then
+        last=$(cat "$STATE/last-switch" 2>/dev/null || echo 0)
+        now=$(date +%s)
+        case "$last" in ''|*[!0-9]*) last=0 ;; esac
+        if [ $((now - last)) -ge "$SWITCH_COOLDOWN" ]; then
+          log "auto switch: $SWITCH --hold 0 (live $port: $why)"
+          echo "$now" > "$STATE/last-switch"
+          if out=$("$SWITCH" --hold 0 2>&1); then
+            log "auto switch done: $(echo "$out" | tail -2 | tr '\n' ' ')"
+            alert "[1dayAPI][gateway-watchdog] 已自动切换网关实例：原 127.0.0.1:$port 无响应（$why），现在 $(echo "$out" | grep -oE 'live=[0-9]+' | tail -1 | tr -d '\n')。代码没有变化，卡住的原因还在，请查日志。" 0
+            fails=0
+          else
+            log "auto switch FAILED: $(echo "$out" | tail -3 | tr '\n' ' ')"
+            alert "[1dayAPI][gateway-watchdog] 自动切换失败，需要人工处理：$(echo "$out" | tail -2 | tr '\n' ' ' | cut -c1-300)" 0
+          fi
+        elif [ $((fails % 6)) -eq 0 ]; then
+          log "switch cooldown: last switch $((now - last))s ago (< ${SWITCH_COOLDOWN}s); not switching"
+        fi
+      fi
+    fi
+  fi
+  sleep "$INTERVAL"
+done
