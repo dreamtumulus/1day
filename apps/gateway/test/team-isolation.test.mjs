@@ -587,7 +587,9 @@ test("client cancellation before response headers closes remote tunnel and relea
 });
 
 
-test("nonstream worker cancelled before result closes worker session and releases the account",async()=>{
+test("nonstream worker cancelled before result closes worker session and releases the account",async(t)=>{
+ // X-69 off (CCR_WORKER_PARK_MS=0): a client that leaves ends its turn at once, as before.
+ const {config}=await import("../dist/config.js");const parkMs=config.ccrWorkerParkMs;config.ccrWorkerParkMs=0;t.after(()=>{config.ccrWorkerParkMs=parkMs;});
  const f=seed([{team:TEAM_A}]);core.run("UPDATE accounts SET executor='ccr_worker' WHERE id=?",f.ids[0]);
  const start=attempts.length;const abort=new AbortController();
  const pending=fetch(`http://127.0.0.1:${gateway.server.address().port}/v1/messages`,{method:"POST",headers:{...f.headers,"content-type":"application/json"},body:JSON.stringify(payload([question("cancel worker awaiting its result")])),signal:abort.signal});
@@ -600,6 +602,26 @@ test("nonstream worker cancelled before result closes worker session and release
  const row=core.one("SELECT status_code,actual_cost FROM usage_logs WHERE api_key_id=?",f.id);assert.equal(row.status_code,499);assert.equal(row.actual_cost,0);
 });
 
+
+test("X-69: a worker turn whose client left is parked — account released, session kept — and ended when no retry comes",async()=>{
+ const {config}=await import("../dist/config.js");const {parkedTurnCount}=await import("../dist/ccr/worker.js");
+ const parkMs=config.ccrWorkerParkMs;config.ccrWorkerParkMs=150;
+ try{
+  const f=seed([{team:TEAM_A}]);core.run("UPDATE accounts SET executor='ccr_worker' WHERE id=?",f.ids[0]);
+  const start=attempts.length;const abort=new AbortController();
+  const pending=fetch(`http://127.0.0.1:${gateway.server.address().port}/v1/messages`,{method:"POST",headers:{...f.headers,"content-type":"application/json"},body:JSON.stringify(payload([question("park this worker turn")])),signal:abort.signal});
+  for(let n=0;attempts.length===start&&n<200;n++)await new Promise(r=>setTimeout(r,5));
+  assert.equal(attempts.length,start+1,"worker opened");
+  const sid=attempts.at(-1).sid;abort.abort();await assert.rejects(pending,{name:"AbortError"});
+  const {accountInFlight}=await import("../dist/proxy.js");
+  for(let n=0;accountInFlight(f.ids[0])&&n<200;n++)await new Promise(r=>setTimeout(r,5));
+  assert.equal(accountInFlight(f.ids[0]),0,"the account's slot is free while the turn is parked");
+  assert.equal(parkedTurnCount(),1);assert.ok(!closedSessions.includes(sid),"the session is still open");
+  const row=core.one("SELECT status_code,actual_cost FROM usage_logs WHERE api_key_id=?",f.id);assert.equal(row.status_code,499);assert.equal(row.actual_cost,0);
+  for(let n=0;!closedSessions.includes(sid)&&n<200;n++)await new Promise(r=>setTimeout(r,10));
+  assert.ok(closedSessions.includes(sid),"no retry within the park time: the session is closed");assert.equal(parkedTurnCount(),0);
+ }finally{config.ccrWorkerParkMs=parkMs;}
+});
 
 test("cloud streaming consumes only the current turn from complete event history",async()=>{
  const f=seed([{team:TEAM_A,cloud:true}]);core.run("UPDATE accounts SET executor='ccr' WHERE id=?",f.ids[0]);

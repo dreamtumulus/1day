@@ -251,6 +251,32 @@ export interface CcrWorkerInput {
   userId?: string | null;
   /** Filled by the worker at turn end (upstream retries …); proxy.ts records it with the usage row. */
   facts?: TurnFacts;
+  /** X-69: this request's client left and its turn was parked for a retry (proxy.ts keeps the conversation on the account). */
+  onParked?: () => void;
+}
+
+// ---------------------------------------------------------------------
+// Parked turns (X-69, 2026-11-12)
+// ---------------------------------------------------------------------
+// A client that closes before it received anything usually has a first-byte timeout (one key: 2,600 closes a day
+// at 20–22 s) and sends the same request again. The turn it left was cancelled on the spot, so the retry started
+// another Claude Code process, imported the conversation once more and often ran into the same timeout. Now the turn
+// keeps running without a client for CCR_WORKER_PARK_MS; the same request arriving on the same account takes it over —
+// what the turn produced meanwhile included — and is the one that is billed. Nobody came: the turn is ended as before.
+
+interface ParkedTurn {
+  accountId: string;
+  /** The conversation's reuse key: another request of it ends the parked turn (the conversation moved on). */
+  conversation: string | null;
+  adopt(next: CcrWorkerInput): Promise<Response | null>;
+  drop(reason: string): void;
+}
+const parkedTurns = new Map<string, ParkedTurn>();
+/** A parked turn holds no scheduling lease: bounded per account and in total, beyond that a leaving client ends its turn. */
+const PARK_MAX_PER_ACCOUNT = 2;
+const PARK_MAX_TOTAL = 200;
+export function parkedTurnCount(): number {
+  return parkedTurns.size;
 }
 
 /** Gateway-side memory of live node sessions (docs/worker-sessions.md §1), written through to core worker_turn_memory. */
@@ -325,7 +351,9 @@ function errorResponse(status: number, message: string): Response {
   });
 }
 
-export async function runCcrWorker(input: CcrWorkerInput): Promise<Response | null> {
+export async function runCcrWorker(first: CcrWorkerInput): Promise<Response | null> {
+  // Rebound when a retry takes over a parked turn (X-69): everything below that reads `input` then serves the retry.
+  let input = first;
   const { account, cred, body, stream } = input;
   if (!cred.accessToken) return errorResponse(401, "ccr_worker: credential has no accessToken");
   // System text goes to the node as the worker's own system prompt (replaces Claude Code's); the prompt holds the rest.
@@ -372,6 +400,20 @@ export async function runCcrWorker(input: CcrWorkerInput): Promise<Response | nu
   const reuseKey = persistent
     ? sha256Hex([account.id, input.stickyKey, input.upstreamModel, canonical ? `canonical:${callerSystemText(body)}` : systemPrompt, JSON.stringify(body.tools ?? null), nativeTools ? "native" : "fence", `think:${thinkingBudget}:${thinkingWanted ? 1 : 0}`, `effort:${effort}`, `max:${maxTokens}`, `root:${blockHash(fullBlocks[0] ?? {})}`].join("|"))
     : null;
+  // X-69: the same request on the same account (everything that shapes the turn, the whole conversation included).
+  const parkKey = config.ccrWorkerParkMs > 0 && !oneShot
+    ? sha256Hex([reuseKey ?? [account.id, input.upstreamModel, canonical ? callerSystemText(body) : systemPrompt, JSON.stringify(body.tools ?? null)].join("\n"), canonical ? "canonical" : "legacy", stream ? "stream" : "json", String(maxTokens), JSON.stringify(stopSequences), toolChoice ?? "", `${thinkingBudget}:${thinkingWanted ? 1 : 0}:${effort}`, JSON.stringify(fullBlocks)].join("\n"))
+    : null;
+  if (parkKey) {
+    const parked = parkedTurns.get(parkKey);
+    if (parked) {
+      parkedTurns.delete(parkKey);
+      bump("ccr_worker_parked_turn_total", { result: "adopted" });
+      console.log(`[ccr-worker] ${input.requestId} takes over the parked turn of the same request on ${account.name}`);
+      return parked.adopt(input);
+    }
+    if (reuseKey) for (const p of [...parkedTurns.values()]) if (p.conversation === reuseKey) p.drop("the conversation moved on");
+  }
   // System-role blocks (per-turn-control) are fed in place but never hashed: later requests keep, rewrite or drop them.
   const persistentIdx: number[] = [];
   roles.forEach((r, i) => {
@@ -527,6 +569,79 @@ export async function runCcrWorker(input: CcrWorkerInput): Promise<Response | nu
     if (translator.guardHits.length) console.log(`[ccr-worker] ${input.requestId} transcript guard on ${account.name} (${plan.mode}${plan.reason ? ` ${plan.reason}` : ""}, ${fullBlocks.length} blocks): ${translator.guardHits.join(",")}`);
   };
 
+  // ---- X-69: the turn's own lifetime. A client leaving ends it (as before) or parks it; see "Parked turns" above. ----
+  const turnAbort = new AbortController();
+  let turnReader: ReadableStreamDefaultReader<Uint8Array> | null = null;
+  /** > 0 while the turn runs with no client attached. */
+  let parkedUntil = 0;
+  let parkTimer: NodeJS.Timeout | undefined;
+  /** A live client received the Response: from here on its leaving ends the turn. */
+  let handedOver = false;
+  /** The Response the turn produced while parked (a stream nobody reads yet). */
+  let parkedResponse: Response | null = null;
+  const endTurn = (reason: unknown): void => {
+    if (reuseKey) sessionMemory.forget(reuseKey);
+    turnAbort.abort(reason);
+    void turnReader?.cancel(reason).catch(() => {});
+  };
+  const parkedEntry: ParkedTurn = {
+    accountId: account.id,
+    conversation: reuseKey,
+    adopt: (next) => {
+      clearTimeout(parkTimer);
+      parkedUntil = 0;
+      // What the turn already told the request that left (upstream retries, failure source) belongs to the one served.
+      if (input.facts && next.facts) Object.assign(next.facts, input.facts);
+      input = next;
+      next.signal?.addEventListener("abort", onAbort, { once: true });
+      if (next.signal?.aborted) onAbort();
+      return attach();
+    },
+    drop: (reason) => {
+      if (!parkedUntil) return;
+      parkedUntil = 0;
+      clearTimeout(parkTimer);
+      if (parkKey && parkedTurns.get(parkKey) === parkedEntry) parkedTurns.delete(parkKey);
+      bump("ccr_worker_parked_turn_total", { result: "dropped" });
+      console.log(`[ccr-worker] ${input.requestId} parked turn on ${account.name} ended: ${reason}`);
+      endTurn(new Error(`parked turn ended: ${reason}`));
+      void parkedResponse?.body?.cancel().catch(() => {});
+    },
+  };
+  const park = (): boolean => {
+    if (!parkKey || handedOver || parkedUntil || turnAbort.signal.aborted) return false;
+    // Only a client that closed its connection (proxy.ts aborts without a reason); a lost scheduling lease ends the turn.
+    const reason = input.signal?.reason as { name?: unknown } | undefined;
+    if (reason?.name !== "AbortError") return false;
+    if (parkedTurns.has(parkKey) || parkedTurns.size >= PARK_MAX_TOTAL) return false;
+    let mine = 0;
+    for (const p of parkedTurns.values()) if (p.accountId === account.id) mine++;
+    if (mine >= PARK_MAX_PER_ACCOUNT) return false;
+    parkedUntil = Date.now() + config.ccrWorkerParkMs;
+    parkTimer = setTimeout(() => parkedEntry.drop(`no retry within ${Math.round(config.ccrWorkerParkMs / 1000)}s`), config.ccrWorkerParkMs);
+    parkTimer.unref?.();
+    parkedTurns.set(parkKey, parkedEntry);
+    bump("ccr_worker_parked_turn_total", { result: "parked" });
+    console.log(`[ccr-worker] ${input.requestId} client left before anything was delivered: turn on ${account.name} parked for ${Math.round(config.ccrWorkerParkMs / 1000)}s`);
+    try { input.onParked?.(); } catch { /* affinity only */ }
+    return true;
+  };
+  const onAbort = (): void => { if (!park()) endTurn(input.signal?.reason); };
+  /** The turn's Response for the client now attached; rejects with its abort reason the moment it leaves. */
+  const attach = (): Promise<Response | null> => {
+    const signal = input.signal;
+    return new Promise<Response | null>((resolve, reject) => {
+      const gone = (): void => reject(signal!.reason);
+      if (signal?.aborted) return gone();
+      signal?.addEventListener("abort", gone, { once: true });
+      running.then(
+        (r) => { signal?.removeEventListener("abort", gone); if (!signal?.aborted) { handedOver = true; resolve(r); } },
+        (e) => { signal?.removeEventListener("abort", gone); reject(e); },
+      );
+    });
+  };
+  // Not re-indented: everything from the open to the Response is the turn, run once, whoever is attached.
+  const run = async (): Promise<Response | null> => {
   const opened = await openCcWorker(account.id, {
     model: input.upstreamModel,
     isolation: input.isolation,
@@ -550,14 +665,14 @@ export async function runCcrWorker(input: CcrWorkerInput): Promise<Response | nu
     // of one organisation in one night). The node rewrites .credentials.json from this message on every turn, so a
     // live process still receives each access token the platform obtains.
     cred: {
-      accessToken: cred.accessToken,
+      accessToken: cred.accessToken!, // checked at entry (the narrowing does not reach into run())
       ...(featureFor("worker_withhold_refresh_token", { groupId: input.groupId, accountId: account.id }) ? {} : { refreshToken: cred.refreshToken }),
       expiresAt: cred.expiresAt,
       subscriptionType: account.subscription_type ?? undefined,
     },
     proxyId: account.bound_proxy_id ?? undefined,
-  }, input.signal).catch((err: unknown) => {
-    if (input.signal?.aborted) throw input.signal.reason;
+  }, turnAbort.signal).catch((err: unknown) => {
+    if (turnAbort.signal.aborted) throw turnAbort.signal.reason;
     if (err instanceof TunnelRequestError) throw err; // request-level: answered once by proxy.ts
     return null;
   });
@@ -593,9 +708,8 @@ export async function runCcrWorker(input: CcrWorkerInput): Promise<Response | nu
   const lines = new StreamJsonLines();
   const reader = opened.stream.getReader();
   const decoder = new TextDecoder();
-  const onAbort = () => { if (reuseKey) sessionMemory.forget(reuseKey); void reader.cancel(input.signal?.reason).catch(() => {}); };
-  input.signal?.addEventListener("abort", onAbort, { once: true });
-  if (input.signal?.aborted) onAbort();
+  turnReader = reader;
+  if (turnAbort.signal.aborted) void reader.cancel(turnAbort.signal.reason).catch(() => {});
 
   // Native tools: the turn is handed to the client once every tool_use block has its parked MCP
   // call. If Claude Code does not issue them all promptly (a tool it refuses to run, or more
@@ -673,7 +787,7 @@ export async function runCcrWorker(input: CcrWorkerInput): Promise<Response | nu
   if (!stream) {
     try {
       for (;;) {
-        input.signal?.throwIfAborted();
+        turnAbort.signal.throwIfAborted();
         if (Date.now() > deadline) throw new Error(`worker timed out after ${config.ccrSessionTimeoutMs}ms`);
         const r = await readFor(1_000);
         if (r === null) {
@@ -695,14 +809,14 @@ export async function runCcrWorker(input: CcrWorkerInput): Promise<Response | nu
     } catch (err) {
       input.signal?.removeEventListener("abort", onAbort);
       await reader.cancel().catch(() => {});
-      capture?.finish(translator, { status: input.signal?.aborted ? 499 : 502, error: input.signal?.aborted ? "client_closed" : (err as Error).message });
-      if (input.signal?.aborted) throw input.signal.reason;
+      capture?.finish(translator, { status: turnAbort.signal.aborted ? 499 : 502, error: turnAbort.signal.aborted ? "client_closed" : (err as Error).message });
+      if (turnAbort.signal.aborted) throw turnAbort.signal.reason;
       noteFailureSource(input, "process");
       return errorResponse(502, `ccr_worker: ${(err as Error).message}`);
     }
     input.signal?.removeEventListener("abort", onAbort);
     await reader.cancel().catch(() => {});
-    input.signal?.throwIfAborted();
+    turnAbort.signal.throwIfAborted();
     if (stalled) noteStalled();
     else { rememberTurn(translator); noteTurnFacts(input, translator, account.name, "ccr-worker"); }
     logGuard();
@@ -739,7 +853,7 @@ export async function runCcrWorker(input: CcrWorkerInput): Promise<Response | nu
   let primeEnded = false;
   try {
     while (Date.now() - startedAt < PRIME_MAX_MS) {
-      input.signal?.throwIfAborted();
+      turnAbort.signal.throwIfAborted();
       if (Date.now() > deadline) throw new Error("worker timed out");
       const r = await readFor(1_000);
       if (r === null) continue;
@@ -753,8 +867,8 @@ export async function runCcrWorker(input: CcrWorkerInput): Promise<Response | nu
   } catch (err) {
     input.signal?.removeEventListener("abort", onAbort);
     await reader.cancel().catch(() => {});
-    capture?.finish(translator, { status: input.signal?.aborted ? 499 : 502, error: input.signal?.aborted ? "client_closed" : (err as Error).message });
-    if (input.signal?.aborted) throw input.signal.reason;
+    capture?.finish(translator, { status: turnAbort.signal.aborted ? 499 : 502, error: turnAbort.signal.aborted ? "client_closed" : (err as Error).message });
+    if (turnAbort.signal.aborted) throw turnAbort.signal.reason;
     noteFailureSource(input, "process");
     return errorResponse(502, `ccr_worker: ${(err as Error).message}`);
   }
@@ -782,7 +896,7 @@ export async function runCcrWorker(input: CcrWorkerInput): Promise<Response | nu
       try {
         for (const s of primed) await write(s);
         while (!primeEnded) {
-          input.signal?.throwIfAborted();
+          turnAbort.signal.throwIfAborted();
         if (Date.now() > deadline) throw new Error("worker timed out");
           const r = await readFor(1_000);
           if (r === null) {
@@ -828,7 +942,7 @@ export async function runCcrWorker(input: CcrWorkerInput): Promise<Response | nu
       } finally {
         input.signal?.removeEventListener("abort", onAbort);
         await reader.cancel().catch(() => {});
-        capture?.finish(translator, { status: translator.error ? 502 : 200, error: input.signal?.aborted ? "client_closed" : (!translator.finished && !translator.awaitingTools && !stalled ? "worker exited without a result" : null), stalled });
+        capture?.finish(translator, { status: translator.error ? 502 : 200, error: turnAbort.signal.aborted ? "client_closed" : (!translator.finished && !translator.awaitingTools && !stalled ? "worker exited without a result" : null), stalled });
         demand.close(controller);
       }
       })();
@@ -841,6 +955,15 @@ export async function runCcrWorker(input: CcrWorkerInput): Promise<Response | nu
     },
   });
   return new Response(bodyStream, { status: 200, headers: { "content-type": "text/event-stream; charset=utf-8" } });
+  };
+  if (input.signal?.aborted) throw input.signal.reason;
+  input.signal?.addEventListener("abort", onAbort, { once: true });
+  const running = run();
+  running.then(
+    (r) => { if (parkedUntil) { if (r?.ok) parkedResponse = r; else parkedEntry.drop("it failed with no client attached"); } },
+    () => { if (parkedUntil) parkedEntry.drop("it failed with no client attached"); },
+  );
+  return attach();
 }
 
 /** One line per failed session result: subtype / is_error / text head (no prompt content beyond what claude echoed). */

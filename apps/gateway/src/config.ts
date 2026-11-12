@@ -48,6 +48,8 @@ export const config = {
   proofSecret: process.env.PROOF_SECRET ?? crypto.randomBytes(32).toString("hex"),
   /** CCR (docs/ccr-supply.md): event poll interval, whole-session deadline, per-call HTTP timeout. */
   ccrPollIntervalMs: Number(process.env.CCR_POLL_INTERVAL_MS ?? 1000),
+  // X-69: how long a worker turn keeps running after its client left before receiving anything (0 = end it at once).
+  ccrWorkerParkMs: Number(process.env.CCR_WORKER_PARK_MS ?? 120_000),
   ccrSessionTimeoutMs: Number(process.env.CCR_SESSION_TIMEOUT_MS ?? 1_200_000), // 20 min since 2026-10-19 (node CC_WORKER_TIMEOUT_MS must match)
   ccrHttpTimeoutMs: Number(process.env.CCR_HTTP_TIMEOUT_MS ?? 60_000),
   /** CCR session pool (§5.3): turns cap, idle retirement, reaper interval. */

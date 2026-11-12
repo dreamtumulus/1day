@@ -1323,6 +1323,8 @@ async function proxyRequest(req: FastifyRequest, reply: FastifyReply, format: Cl
                 apiKeyId: caller.apiKeyId,
                 userId: caller.userId,
                 facts: ctx.turnFacts,
+                // X-69: the retry of a request whose client left must find the account that still runs its turn.
+                onParked: () => rememberSticky(sKey, account.id),
               };
               const thirdPartyPrompt = thirdPartyPromptKey(ccrReq);
               const thirdPartyEnabled = canonicalWorker && !!thirdPartyPrompt && featureFor("canonical_third_party_fallback", { groupId: caller.groupId, accountId: account.id });

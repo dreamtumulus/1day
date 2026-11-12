@@ -137,6 +137,28 @@ check("non-stream safeguards refusal is request-scoped and non-retryable", r.sta
   check("clear the per-user concurrency cap", (await setCap(null)).status === 200);
 }
 
+// ---- X-69: the client leaves before the first byte; the same request sent again takes over the turn it left ----
+{
+  const send = (content, stream, signal) => fetch(G + "/v1/messages", { method: "POST", headers: { authorization: `Bearer ${wkey}`, "content-type": "application/json" }, body: JSON.stringify({ model: "claude-sonnet-5", max_tokens: 64, stream, messages: [{ role: "user", content }] }), signal });
+  const spawns = (marker) => fixture.log().split(marker).length - 1;
+  for (const stream of [true, false]) {
+    const marker = `fixture-slow-first:1500 ${uniq()}`;
+    const before = (await admin("GET", "/api/admin/usage?pageSize=1")).data.total;
+    const gone = new AbortController();
+    const first = send(marker, stream, gone.signal).then((x) => x.text()).catch((e) => e.name);
+    await new Promise((r2) => setTimeout(r2, 500));
+    gone.abort();
+    const firstOutcome = await first;
+    const started = Date.now();
+    const again = await send(marker, stream, AbortSignal.timeout(30_000));
+    const text = await again.text();
+    const took = Date.now() - started;
+    u = await lastUsage();
+    const total = (await admin("GET", "/api/admin/usage?pageSize=1")).data.total;
+    check(`${stream ? "stream" : "non-stream"}: the retry of a request whose client left is answered by the turn already running`, firstOutcome === "AbortError" && again.status === 200 && text.includes("Hello from fake claude.") && took < 1400 && u.statusCode === 200 && u.actualCost > 0 && total === before + 2, { firstOutcome, status: again.status, took, u: { statusCode: u.statusCode, actualCost: u.actualCost }, rows: total - before, text: text.slice(0, 300) });
+  }
+}
+
 // ---- X-68: a login that is gone before any output ----
 {
   const acc2 = await fixture.createAccount({

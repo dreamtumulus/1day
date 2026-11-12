@@ -45,6 +45,9 @@ if (loginGone) {
   line({ type: "result", subtype: "error_during_execution", is_error: true, result: message, duration_ms: 50, duration_api_ms: 0, num_turns: 1 });
   process.exit(1);
 }
+// X-69: a first token that takes a while (`fixture-slow-first:<ms>`), so a client can leave before it.
+const slowFirst = /fixture-slow-first:(\d+)/.exec(prompt);
+if (slowFirst) await sleep(Number(slowFirst[1]));
 const text = safeguards
   ? "Opus 5.5's safeguards flagged this session (https://www.anthropic.com/legal/aup). Details: [fixture]"
   : toolMatch
