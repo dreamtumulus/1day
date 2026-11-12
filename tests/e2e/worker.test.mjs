@@ -20,7 +20,7 @@ async function session(key) {
 }
 const post = async (key, path, body, headers = {}) => {
   const r = await fetch(G + path, { method: "POST", headers: { authorization: `Bearer ${key}`, "content-type": "application/json", ...headers }, body: JSON.stringify(body), signal: AbortSignal.timeout(30_000) });
-  return { status: r.status, text: await r.text() };
+  return { status: r.status, text: await r.text(), retryAfter: r.headers.get("retry-after") };
 };
 let seq = 0;
 const uniq = () => `${Date.now()}-${seq++}`;
@@ -135,6 +135,19 @@ check("non-stream safeguards refusal is request-scoped and non-retryable", r.sta
   const rows = (await admin("GET", "/api/admin/usage?pageSize=10")).data.items.filter((x) => x.errorCode === "user_inflight_limit");
   check("refused admission leaves a zero-cost usage row with the reason", rows.length === refused.length && rows.every((x) => x.statusCode === 429 && x.actualCost === 0 && /^concurrency_cap: .*\[in_flight=1\/1 /.test(x.errorMessage ?? "")), rows.slice(0, 2));
   check("clear the per-user concurrency cap", (await setCap(null)).status === 200);
+  // X-72: a per-minute cap; sequential requests, so the in-flight cap plays no part.
+  const setRpm = (maxRpm) => admin("PATCH", `/api/admin/users/${me.id}`, { maxRpm });
+  check("set per-user rpm cap to 2", (await setRpm(2)).status === 200 && (await admin("GET", `/api/admin/users/${me.id}`)).data.maxRpm === 2);
+  const minute = [];
+  for (let i = 0; i < 4; i++) minute.push(await messages(wkey));
+  const limited = minute.filter((x) => x.status === 429);
+  // This user has already been admitted far more than twice in the last minute (the checks above), so every request is over the cap.
+  check("over the per-minute cap -> 429 user_rate_limit naming the cap, retry-after 5", limited.length === 4 && limited.every((x) => x.retryAfter === "5" && /user_rate_limit/.test(x.text) && /were admitted in the last 60 seconds and your limit is 2 requests per minute/.test(x.text)), minute.map((x) => [x.status, x.retryAfter, x.text.slice(0, 160)]));
+  const rpmRows = (await admin("GET", "/api/admin/usage?pageSize=10")).data.items.filter((x) => x.errorCode === "user_rate_limit");
+  check("rate-limited requests leave zero-cost usage rows with their own code", rpmRows.length === 4 && rpmRows.every((x) => x.statusCode === 429 && x.actualCost === 0 && /^rate_cap: /.test(x.errorMessage ?? "")), rpmRows.slice(0, 2));
+  check("clear the per-user rpm cap", (await setRpm(null)).status === 200);
+  r = await messages(wkey);
+  check("no cap -> the same minute's requests are admitted again", r.status === 200, r.text.slice(0, 200));
 }
 
 // ---- X-69: the client leaves before the first byte; the same request sent again takes over the turn it left ----

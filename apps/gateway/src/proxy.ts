@@ -543,6 +543,8 @@ export function admissionRefusalMessage(r: AdmissionRefusal): string {
       return "This API key has used up its quota, so no new request can be started. Raise the key's quota or use another key.";
     case "concurrency_cap":
       return `Too many requests at the same time: ${r.inFlight} are already in flight and your limit is ${r.maxInflight} concurrent requests. Lower your concurrency or retry when one of them finishes.`;
+    case "rate_cap":
+      return `Too many requests: ${r.rpm} were admitted in the last 60 seconds and your limit is ${r.maxRpm} requests per minute. Slow down and retry in a few seconds.`;
     case "reserved_spending_cap":
       return r.capIsBalance
         ? `The requests you already have in flight reserve your whole available balance (${usd(r.reservedUsd)} of ${usd(r.capUsd)} USD reserved; this request needs about ${usd(r.wantedUsd)} USD more). Top up, lower your concurrency or max_tokens, or retry when a request finishes.`
@@ -583,6 +585,8 @@ export async function proxy(req: FastifyRequest, reply: FastifyReply, format: Cl
     // X-55: say why (to the customer, the log, a counter and a zero-cost usage row) — until 2026-11-10 these 429s were
     // only visible in nginx.
     const message = admissionRefusalMessage(admission);
+    // X-72: a per-minute cap has its own code so a caller (and the usage ledger) can tell it from the in-flight caps.
+    const refusalCode = admission.reason === "rate_cap" ? "user_rate_limit" : "user_inflight_limit";
     noteAdmissionRefusal(caller.userId, caller.apiKeyId, admission);
     try {
       settleRequest({
@@ -599,7 +603,7 @@ export async function proxy(req: FastifyRequest, reply: FastifyReply, format: Cl
         endpoint,
         stream: body.stream === true,
         statusCode: 429,
-        errorCode: "user_inflight_limit",
+        errorCode: refusalCode,
         usage: { input_tokens: 0, output_tokens: 0 },
         usageEstimated: false,
         durationMs: 0,
@@ -609,7 +613,8 @@ export async function proxy(req: FastifyRequest, reply: FastifyReply, format: Cl
     } catch (err) {
       console.error("[proxy] failed to log admission refusal:", err);
     }
-    sendError(reply, format, 429, "user_inflight_limit", message, "rate_limit_error");
+    if (admission.reason === "rate_cap") reply.header("retry-after", "5");
+    sendError(reply, format, 429, refusalCode, message, "rate_limit_error");
     return;
   }
   const abort = new AbortController();
@@ -1057,6 +1062,7 @@ async function proxyRequest(req: FastifyRequest, reply: FastifyReply, format: Cl
     // One budget check per organization, not per account (X-71, 2026-11-12): the day's usage SUM ran once for every
     // candidate account (~330 accounts × ~10 ms) plus an O(n²) in-flight reduce — ~3 s of synchronous work for each new
     // conversation, which froze the gateway's event loop (every request 499 for minutes at a time).
+    const pickStartedAt = Date.now();
     const budgetBlocked = new Map<string, string>();
     const budgetOk = new Set<string>();
     const inFlightByTeam = new Map<string, number>();
@@ -1078,7 +1084,10 @@ async function proxyRequest(req: FastifyRequest, reply: FastifyReply, format: Cl
       // preference, instead of whichever organization's account happened to sort first.
       const pick = pickTeam(teams, caller.policy.teamAffinity);
       scope.row = bindConversationTeam(scope.row.id, scope.token, scope.row.generation, pick.teamId);
-      console.info(`[team-pick] ${ctx.requestId} conv=${scope.row.id.slice(0, 8)} team=${pick.teamId.slice(0, 8)} ${pick.why}`);
+      // X-72: the synchronous time this step took — the X-71 freeze was only visible as a gap between log lines.
+      const pickMs = Date.now() - pickStartedAt;
+      if (pickMs >= 200) bump("team_pick_slow_total");
+      console.info(`[team-pick] ${ctx.requestId} conv=${scope.row.id.slice(0, 8)} team=${pick.teamId.slice(0, 8)} ${pick.why} took=${pickMs}ms`);
     }
     const current = scope.row.team_id;
     if (current) scope.triedTeams.add(current);

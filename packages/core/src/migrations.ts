@@ -329,6 +329,7 @@ const MIGRATIONS: Array<{ version: number; up: (d: DatabaseSync, log: Log) => vo
   { version: 41, up: migration41 },
   { version: 42, up: migration42 },
   { version: 43, up: migration43 },
+  { version: 44, up: migration44 },
 ];
 
 // 上号员令牌（独立鉴权的上号站点 /onboard）：admin 签发，绑定目标节点；
@@ -1121,4 +1122,11 @@ CREATE TABLE IF NOT EXISTS ccr_overhead_calibration (
   updated_at TEXT NOT NULL
 );`);
   log("migration 43: ccr_overhead_calibration (learned platform prompt overhead per lane / tools / model / version)");
+}
+
+// X-72 (2026-11-12): per-user requests-per-minute cap (admin console → user → 并发上限), read by the gateway's admission
+// (core/request-budget.ts). NULL = the gateway default USER_MAX_RPM (unset = unlimited). Additive; nothing is backfilled.
+function migration44(d: DatabaseSync, log: Log): void {
+  addColumns(d, log, "users", [["max_rpm", "INTEGER"]]);
+  log("migration 44: users.max_rpm");
 }

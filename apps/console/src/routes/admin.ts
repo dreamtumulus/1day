@@ -122,6 +122,7 @@ interface UserRow {
   credit_settled_at: string | null;
   max_inflight?: number | null;
   max_inflight_usd?: number | null;
+  max_rpm?: number | null;
   note: string | null;
   last_login_at: string | null;
   created_at: string;
@@ -164,6 +165,7 @@ function userShape(u: UserRow) {
     // Admission overrides (migration 29): null = gateway defaults (USER_MAX_INFLIGHT / USER_MAX_INFLIGHT_USD).
     maxInflight: u.max_inflight ?? null,
     maxInflightUsd: u.max_inflight_usd ?? null,
+    maxRpm: u.max_rpm ?? null,
     note: u.note,
     keyCount: u.key_count ?? 0,
     requests30d: u.requests30d ?? 0,
@@ -663,10 +665,12 @@ export function registerAdminRoutes(app: FastifyInstance): void {
     const clearish = (v: unknown) => v === null || v === "" || v === 0;
     const maxInflight = "maxInflight" in b ? (clearish(b.maxInflight) ? null : num(b, "maxInflight", { int: true, min: 1, max: 10000 }) ?? null) : undefined;
     const maxInflightUsd = "maxInflightUsd" in b ? (clearish(b.maxInflightUsd) ? null : num(b, "maxInflightUsd", { min: 0.01, max: 1e6 }) ?? null) : undefined;
+    const maxRpm = "maxRpm" in b ? (clearish(b.maxRpm) ? null : num(b, "maxRpm", { int: true, min: 1, max: 100000 }) ?? null) : undefined;
     tx(() => {
       if (name) run("UPDATE users SET name = ? WHERE id = ?", name, id);
       if (maxInflight !== undefined) run("UPDATE users SET max_inflight = ? WHERE id = ?", maxInflight, id);
       if (maxInflightUsd !== undefined) run("UPDATE users SET max_inflight_usd = ? WHERE id = ?", maxInflightUsd, id);
+      if (maxRpm !== undefined) run("UPDATE users SET max_rpm = ? WHERE id = ?", maxRpm, id);
       if ("note" in b) run("UPDATE users SET note = ? WHERE id = ?", str(b, "note", { max: 500 }) ?? null, id);
       if (onboardGroup !== undefined) run("UPDATE users SET onboard_group_id = ? WHERE id = ?", onboardGroup, id);
       if (status) {

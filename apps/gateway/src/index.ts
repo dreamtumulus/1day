@@ -2,13 +2,18 @@ import Fastify from "fastify";
 import { dbPath, verifyMasterKey } from "@1dayapi/core";
 import { config } from "./config.js";
 import { CORS_HEADERS, sendError } from "./http.js";
+import { startLoopLagMonitor } from "./loop-lag.js";
 import { affinityBindingsSummary } from "./proxy.js";
 import { registerRoutes } from "./routes.js";
 
 // Refuse to start on a missing / wrong master key (docs/code-review-2026-11-10.md §1.1). Never catch MasterKeyError here.
 verifyMasterKey();
 
-const app = Fastify({ logger: { level: process.env.LOG_LEVEL ?? "info" }, bodyLimit: 32 * 1024 * 1024 });
+// Request body cap (X-72): Anthropic's own per-request limit is 32 MB; GATEWAY_BODY_LIMIT_MB lowers it when one caller's
+// multi-megabyte bodies are what the single gateway thread is spending its time on. Fastify answers 413 above it.
+const bodyLimitMb = Math.min(64, Math.max(1, Number(process.env.GATEWAY_BODY_LIMIT_MB ?? 32) || 32));
+const app = Fastify({ logger: { level: process.env.LOG_LEVEL ?? "info" }, bodyLimit: Math.floor(bodyLimitMb * 1024 * 1024) });
+startLoopLagMonitor();
 
 app.addHook("onRequest", async (req, reply) => {
   if (req.method === "OPTIONS") reply.status(204).headers(CORS_HEADERS).send();

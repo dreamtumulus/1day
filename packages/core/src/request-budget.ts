@@ -15,13 +15,16 @@ function limit(name: string, fallback: number): number {
  *    available balance itself unless a lower cap is set (`capIsBalance`);
  *  - key_quota_reserved: in-flight requests on this key already reserve what is left of its quota.
  */
-export type AdmissionRefusalReason = "insufficient_funds" | "key_quota_exhausted" | "concurrency_cap" | "reserved_spending_cap" | "key_quota_reserved";
+export type AdmissionRefusalReason = "insufficient_funds" | "key_quota_exhausted" | "concurrency_cap" | "rate_cap" | "reserved_spending_cap" | "key_quota_reserved";
 export interface AdmissionRefusal {
   ok: false;
   reason: AdmissionRefusalReason;
   /** The user's requests in flight / the cap that applies (null when the user or key row is gone). */
   inFlight: number | null;
   maxInflight: number | null;
+  /** Requests the user had admitted in the last 60 s / the per-minute cap (X-72; null = no cap, or no user row). */
+  rpm: number | null;
+  maxRpm: number | null;
   /** USD reserved by the user's in-flight requests / the in-flight spending cap (null = no cap known). */
   reservedUsd: number | null;
   capUsd: number | null;
@@ -36,6 +39,34 @@ export interface AdmissionRefusal {
 }
 export type AdmissionDecision = { ok: true } | AdmissionRefusal;
 
+// X-72: requests admitted per user in the last RPM_WINDOW_MS, in this process (one live gateway; a blue/green switch
+// starts the window empty, which only ever admits more). The cap is `users.max_rpm` (admin console), else USER_MAX_RPM;
+// neither set = unlimited. It bounds how often one caller can make the gateway work (X-71: 60% of a day's requests from
+// one key, each one a new conversation), where the in-flight cap alone does not — short requests never pile up.
+const RPM_WINDOW_MS = 60_000;
+const rpmHits = new Map<string, number[]>();
+function rpmDefault(): number {
+  const n = Number(process.env.USER_MAX_RPM);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : Infinity;
+}
+function rpmCount(userId: string, now: number): number {
+  const cutoff = now - RPM_WINDOW_MS;
+  const arr = (rpmHits.get(userId) ?? []).filter((t) => t > cutoff);
+  if (arr.length === 0) rpmHits.delete(userId);
+  else rpmHits.set(userId, arr);
+  if (rpmHits.size > 20_000) for (const [k, v] of rpmHits) if (!v.some((t) => t > cutoff)) rpmHits.delete(k);
+  return arr.length;
+}
+function rpmRecord(userId: string, now: number): void {
+  const arr = rpmHits.get(userId) ?? [];
+  arr.push(now);
+  rpmHits.set(userId, arr);
+}
+/** Tests only: forget every user's per-minute window. */
+export function resetRequestRateWindows(): void {
+  rpmHits.clear();
+}
+
 /** Shared admission limits include every gateway, API Key and in-flight request. */
 export function acquireRequestBudget(requestId: string, userId: string, apiKeyId: string, estimatedUsd: number): boolean {
   return acquireRequestBudgetDetailed(requestId, userId, apiKeyId, estimatedUsd).ok;
@@ -49,16 +80,22 @@ export function acquireRequestBudgetDetailed(requestId: string, userId: string, 
     run("DELETE FROM gateway_request_budgets WHERE expires_at <= ?", now);
     if (one("SELECT 1 FROM gateway_request_budgets WHERE request_id = ?", requestId)) return { ok: true };
     const num = (v: number | null | undefined): number | null => (typeof v === "number" && Number.isFinite(v) ? q8(v) : null);
-    const funds = one<{ available: number; remaining: number | null; max_inflight: number | null; max_inflight_usd: number | null }>(`SELECT
+    const funds = one<{ available: number; remaining: number | null; max_inflight: number | null; max_inflight_usd: number | null; max_rpm: number | null }>(`SELECT
       u.credit_limit_usd - u.credit_used_usd + u.balance_usd AS available,
       CASE WHEN k.quota_usd > 0 THEN k.quota_usd - k.used_usd ELSE NULL END AS remaining,
-      u.max_inflight, u.max_inflight_usd
+      u.max_inflight, u.max_inflight_usd, u.max_rpm
       FROM users u JOIN api_keys k ON k.user_id = u.id WHERE u.id = ? AND k.id = ?`, userId, apiKeyId);
     if (!funds || !Number.isFinite(funds.available) || funds.available <= 0
       || (funds.remaining !== null && (!Number.isFinite(funds.remaining) || funds.remaining <= 0))) {
       const noFunds = !funds || !Number.isFinite(funds.available) || funds.available <= 0;
-      return { ok: false, reason: noFunds ? "insufficient_funds" : "key_quota_exhausted", inFlight: null, maxInflight: null, reservedUsd: null, capUsd: null, capIsBalance: false,
+      return { ok: false, reason: noFunds ? "insufficient_funds" : "key_quota_exhausted", inFlight: null, maxInflight: null, rpm: null, maxRpm: null, reservedUsd: null, capUsd: null, capIsBalance: false,
         availableUsd: num(funds?.available), keyRemainingUsd: num(funds?.remaining), keyReservedUsd: null, wantedUsd: q8(estimatedUsd) };
+    }
+    const maxRpm = funds.max_rpm && funds.max_rpm > 0 ? Math.floor(funds.max_rpm) : rpmDefault();
+    const rpm = rpmCount(userId, now);
+    if (rpm >= maxRpm) {
+      return { ok: false, reason: "rate_cap", inFlight: null, maxInflight: null, rpm, maxRpm, reservedUsd: null, capUsd: null, capIsBalance: false,
+        availableUsd: num(funds.available), keyRemainingUsd: num(funds.remaining), keyReservedUsd: null, wantedUsd: q8(estimatedUsd) };
     }
     const user = one<{ n: number; reserved: number }>("SELECT COUNT(*) AS n, COALESCE(SUM(reserved_usd),0) AS reserved FROM gateway_request_budgets WHERE user_id = ?", userId)!;
     const key = one<{ reserved: number }>("SELECT COALESCE(SUM(reserved_usd),0) AS reserved FROM gateway_request_budgets WHERE api_key_id = ?", apiKeyId)!;
@@ -75,11 +112,12 @@ export function acquireRequestBudgetDetailed(requestId: string, userId: string, 
       : user.reserved + reserve > cap + 1e-9 ? "reserved_spending_cap"
       : funds.remaining !== null && key.reserved + reserve > funds.remaining + 1e-9 ? "key_quota_reserved" : null;
     if (reason) {
-      return { ok: false, reason, inFlight: user.n, maxInflight: Math.floor(maxInflight), reservedUsd: num(user.reserved), capUsd: num(cap), capIsBalance: cap >= funds.available,
+      return { ok: false, reason, inFlight: user.n, maxInflight: Math.floor(maxInflight), rpm, maxRpm: Number.isFinite(maxRpm) ? maxRpm : null, reservedUsd: num(user.reserved), capUsd: num(cap), capIsBalance: cap >= funds.available,
         availableUsd: num(funds.available), keyRemainingUsd: num(funds.remaining), keyReservedUsd: num(key.reserved), wantedUsd: reserve };
     }
     run("INSERT INTO gateway_request_budgets(request_id,user_id,api_key_id,reserved_usd,expires_at) VALUES (?,?,?,?,?)",
       requestId, userId, apiKeyId, reserve, now + LEASE_MS);
+    rpmRecord(userId, now);
     return { ok: true };
   });
 }

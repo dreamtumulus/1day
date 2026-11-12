@@ -397,6 +397,16 @@ usage 行、账户与节点状态），每次一行 JSON 追加到 `/root/monito
 最低建议补齐：外部探活 `/health`、磁盘与 DB 大小、journald 中 `[billing] failed` 与 `unhandled error` 的计数。
 其中磁盘、库体积、备份新鲜度、日志保留跨度已由 `ops/bin/health-extra` 覆盖（§7.0，2026-11-10）；仍然没有指标采集与集中日志。
 
+### 7.1 网关看门狗与事件循环延迟（X-72，2026-11-12）
+
+网关是单线程 Node 进程：一段同步代码卡几秒，全站请求就一起等（X-71：选组织的预算检查每个新对话同步跑 3 秒，09:04Z 起所有请求 499，人工切换前停摆 20 分钟）。为此补了两样东西：
+
+- **事件循环延迟指标**（`apps/gateway/src/loop-lag.ts`）：每 10 秒读一次 `monitorEventLoopDelay`，p50/p99/max 作为 gauge 出现在 `/internal/metrics`（`event_loop_delay_p99_ms`、`event_loop_delay_max_ms`、`event_loop_delay_p99_5m_max_ms`=最近 5 分钟最差的窗口 p99）；窗口 p99 ≥ `LOOP_LAG_WARN_MS`（默认 500）时记一行 `[loop-lag]`（每分钟最多一行）并计 `event_loop_lag_warn_total`。`/health` 仍只回存活（评审 H）。另外每次选组织的日志行带 `took=Nms`，≥200 ms 计 `team_pick_slow_total`。
+- **看门狗**（`ops/bin/gateway-watchdog`，unit `ops/systemd/1dayapi-gateway-watchdog.service`，root 运行）：每 10 秒探在线实例（nginx `gateway_live` 指向的端口）的 `/health`；3 秒内无响应、非 200、或 `/internal/metrics` 的事件循环 p99 ≥ 2000 ms 算一次失败；连续 3 次失败 → 走 `/root/monitor/alert.py` 的通道报警，并执行 `gateway-switch --hold 0`（起另一实例、真实请求探针、切 nginx；原实例自行 drain 退出），切换结果再报一次；30 分钟内最多自动切一次（drain 中的实例无法重启），期间再失败只报警。恢复后报一次"恢复"。`AUTO_SWITCH=0` 变成只报警。日志 `/var/log/1dayapi-gateway-watchdog.log`。它换的是进程不是代码：卡住的原因还在，报警文案会提醒人去看日志。
+  安装：`cp ops/systemd/1dayapi-gateway-watchdog.service /etc/systemd/system/ && systemctl daemon-reload && systemctl enable --now 1dayapi-gateway-watchdog`。
+
+同一批还加了**每用户每分钟请求数上限**（`users.max_rpm`，管理台 → 用户 → 并发上限；默认 `USER_MAX_RPM`，不设 = 不限；超出回 429 `user_rate_limit`，`retry-after: 5`，用量表留零成本行）和请求体上限 `GATEWAY_BODY_LIMIT_MB`（默认 32，与 Anthropic 一致；超出 413）。单个客户再不能用请求数把网关压满，但一个新对话 3 秒那种 bug 仍然只能靠指标和看门狗兜底。
+
 **Claude Code 形态判定（gateway.md §2a）上线后的观察项**：`journalctl -u 1dayapi-gateway | grep '\[cc-shape\]'` 看 suspect 行
 （谁、缺了什么），控制台「用户」列表看「伪造 CC（30 天）」。策略默认 `observe`，确认真实 CC 用户长期为 0 suspect 后在「设置」切到
 `downgrade`。genuine 但带 `soft=` 的行说明 Claude Code 发了新版本、形态有漂移，要去 docs/claude-code-compat.md 核对并更新常量。

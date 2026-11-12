@@ -76,6 +76,8 @@ export function registerRoutes(app: FastifyInstance): void {
 
   // Public and unauthenticated: liveness only. The counters used to ride here; their labels name organisations,
   // accounts and client-sent values, so they moved behind the internal token (review 2026-11-09 H).
+  // Still liveness only (review H). The event-loop delay (X-72) is a gauge on /internal/metrics; ops/bin/gateway-watchdog
+  // reads it there with the internal token and treats a /health that does not answer in time as a frozen gateway.
   app.get("/health", async () => ({ status: "ok", service: "1dayapi-gateway", time: new Date().toISOString() }));
 
   // Same JSON shape /health had (`counters` included), for release-verify / canary scripts and the health report:
