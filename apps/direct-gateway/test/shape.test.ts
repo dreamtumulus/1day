@@ -2,7 +2,7 @@ import { describe, expect, it } from "bun:test";
 import { metadataSession, stableUuid } from "../src/identity.ts";
 import { accountMachine, pinMachineEnvironment } from "../src/machine.ts";
 import { agentBody, agentHeaders } from "../src/profile.ts";
-import { alignBillingSuffix, assertOutgoingShape, canonicalBetas, ccBuildSuffix, normalizeThinking, ShapeError } from "../src/shape.ts";
+import { alignBillingSuffix, assertOutgoingShape, canonicalBetas, ccBuildSuffix, nativeBetas, normalizeThinking, ShapeError } from "../src/shape.ts";
 import type { RuntimeAccount } from "../src/types.ts";
 
 const account: RuntimeAccount = {
@@ -34,6 +34,13 @@ describe("Claude Code outgoing shape", () => {
     expect(betas[0]).toBe("claude-code-20250219");
     expect(betas[1]).toBe("oauth-2025-04-20");
     expect(betas.at(-1)).toBe("effort-2025-11-24");
+  });
+
+  it("preserves native feature betas without enabling deferred tooling on every request", () => {
+    const betas = nativeBetas(true, "interleaved-thinking-2025-05-14").split(",");
+    expect(betas).toEqual(["claude-code-20250219", "oauth-2025-04-20", "interleaved-thinking-2025-05-14"]);
+    expect(betas).not.toContain("advanced-tool-use-2025-11-20");
+    expect(betas).not.toContain("mid-conversation-tool-changes-2026-07-01");
   });
 
   it("uses one account machine for headers and environment blocks", () => {

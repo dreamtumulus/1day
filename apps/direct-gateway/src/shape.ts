@@ -57,6 +57,16 @@ export function canonicalBetas(oauth: boolean, incoming = ""): string {
   return betas.join(",");
 }
 
+export function nativeBetas(oauth: boolean, incoming: string): string {
+  const present = incoming.split(",").map((v) => v.trim()).filter(Boolean);
+  if (present.length === 0) return canonicalBetas(oauth);
+  const required = "claude-code-20250219";
+  const out = [...present];
+  if (!out.includes(required)) out.unshift(required);
+  if (oauth && !out.includes("oauth-2025-04-20")) out.splice(out.indexOf(required) + 1, 0, "oauth-2025-04-20");
+  return out.join(",");
+}
+
 function claudeLine(model: string): { family: string; version: number } | null {
   const match = /^claude-(fable|mythos|opus|sonnet|haiku)-(\d+)(?:-(\d))?(?:-\d{8})?$/.exec(model);
   return match ? { family: match[1], version: Number(match[2]) + (match[3] ? Number(match[3]) / 10 : 0) } : null;

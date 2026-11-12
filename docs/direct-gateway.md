@@ -112,7 +112,7 @@ worker-0 不以 UA 作为最终判断，也不以旧版硬门槛代替归一。�
 3. **thinking 归一**：按目标模型处理 enabled/budget、adaptive、disabled、between_tools 与 effort，不丢 display 等其余意图。
 4. **身份与 session**：metadata 固定为 `device_id → account_uuid → session_id` 的键序；派生 session 必须是确定性的合法 UUIDv4；JSON 与 legacy `user_…_session_…` 都能读取。
 5. **机器环境**：`# Environment` 的 cwd、Platform、Shell、OS Version 和 scratchpad 与账号机器头同源，避免 Darwin 正文配 Linux 头。
-6. **beta 与顶层结构**：`claude-code-20250219` 必须存在，OAuth beta 紧跟其后；功能 beta 保留；顶层键按 Messages 顺序校验。
+6. **beta 与顶层结构**：`claude-code-20250219` 必须存在，OAuth beta 紧跟其后；Native 保留客户端功能 beta，不把整组高级/延迟工具 beta 强加给所有请求；只有 Agent 修复使用整组 canonical。顶层键按 Messages 顺序校验。ToolSearch、DeferredToolPlaceholder、延迟 schema 和 tool_use/tool_result 均按客户端原消息透传。
 7. **计费后缀最后重算**：所有改体完成后，使用 suffix-v1（盐 + 首条用户文本 `[4,7,20]` + 出站版本）重算。首条用户文本跳过 `<system-reminder>`，不把样本里的 `93a` 当常量。
 8. **出站硬校验**：再次核对 UA/计费版本与后缀、entrypoint、metadata/session、Stainless lang/package/runtime、beta 顺序、机器环境和顶层键序。任一不符返回 400 `cc_shape_mismatch`，请求不进入账号冷却、不计费，也不发往上游。
 

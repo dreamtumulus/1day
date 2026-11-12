@@ -7,7 +7,7 @@ import { Egress, EgressError } from "./egress.js";
 import { conversationSession, metadataSession, pinIdentity } from "./identity.js";
 import { accountMachine, pinMachineEnvironment } from "./machine.js";
 import { OAuthManager } from "./oauth.js";
-import { alignBillingSuffix, assertOutgoingShape, canonicalBetas, canonicalBodyOrder, normalizeThinking, ShapeError } from "./shape.js";
+import { alignBillingSuffix, assertOutgoingShape, canonicalBodyOrder, normalizeThinking, nativeBetas, ShapeError } from "./shape.js";
 import { ACTIVE_PROFILE, agentBody, agentHeaders, claudeCodeLike, isClaudeCodeRequest, nativeProfileOverrides, normalizeNativeBody } from "./profile.js";
 import { StateStore } from "./state.js";
 import { UsageAccumulator, collectText } from "./usage.js";
@@ -300,7 +300,7 @@ export class DirectGateway {
     headers["accept-encoding"] = "gzip, deflate, br, zstd";
     if (account.accessToken) headers.authorization = `Bearer ${account.accessToken}`;
     else headers["x-api-key"] = account.apiKey!;
-    headers["anthropic-beta"] = canonicalBetas(Boolean(account.accessToken), headers["anthropic-beta"]);
+    headers["anthropic-beta"] = nativeBetas(Boolean(account.accessToken), headers["anthropic-beta"] ?? "");
     return headers;
   }
 
