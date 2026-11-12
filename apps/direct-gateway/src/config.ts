@@ -42,6 +42,8 @@ export function loadConfig(configPath = process.env.DIRECT_GATEWAY_CONFIG ?? def
   if (new Set(accounts.map((a) => a.id)).size !== accounts.length) throw new Error("account ids must be unique");
   const listen = (raw.listen ?? {}) as Record<string, unknown>;
   const companion = (raw.companion ?? {}) as Record<string, unknown>;
+  const controlPlane = raw.controlPlane as Record<string, unknown> | undefined;
+  if (controlPlane && (typeof controlPlane.baseUrl !== "string" || typeof controlPlane.token !== "string")) throw new Error("controlPlane requires baseUrl and token");
   return {
     nodeName: typeof raw.nodeName === "string" && raw.nodeName ? raw.nodeName : "worker-0",
     listen: {
@@ -56,5 +58,10 @@ export function loadConfig(configPath = process.env.DIRECT_GATEWAY_CONFIG ?? def
       restartDelayMs: Number.isFinite(companion.restartDelayMs) ? Math.max(0, Number(companion.restartDelayMs)) : 5000,
       startupStaggerMs: Number.isFinite(companion.startupStaggerMs) ? Math.max(0, Number(companion.startupStaggerMs)) : 500,
     },
+    ...(controlPlane ? { controlPlane: {
+      baseUrl: String(controlPlane.baseUrl).replace(/\/+$/, ""),
+      token: resolveSecret(String(controlPlane.token)),
+      timeoutMs: Number.isFinite(controlPlane.timeoutMs) ? Number(controlPlane.timeoutMs) : 10_000,
+    } } : {}),
   };
 }

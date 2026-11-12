@@ -1,4 +1,5 @@
 import { ACTIVE_PROFILE } from "./profile.js";
+import type { ControlPlaneClient } from "./control-plane.js";
 import type { Egress } from "./egress.js";
 import type { StateStore } from "./state.js";
 import type { AccountCredential, RuntimeAccount } from "./types.js";
@@ -10,7 +11,7 @@ const TOKEN_URL = "https://platform.claude.com/v1/oauth/token";
 export class OAuthManager {
   private readonly refreshing = new Map<string, Promise<RuntimeAccount>>();
 
-  constructor(private readonly state: StateStore, private readonly egress: Egress) {}
+  constructor(private readonly state: StateStore, private readonly egress: Egress, private readonly controlPlane: ControlPlaneClient | null = null) {}
 
   fresh(account: RuntimeAccount, force = false): Promise<RuntimeAccount> {
     if (!account.accessToken || !account.refreshToken) return Promise.resolve(account);
@@ -44,6 +45,11 @@ export class OAuthManager {
       expiresAt: new Date(Date.now() + Number(json.expires_in ?? 3600) * 1000).toISOString(),
     };
     this.state.updateCredential(account.id, credential);
+    if (this.controlPlane) {
+      const rotated = await this.controlPlane.rotate({ accountId: account.id, expectedRefreshToken: account.refreshToken!, credential });
+      if (rotated.conflict) this.state.updateCredential(account.id, rotated.credential);
+      return { ...account, ...rotated.credential };
+    }
     return { ...account, ...credential };
   }
 }

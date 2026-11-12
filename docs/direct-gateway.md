@@ -188,6 +188,11 @@ companion 使部署增加一个固定版本的官方 CC 二进制资产；启用
     "restartDelayMs": 5000,
     "startupStaggerMs": 500
   },
+  "controlPlane": {
+    "baseUrl": "https://1dayapi.com",
+    "token": "env:WORKER0_CONTROL_TOKEN",
+    "timeoutMs": 10000
+  },
   "accounts": [
     {
       "id": "account-0",
@@ -268,3 +273,42 @@ TLS ClientHello 需要专用抓包/TLS 工具；REA 不替代这类证据。
 2. `worker-0` 单账号、单代理、内部密钥灰度。
 3. 核对上游状态、流式稳定性和状态文件恢复。
 4. 再增加账号和客户端，不与 TUI 节点做身份或出口迁移。
+
+## 11. 计费、缓存、限额与刷新对齐
+
+### 11.1 唯一真相与控制面
+
+worker-0 是 Bun 数据面，console/core 继续作为唯一账务、窗口和凭证版本真相。启用 `controlPlane` 后：
+
+1. 每个请求先调用 `POST /internal/worker0/admission`，由 console 校验 Key、用户、分组、余额、授信、Key 额度、模型白名单并用 `listCandidates` 返回有序候选账号。
+2. 每个上游响应先调用 `/account-event`，由 console 用 `recordWindowUsage` 和 `markFailure` 统一处理 5h/7d、98% 阈值、冷静期、普通 429、503/529、支付和模型作用域。
+3. 正常流在终止事件前调用 `/settle`；部分流和错误也写对应用量行。console 用 `settleRequestDurably` 完成价格快照、幂等扣费、余额/授信/Key 额度与号商收益。
+4. OAuth 轮换通过 `/credential-rotation` 做事务内 compare-and-swap。worker-0 收到冲突凭证后使用 console 的最新值，不重复旧 refresh token。
+
+控制面不可用时不继续无约束放量；准入失败按原方言返回，结算失败不向客户端发送正常终止事件。
+
+### 11.2 用量与缓存双账本
+
+`UsageAccumulator` 与现有网关同形：
+
+- Anthropic 非流式与 SSE 的 input/output/cache read/cache write；OpenAI cached_tokens 也归入缓存读。
+- 缓存写总数和 5m/1h 拆分；只给总数时归 5m，拆分超过总数时以 1h 为优先裁剪。
+- 正常流、部分流、usage 缺失、媒体块、工具调用/结果和实际模型均记录。
+
+Native 使用上游原始用量，不误扣客户自己的主提示词。Agent 先按激活 Profile 的前三个 system 块估算平台开销，再按「缓存读 → 1h 写 → 5m 写 → input」顺序扣除；客户显式要求缓存时才保留写入分档，否则剩余写入并入 input。客户工具定义不扣除。
+
+计费结果继续由 console 按目录/覆盖价、5m 1.25×、1h 2×、分组倍率和价格快照计算。OpenAI 的 prompt 合计包含 input + cache read + cache write，不额外虚增缓存字段。
+
+### 11.3 冷却、窗口与换号不变量
+
+- 普通 429 走 Retry-After 软冷却；窗口 429 硬排除；请求级 429 不冷却账号。
+- 5h/7d 分列，达 98% 后停止新请求；5h reset 后随机 1h45m～2h05m，7d 不加。
+- 同窗口低样本不缩短已生效暂停；Fable 和单模型/组织级暂停只影响对应 scope。
+- 绑定账号不可用时 worker-0 当前直接返回 503，不静默换号，因此不会误标 `account_switched`。若未来开启换号，必须先接 ForceCacheBilling 和现有返还任务。
+- OAuth 到期前 5 分钟刷新、同账号同代理、401 强刷一次、并发合并、加密持久化和 companion 同步均保留；跨进程覆盖由 console CAS 防止。
+
+### 11.4 验收
+
+- console 真实 SQLite：同一 requestId 不重复扣费、缓存两档、5h 暂停不缩短、7d 无冷静期、轮换冲突不覆盖。
+- worker-0 控制面：admission/settle requestId 一致、Agent 总提示词减少、TTL 分档、窗口事件、部分流 `streamTruncated=true`。
+- 既有协议、Native 版本归一、压缩 SSE、代理失败关闭和 companion 生命周期测试继续通过。

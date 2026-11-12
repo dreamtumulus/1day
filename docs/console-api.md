@@ -211,3 +211,16 @@ PATCH 把账户改成其他类型 / 平台时执行器自动退回 `direct`；`o
 | `POST /internal/tunnel/:id/close` | 关闭 |
 
 v2 的 `/internal/accounts/:id/credential` 已删除：网关经 `@1dayapi/core` 直接解密凭证，明文不再走 HTTP。
+
+### 5.3 worker-0 → 平台（`/internal/worker0/*`）
+
+鉴权：`x-worker0-token` 等于环境变量 `WORKER0_CONTROL_TOKEN`（恒时比较）。未配置或令牌不符返回 403；该接口用于带 TLS 的独立节点控制面，不要求回环地址。
+
+| 方法 路径 | 说明 |
+|---|---|
+| `POST /internal/worker0/admission` | `{requestId, clientKey, model, endpoint, stream}`：复用 Key/用户/分组/余额/授信/额度/模型白名单和 `listCandidates`，返回 `{requestId, accountIds, coolingAccountIds}`；准入拒绝写零费用行 |
+| `POST /internal/worker0/settle` | `{requestId, clientKey, accountId, model, endpoint, statusCode, usage, ...}`：console 重新解析调用方并校验账号属于该组，调用 `settleRequestDurably`；同一 requestId 不重复扣费 |
+| `POST /internal/worker0/account-event` | `{accountId, model, statusCode, headers, body, retryAfterSec?}`：采样 unified 5h/7d 限额头并复用现有 `recordWindowUsage` / `markFailure` 处理窗口、普通冷却、支付、过载和模型作用域 |
+| `POST /internal/worker0/credential-rotation` | `{accountId, expectedRefreshToken, credential}`：事务内 compare-and-swap；只有当前 refresh token 与期望值一致才写入，冲突返回当前凭证，旧值不能覆盖新值 |
+
+worker-0 的请求模型、完整 TokenUsage（含缓存 5m/1h）、流式/部分流状态、Native/Agent 模式和账号切换语义见 `direct-gateway.md` §11。

@@ -1,5 +1,14 @@
 export type Json = Record<string, any>;
 
+export interface TokenUsage {
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_tokens?: number;
+  cache_write_tokens?: number;
+  cache_write_5m_tokens?: number;
+  cache_write_1h_tokens?: number;
+}
+
 export interface AccountConfig {
   id: string;
   baseUrl?: string;
@@ -21,12 +30,19 @@ export interface CompanionConfig {
   startupStaggerMs?: number;
 }
 
+export interface ControlPlaneConfig {
+  baseUrl: string;
+  token: string;
+  timeoutMs?: number;
+}
+
 export interface GatewayConfig {
   nodeName: string;
   listen: { host: string; port: number };
   clientApiKeys: string[];
   accounts: AccountConfig[];
   companion?: CompanionConfig;
+  controlPlane?: ControlPlaneConfig;
 }
 
 export interface AccountCredential {

@@ -1,17 +1,37 @@
 import crypto from "node:crypto";
+import { clientVisibleUsage } from "./billing.js";
 import { CompanionManager } from "./companion.js";
+import { ControlPlaneClient, ControlPlaneError } from "./control-plane.js";
 import { AnthropicToOpenaiStream, anthropicMessageToOpenai, openaiChatToAnthropic } from "./convert.js";
 import { Egress, EgressError } from "./egress.js";
 import { conversationSession, metadataSession, pinIdentity } from "./identity.js";
 import { OAuthManager } from "./oauth.js";
 import { ACTIVE_PROFILE, agentBody, agentHeaders, claudeCodeLike, isClaudeCodeRequest, nativeProfileOverrides, normalizeNativeBody } from "./profile.js";
 import { StateStore } from "./state.js";
+import { UsageAccumulator, collectText } from "./usage.js";
 import type { GatewayConfig, Json, RuntimeAccount } from "./types.js";
 
 const DEFAULT_MODELS = ["claude-sonnet-4-5-20250929", "claude-opus-5-5"];
 const DROP_HEADERS = new Set(["host", "connection", "content-length", "transfer-encoding", "keep-alive", "upgrade", "expect", "authorization", "x-api-key", "proxy-authorization", "proxy-connection", "via", "forwarded", "x-real-ip"]);
 
 type Dialect = "anthropic" | "openai";
+
+interface Accounting {
+  requestId: string;
+  meter: UsageAccumulator;
+  native: boolean;
+  input: Json;
+  upstreamBody: Json;
+  clientKey: string;
+  endpoint: string;
+  started: number;
+}
+
+interface StreamBlock {
+  raw: string;
+  json: Json | null;
+  terminal: boolean;
+}
 
 function errorResponse(dialect: Dialect, status: number, code: string, message: string): Response {
   const error = dialect === "anthropic"
@@ -32,7 +52,7 @@ function responseHeaders(headers: Headers): Headers {
   return out;
 }
 
-async function* sseEvents(body: ReadableStream<Uint8Array>): AsyncGenerator<Json> {
+async function* streamBlocks(body: ReadableStream<Uint8Array>): AsyncGenerator<StreamBlock> {
   const reader = body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
@@ -42,11 +62,14 @@ async function* sseEvents(body: ReadableStream<Uint8Array>): AsyncGenerator<Json
       buffer += decoder.decode(value, { stream: !done });
       let match: RegExpExecArray | null;
       while ((match = /\r?\n\r?\n/.exec(buffer))) {
-        const block = buffer.slice(0, match.index);
+        const raw = buffer.slice(0, match.index + match[0].length);
         buffer = buffer.slice(match.index + match[0].length);
-        const data = block.split(/\r?\n/).filter((line) => line.startsWith("data:")).map((line) => line.slice(5).trimStart()).join("\n");
-        if (!data || data === "[DONE]") continue;
-        try { yield JSON.parse(data) as Json; } catch {}
+        const data = raw.split(/\r?\n/).filter((line) => line.startsWith("data:")).map((line) => line.slice(5).trimStart()).join("\n");
+        let json: Json | null = null;
+        if (data && data !== "[DONE]") {
+          try { json = JSON.parse(data) as Json; } catch {}
+        }
+        yield { raw, json, terminal: json?.type === "message_stop" || data === "[DONE]" };
       }
       if (done) break;
     }
@@ -58,6 +81,7 @@ async function* sseEvents(body: ReadableStream<Uint8Array>): AsyncGenerator<Json
 export class DirectGateway {
   private readonly accounts: RuntimeAccount[];
   private readonly oauth: OAuthManager;
+  private readonly controlPlane: ControlPlaneClient | null;
   readonly companion: CompanionManager;
   private readonly affinity = new Map<string, string>();
   private readonly inFlight = new Map<string, number>();
@@ -65,7 +89,8 @@ export class DirectGateway {
 
   constructor(readonly config: GatewayConfig, private readonly state: StateStore, private readonly egress = new Egress()) {
     this.accounts = config.accounts.filter((a) => a.enabled !== false).map((a) => state.account(a, config.nodeName));
-    this.oauth = new OAuthManager(state, egress);
+    this.controlPlane = config.controlPlane ? new ControlPlaneClient(config.controlPlane) : null;
+    this.oauth = new OAuthManager(state, egress, this.controlPlane);
     this.companion = new CompanionManager(config, state, egress);
   }
 
@@ -81,7 +106,7 @@ export class DirectGateway {
   fetch = async (request: Request): Promise<Response> => {
     const url = new URL(request.url);
     if (request.method === "GET" && url.pathname === "/health") {
-      return Response.json({ status: "ok", service: "1dayapi-direct", node: this.config.nodeName, profile: ACTIVE_PROFILE.claudeCodeVersion, companion: this.companion.stats() });
+      return Response.json({ status: "ok", service: "1dayapi-direct", node: this.config.nodeName, profile: ACTIVE_PROFILE.claudeCodeVersion, companion: this.companion.stats(), controlPlane: this.controlPlane ? "aligned" : "standalone" });
     }
     const dialect: Dialect = url.pathname === "/v1/chat/completions" ? "openai" : "anthropic";
     const clientKey = this.clientKey(request);
@@ -122,41 +147,59 @@ export class DirectGateway {
     return Response.json({ object: "list", data: [...models].sort().map((id) => ({ id, object: "model", created: 0, owned_by: "anthropic" })) });
   }
 
-  private selectAccount(model: string, sessionKey: string): RuntimeAccount | null {
-    const candidates = this.accounts.filter((a) => (a.models ?? DEFAULT_MODELS).some((p) => modelMatches(p, model)));
+  private selectAccount(model: string, sessionKey: string, eligibleIds?: string[]): RuntimeAccount | null {
+    let candidates = this.accounts.filter((a) => (a.models ?? DEFAULT_MODELS).some((p) => modelMatches(p, model)));
+    if (eligibleIds) candidates = candidates.filter((a) => eligibleIds.includes(a.id));
     const bound = this.affinity.get(sessionKey);
     if (bound) return candidates.find((a) => a.id === bound) ?? null;
-    return candidates.sort((a, b) => (this.inFlight.get(a.id) ?? 0) - (this.inFlight.get(b.id) ?? 0) || (this.lastUsed.get(a.id) ?? 0) - (this.lastUsed.get(b.id) ?? 0) || a.id.localeCompare(b.id))[0] ?? null;
+    return candidates.sort((a, b) => {
+      const ai = eligibleIds ? eligibleIds.indexOf(a.id) : 0;
+      const bi = eligibleIds ? eligibleIds.indexOf(b.id) : 0;
+      return ai - bi || (this.inFlight.get(a.id) ?? 0) - (this.inFlight.get(b.id) ?? 0) || (this.lastUsed.get(a.id) ?? 0) - (this.lastUsed.get(b.id) ?? 0) || a.id.localeCompare(b.id);
+    })[0] ?? null;
   }
 
   private async handle(request: Request, input: Json, clientKey: string, dialect: Dialect, countTokens: boolean): Promise<Response> {
-    const native = dialect === "anthropic" && isClaudeCodeRequest(request.headers, input);
-    if (dialect === "anthropic" && claudeCodeLike(request.headers) && !native) {
-      console.log(`[direct] repairing non-canonical Claude Code request model=${input.model}`);
+    const requestId = crypto.randomUUID();
+    const endpoint = new URL(request.url).pathname;
+    let eligibleIds: string[] | undefined;
+    if (this.controlPlane) {
+      try {
+        const admission = await this.controlPlane.admission({ requestId, clientKey, model: input.model, endpoint, stream: input.stream === true });
+        eligibleIds = admission.accountIds;
+      } catch (error) {
+        if (error instanceof ControlPlaneError) return errorResponse(dialect, error.status, error.code, error.message);
+        throw error;
+      }
     }
+    const native = dialect === "anthropic" && isClaudeCodeRequest(request.headers, input);
+    if (dialect === "anthropic" && claudeCodeLike(request.headers) && !native) console.log(`[direct] repairing non-canonical Claude Code request model=${input.model}`);
     const sessionId = native ? metadataSession(input.metadata?.user_id)! : conversationSession(request.headers, input, clientKey, input.model);
     const sessionKey = `${clientKey}:${input.model}:${sessionId}`;
-    const selected = this.selectAccount(input.model, sessionKey);
+    const selected = this.selectAccount(input.model, sessionKey, eligibleIds);
     if (!selected) return errorResponse(dialect, 503, "no_available_account", "No bound or eligible worker-0 account is available");
     this.affinity.set(sessionKey, selected.id);
     this.inFlight.set(selected.id, (this.inFlight.get(selected.id) ?? 0) + 1);
     this.lastUsed.set(selected.id, Date.now());
     const started = Date.now();
+    const meter = new UsageAccumulator();
+    meter.observeRequest(input);
+    let upstreamBody: Json = input;
     try {
       let account = await this.oauth.fresh(selected);
       Object.assign(selected, account);
       await this.companion.sync(account);
       const source = dialect === "openai" ? openaiChatToAnthropic(input, input.model) : input;
       const normalizedSource = native ? normalizeNativeBody(source, request.headers) : source;
-      let body = native ? pinIdentity({ ...normalizedSource }, account, sessionId) : agentBody(source, input.model, account, sessionId);
+      upstreamBody = native ? pinIdentity({ ...normalizedSource }, account, sessionId) : agentBody(source, input.model, account, sessionId);
       if (countTokens) {
-        const { max_tokens: _max, thinking: _thinking, context_management: _context, stream: _stream, ...rest } = body;
-        body = rest;
+        const { max_tokens: _max, thinking: _thinking, context_management: _context, stream: _stream, ...rest } = upstreamBody;
+        upstreamBody = rest;
       }
       const path = countTokens ? "/v1/messages/count_tokens" : "/v1/messages?beta=true";
       const send = async (current: RuntimeAccount): Promise<Response> => {
         const headers = native ? this.nativeHeaders(request.headers, current) : agentHeaders(sessionId, current);
-        return this.egress.request(account = current, `${current.baseUrl}${path}`, { method: "POST", headers, body: JSON.stringify(body), signal: request.signal });
+        return this.egress.request(account = current, `${current.baseUrl}${path}`, { method: "POST", headers, body: JSON.stringify(upstreamBody), signal: request.signal });
       };
       let response = await send(account);
       if (response.status === 401 && account.refreshToken) {
@@ -166,19 +209,79 @@ export class DirectGateway {
         await this.companion.sync(account);
         response = await send(account);
       }
-      console.log(`[direct] account=${account.id} model=${input.model} status=${response.status} ms=${Date.now() - started}`);
-      if (!response.ok) return this.upstreamError(response, dialect);
-      if (countTokens || dialect === "anthropic") return new Response(response.body, { status: response.status, statusText: response.statusText, headers: responseHeaders(response.headers) });
-      if (input.stream === true && (response.headers.get("content-type") ?? "").includes("text/event-stream")) return this.openAiStream(response, input);
+      console.log(`[direct] request=${requestId} account=${account.id} model=${input.model} status=${response.status} ms=${Date.now() - started}`);
+      if (!response.ok) {
+        const text = await response.text();
+        await this.accountEvent(account, input.model, response, text);
+        const accounting = { requestId, meter, native, input, upstreamBody, clientKey, endpoint, started };
+        await this.settle(account, accounting, response.status, `upstream_http_${response.status}`, text, false);
+        return this.upstreamError(response, dialect, text);
+      }
+      await this.accountEvent(account, input.model, response, "");
+      if (countTokens) return new Response(response.body, { status: response.status, statusText: response.statusText, headers: responseHeaders(response.headers) });
+      const accounting = { requestId, meter, native, input, upstreamBody, clientKey, endpoint, started };
+      if (input.stream === true && (response.headers.get("content-type") ?? "").includes("text/event-stream")) return this.streamResponse(response, input, account, accounting, dialect);
       const json = await response.json() as Json;
+      this.observeNonStream(meter, json);
+      await this.settle(account, accounting, 200, null, null, false);
+      if (dialect === "anthropic") return Response.json(json, { headers: responseHeaders(response.headers) });
       return Response.json(anthropicMessageToOpenai(json, input.model));
     } catch (error) {
-      const code = error instanceof EgressError ? error.code : "upstream_error";
-      const status = code === "no_proxy_available" ? 503 : 502;
+      const code = error instanceof EgressError ? error.code : error instanceof ControlPlaneError ? error.code : "upstream_error";
+      const status = error instanceof ControlPlaneError ? error.status : code === "no_proxy_available" ? 503 : 502;
+      try {
+        const headers = new Headers({ "content-type": "application/json" });
+        await this.accountEvent(selected, input.model, { status, headers } as Response, (error as Error).message);
+        await this.settle(selected, { requestId, meter, native, input, upstreamBody, clientKey, endpoint, started }, status, code, (error as Error).message, false);
+      } catch {}
       return errorResponse(dialect, status, code, (error as Error).message);
     } finally {
       this.inFlight.set(selected.id, Math.max(0, (this.inFlight.get(selected.id) ?? 1) - 1));
     }
+  }
+
+  private observeNonStream(meter: UsageAccumulator, json: Json): void {
+    meter.addAnthropic(json.usage);
+    meter.addAnthropicContent(json.content);
+    meter.observeModel(json.model);
+    meter.addText(collectText(json));
+  }
+
+  private async accountEvent(account: RuntimeAccount, model: string, response: Response, text: string): Promise<void> {
+    if (!this.controlPlane) return;
+    const headers: Record<string, string> = {};
+    response.headers.forEach((value, key) => { headers[key] = value; });
+    await this.controlPlane.accountEvent({ accountId: account.id, model, statusCode: response.status, headers, body: text, retryAfterSec: Number(response.headers.get("retry-after")) || undefined });
+  }
+
+  private async settle(account: RuntimeAccount, accounting: Accounting, statusCode: number, errorCode: string | null, errorMessage: string | null, partial: boolean): Promise<void> {
+    if (!this.controlPlane) return;
+    const { requestId, meter, native, input, upstreamBody, clientKey, endpoint, started } = accounting;
+    const finalized = meter.finalize(input, { partial });
+    const visible = clientVisibleUsage(finalized.usage, native, input, upstreamBody);
+    await this.controlPlane.settle({
+      requestId,
+      clientKey,
+      accountId: account.id,
+      model: input.model,
+      upstreamModel: input.model,
+      actualModel: meter.actualModel,
+      endpoint,
+      stream: input.stream === true,
+      statusCode,
+      errorCode,
+      errorMessage,
+      usage: visible,
+      usageEstimated: finalized.estimated,
+      durationMs: Date.now() - started,
+      streamTruncated: partial,
+      toolCalls: meter.toolCalls,
+      toolResults: meter.toolResults,
+      mode: native ? "worker0-native" : "worker0-agent",
+      upstreamStatus: statusCode,
+      nodeId: this.config.nodeName,
+      accountSwitched: false,
+    });
   }
 
   private nativeHeaders(incoming: Headers, account: RuntimeAccount): Record<string, string> {
@@ -201,8 +304,7 @@ export class DirectGateway {
     return headers;
   }
 
-  private async upstreamError(response: Response, dialect: Dialect): Promise<Response> {
-    const text = await response.text();
+  private upstreamError(response: Response, dialect: Dialect, text: string): Response {
     if (dialect === "anthropic") return new Response(text, { status: response.status, headers: responseHeaders(response.headers) });
     let message = text || `Upstream HTTP ${response.status}`;
     let type = "api_error";
@@ -214,25 +316,57 @@ export class DirectGateway {
     return Response.json({ error: { message, type, code: `upstream_${response.status}` } }, { status: response.status });
   }
 
-  private openAiStream(response: Response, input: Json): Response {
-    const converter = new AnthropicToOpenaiStream(input.model, input.stream_options?.include_usage === true);
-    const events = sseEvents(response.body!);
+  private observeStreamEvent(meter: UsageAccumulator, event: Json): void {
+    if (event.type === "message_start") {
+      meter.addAnthropic(event.message?.usage);
+      meter.observeModel(event.message?.model);
+    } else if (event.type === "message_delta") meter.addAnthropic(event.usage);
+    else if (event.type === "content_block_start" && event.content_block?.type === "tool_use") meter.toolCalls++;
+    else if (event.type === "content_block_delta" && event.delta?.type === "text_delta") meter.addText(event.delta.text);
+  }
+
+  private streamResponse(response: Response, input: Json, account: RuntimeAccount, accounting: Accounting, dialect: Dialect): Response {
+    const blocks = streamBlocks(response.body!);
+    const converter = dialect === "openai" ? new AnthropicToOpenaiStream(input.model, input.stream_options?.include_usage === true) : null;
+    let completed = false;
+    let settled = false;
+    const finish = async (partial: boolean): Promise<void> => {
+      if (settled) return;
+      settled = true;
+      await this.settle(account, accounting, 200, partial ? "upstream_stream_error" : null, partial ? "Upstream stream ended before its terminal event" : null, partial);
+    };
     const stream = new ReadableStream<Uint8Array>({
-      async start(controller) {
+      start: async (controller) => {
         const encoder = new TextEncoder();
+        let terminal: StreamBlock | null = null;
         try {
-          for await (const event of events) {
-            for (const chunk of converter.push(event)) controller.enqueue(encoder.encode(chunk));
+          for await (const block of blocks) {
+            if (block.terminal) {
+              terminal = block;
+              completed = true;
+              break;
+            }
+            if (block.json) this.observeStreamEvent(accounting.meter, block.json);
+            if (converter) for (const chunk of converter.push(block.json ?? {})) controller.enqueue(encoder.encode(chunk));
+            else controller.enqueue(encoder.encode(block.raw));
           }
-          for (const chunk of converter.end()) controller.enqueue(encoder.encode(chunk));
+          await finish(!completed);
+          if (terminal && !converter) controller.enqueue(encoder.encode(terminal.raw));
+          if (converter && terminal?.json) for (const chunk of converter.push(terminal.json)) controller.enqueue(encoder.encode(chunk));
+          if (converter) for (const chunk of converter.end()) controller.enqueue(encoder.encode(chunk));
         } catch (error) {
-          if (!converter.errored) controller.enqueue(encoder.encode(`data: ${JSON.stringify({ error: { message: (error as Error).message, type: "api_error" } })}\n\n`));
+          if (!settled) {
+            try { await finish(true); } catch {}
+          }
+          if (converter) controller.enqueue(encoder.encode(`data: ${JSON.stringify({ error: { message: (error as Error).message, type: "api_error" } })}\n\n`));
+          else controller.enqueue(encoder.encode(`event: error\ndata: ${JSON.stringify({ type: "error", error: { type: "api_error", message: (error as Error).message } })}\n\n`));
         } finally {
           controller.close();
         }
       },
-      async cancel() {
-        await events.return(undefined);
+      cancel: async () => {
+        await blocks.return(undefined);
+        await finish(true);
       },
     });
     return new Response(stream, { status: 200, headers: { "content-type": "text/event-stream", "cache-control": "no-cache", "x-accel-buffering": "no" } });

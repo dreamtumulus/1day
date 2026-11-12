@@ -17,6 +17,7 @@ import { cleanupSessions, ensureInitialAdmin } from "./session.js";
 import { verifyMasterKey } from "@1dayapi/core";
 import { cleanupAudit, registerAuditHook, registerAuditRoutes } from "./audit.js";
 import { startArchiveCleanup } from "./node/archive-cleanup.js";
+import { registerWorker0Routes } from "./worker0.js";
 
 export async function buildApp(): Promise<FastifyInstance> {
   const app = Fastify({
@@ -82,5 +83,6 @@ export async function buildApp(): Promise<FastifyInstance> {
   registerOnboardingRoutes(app);
   registerOnboarderRoutes(app);
   registerNodeRoutes(app);
+  registerWorker0Routes(app);
   return app;
 }
